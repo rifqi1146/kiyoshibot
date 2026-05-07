@@ -39,18 +39,15 @@ except Exception as e:
 TIKTOK_COOKIES_PATH=os.path.abspath(os.path.join(BASE_DIR,"..","..","data","cookies.txt"))
 TIKTOK_COOKIE_DOMAINS=("tiktok.com","tiktokv.com","byteoversea.com","ibyteimg.com","muscdn.com","tikwm.com")
 _TIKTOK_COOKIE_HEADER_CACHE=None
-
 USE_GOVD_FAST=os.getenv("TIKTOK_GOVD_FAST","1").lower() not in ("0","false","off","no")
 USE_SCRAPLING=os.getenv("TIKTOK_USE_SCRAPLING","1").lower() not in ("0","false","off","no")
 DEBUG_TIKTOK_LOG=os.getenv("TIKTOK_DEBUG","0").lower() in ("1","true","on","yes")
 DEBUG_TIKTOK_DUMP=os.getenv("TIKTOK_DEBUG_DUMP","0").lower() in ("1","true","on","yes")
-
 TIKTOK_DOWNLOAD_ENGINE=os.getenv("TIKTOK_DOWNLOAD_ENGINE","aria2c").lower()
-TIKTOK_PROGRESS=os.getenv("TIKTOK_PROGRESS","1").lower() in ("1","true","on","yes")
+TIKTOK_PROGRESS=os.getenv("TIKTOK_PROGRESS","0").lower() in ("1","true","on","yes")
 TIKTOK_PROGRESS_INTERVAL=float(os.getenv("TIKTOK_PROGRESS_INTERVAL","2.5"))
 TIKTOK_AIOHTTP_CHUNK_SIZE=int(os.getenv("TIKTOK_AIOHTTP_CHUNK_SIZE",str(256*1024)))
 TIKTOK_ALBUM_CHUNK_SIZE=int(os.getenv("TIKTOK_ALBUM_CHUNK_SIZE",str(256*1024)))
-
 ARIA2C_TIMEOUT=int(os.getenv("TIKTOK_ARIA2C_TIMEOUT","600"))
 AIOHTTP_DOWNLOAD_TIMEOUT=int(os.getenv("TIKTOK_AIOHTTP_TIMEOUT","600"))
 
