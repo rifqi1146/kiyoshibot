@@ -28,6 +28,7 @@ UNIVERSAL_RE=re.compile(r'<script[^>]+\bid="__UNIVERSAL_DATA_FOR_REHYDRATION__"[
 SIGI_RE=re.compile(r'<script[^>]+\bid="SIGI_STATE"[^>]*>(.*?)</script>',re.S|re.I)
 NEXT_RE=re.compile(r'<script[^>]+\bid="__NEXT_DATA__"[^>]*>(.*?)</script>',re.S|re.I)
 MODERN_SSR_RE=re.compile(r'<script[^>]+\bid="__MODERN_SSR_DATA__"[^>]*>(.*?)</script>',re.S|re.I)
+SHORT_TIKTOK_RE=re.compile(r"https?://(?:vm|vt)\.tiktok\.com/",re.I)
 
 try:
     from handlers.dl.constants import BASE_DIR
@@ -38,9 +39,11 @@ except Exception as e:
 TIKTOK_COOKIES_PATH=os.path.abspath(os.path.join(BASE_DIR,"..","..","data","cookies.txt"))
 TIKTOK_COOKIE_DOMAINS=("tiktok.com","tiktokv.com","byteoversea.com","ibyteimg.com","muscdn.com","tikwm.com")
 _TIKTOK_COOKIE_HEADER_CACHE=None
+USE_GOVD_FAST=os.getenv("TIKTOK_GOVD_FAST","1").lower() not in ("0","false","off","no")
 USE_SCRAPLING=os.getenv("TIKTOK_USE_SCRAPLING","1").lower() not in ("0","false","off","no")
-DEBUG_TIKTOK_LOG=os.getenv("TIKTOK_DEBUG","1").lower() in ("1","true","on","yes")
-DEBUG_TIKTOK_DUMP=os.getenv("TIKTOK_DEBUG_DUMP","1").lower() in ("1","true","on","yes")
+DEBUG_TIKTOK_LOG=os.getenv("TIKTOK_DEBUG","0").lower() in ("1","true","on","yes")
+DEBUG_TIKTOK_DUMP=os.getenv("TIKTOK_DEBUG_DUMP","0").lower() in ("1","true","on","yes")
+TIKTOK_DOWNLOAD_ENGINE=os.getenv("TIKTOK_DOWNLOAD_ENGINE","aria2c-first").lower()
 ARIA2C_TIMEOUT=int(os.getenv("TIKTOK_ARIA2C_TIMEOUT","600"))
 AIOHTTP_DOWNLOAD_TIMEOUT=int(os.getenv("TIKTOK_AIOHTTP_TIMEOUT","600"))
 
@@ -175,6 +178,19 @@ def _cookie_header(cookies:list[dict]|None)->str:
             parts.append(f"{name}={value}")
     return "; ".join(parts)
 
+def _cookies_from_header(cookie_header:str)->list[dict]:
+    out=[]
+    for part in str(cookie_header or "").split(";"):
+        kv=part.strip()
+        if not kv or "=" not in kv:
+            continue
+        name,value=kv.split("=",1)
+        name=name.strip()
+        value=value.strip()
+        if name:
+            out.append({"name":name,"value":value})
+    return out
+
 def _extract_debug_markers(html_text:str)->dict:
     text=html_text or ""
     low=text.lower()
@@ -267,6 +283,9 @@ async def _dump_tiktok_debug(bot,label:str,request_url:str,final_url:str,status:
 
 def is_tiktok(url:str)->bool:
     return any(x in (url or "") for x in ("tiktok.com","vt.tiktok.com","vm.tiktok.com"))
+
+def _is_short_tiktok_url(url:str)->bool:
+    return bool(SHORT_TIKTOK_RE.search(url or ""))
 
 def _format_size(num_bytes:int)->str:
     if num_bytes<=0:
@@ -435,7 +454,7 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
                 await _safe_edit_progress(bot,chat_id,status_msg_id,title_text,downloaded,total,speed_bps,eta_seconds)
                 last_edit,last_sample_size,last_sample_ts=now,downloaded,now
 
-async def _download_with_best_engine(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
     aria2_path=shutil.which("aria2c")
     if aria2_path:
         try:
@@ -449,6 +468,25 @@ async def _download_with_best_engine(session,media_url:str,out_path:str,bot,chat
         log.warning("TikTok aria2c not found in PATH, using aiohttp")
     log.info("TikTok download engine | engine=aiohttp")
     await aiohttp_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+
+async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+    try:
+        log.info("TikTok download engine | engine=aiohttp")
+        await aiohttp_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+        return
+    except Exception as e:
+        log.warning("TikTok aiohttp failed, fallback aria2c | err=%r",e)
+        _safe_remove_file(out_path,"aiohttp partial")
+    aria2_path=shutil.which("aria2c")
+    if not aria2_path:
+        raise RuntimeError("aiohttp failed and aria2c not found")
+    log.info("TikTok download engine | engine=aria2c path=%s",aria2_path)
+    await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+
+async def _download_with_best_engine(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+    if TIKTOK_DOWNLOAD_ENGINE in ("aria2","aria2-first","aria2c","aria2c-first"):
+        return await _download_with_aria2_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+    return await _download_with_aiohttp_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
 
 def _extract_aweme_id(url:str)->str:
     m=re.search(r"/(?:video|photo|player/v1)/(\d+)",url or "",flags=re.I)
@@ -670,6 +708,37 @@ async def _fetch_html_with_scrapling(target:str,cookie_header:str="")->tuple[str
     _ttdbg("scrapling fetch | target=%s status=%s final=%s len=%s cookie=%s",target,status,final_url,len(html_text),bool(resp_cookie))
     return html_text,final_url,status,resp_cookie,headers_dump
 
+async def _fetch_tiktok_govd_fast(url:str)->dict:
+    aweme_id=_extract_aweme_id(url)
+    resolved=url
+    resolved_cookie=""
+    if not aweme_id or _is_short_tiktok_url(url):
+        resolved,resolved_cookie=await _resolve_tiktok_url(url)
+        aweme_id=_extract_aweme_id(resolved)
+    if not aweme_id:
+        raise RuntimeError("TikTok aweme id not found")
+    if "/player/v1/" in (resolved or "").lower():
+        raise RuntimeError(f"TikTok weird page detected: player_v1_url | resolved={resolved}")
+    session=await get_http_session()
+    target=f"https://www.tiktok.com/@_/video/{aweme_id}"
+    headers=_build_tiktok_headers("https://www.tiktok.com/",resolved_cookie)
+    async with session.get(target,headers=headers,timeout=aiohttp.ClientTimeout(total=12),allow_redirects=True) as resp:
+        final_url=str(resp.url)
+        status=resp.status
+        html_text=await resp.text()
+        resp_cookie=_cookie_header([{"name":c.key,"value":c.value} for c in resp.cookies.values()])
+        merged_cookie=_merge_cookie_headers(headers.get("Cookie",""),resp_cookie)
+        _ttdbg("fast fetch | target=%s status=%s final=%s len=%s cookie=%s",target,status,final_url,len(html_text),bool(merged_cookie))
+    item_struct=_extract_item_struct(html_text,final_url)
+    media=_parse_direct_media(item_struct)
+    media["cookies"]=_cookies_from_header(merged_cookie)
+    media["resolved_url"]=resolved
+    media["aweme_id"]=aweme_id
+    media["target_url"]=target
+    media["final_url"]=final_url
+    media["source"]="fast"
+    return media
+
 async def _fetch_tiktok_direct(url:str,bot=None)->dict:
     resolved,resolved_cookie=await _resolve_tiktok_url(url)
     aweme_id=_extract_aweme_id(resolved)
@@ -728,11 +797,30 @@ async def _fetch_tiktok_direct(url:str,bot=None)->dict:
                     })
                 raise RuntimeError(f"TikTok scraping failed: aiohttp={last_aio_err} ; scrapling={scrap_err}") from scrap_err
     media=_parse_direct_media(item_struct)
-    media["cookies"]=[{"name":x.split("=",1)[0],"value":x.split("=",1)[1]} for x in merged_cookie.split("; ") if "=" in x] if merged_cookie else []
+    media["cookies"]=_cookies_from_header(merged_cookie)
     media["resolved_url"]=resolved
     media["aweme_id"]=aweme_id
     media["target_url"]=target
     media["final_url"]=final_url
+    media["source"]="full-scraping"
+    return media
+
+async def _fetch_tiktok_metadata(url:str,bot=None,chat_id=None,status_msg_id=None,metadata_ready:bool=False)->dict:
+    fast_err=None
+    if USE_GOVD_FAST:
+        try:
+            started=time.monotonic()
+            media=await _fetch_tiktok_govd_fast(url)
+            log.info("TikTok metadata success | source=fast url=%s kind=%s elapsed=%.2fs target=%s",url,media.get("kind"),time.monotonic()-started,media.get("target_url"))
+            return media
+        except Exception as e:
+            fast_err=e
+            log.warning("TikTok fast metadata failed, fallback full scraper | url=%s err=%r",url,e)
+    if not metadata_ready and bot is not None and chat_id is not None and status_msg_id is not None:
+        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping TikTok metadata...</b>")
+    started=time.monotonic()
+    media=await _fetch_tiktok_direct(url,bot=bot)
+    log.info("TikTok metadata success | source=full-scraping url=%s kind=%s elapsed=%.2fs target=%s fast_err=%r",url,media.get("kind"),time.monotonic()-started,media.get("target_url"),fast_err)
     return media
 
 async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
@@ -759,21 +847,12 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
         out_path=f"{TMP_DIR}/{uuid.uuid4().hex}_{sanitize_filename(title)}.mp4"
         try:
             _ttdbg("direct video download try | index=%s total=%s url=%s",idx,len(video_urls),video_url[:180])
-            await _download_with_best_engine(
-                session,
-                video_url,
-                out_path,
-                bot,
-                chat_id,
-                status_msg_id,
-                "Downloading TikTok video...",
-                headers=base_headers,
-            )
+            await _download_with_best_engine(session,video_url,out_path,bot,chat_id,status_msg_id,"Downloading TikTok video...",headers=base_headers)
             if is_invalid_video(out_path):
                 _safe_remove_file(out_path,"invalid TikTok video")
                 raise RuntimeError("Invalid video file from TikTok scraping")
-            log.info("TikTok direct scraping success | type=video file=%s url_index=%s",out_path,idx)
-            return {"path":out_path,"title":title,"desc":media.get("desc") or "","source":"scraping","kind":"video"}
+            log.info("TikTok direct scraping success | type=video source=%s file=%s url_index=%s",media.get("source"),out_path,idx)
+            return {"path":out_path,"title":title,"desc":media.get("desc") or "","source":media.get("source") or "scraping","kind":"video"}
         except Exception as e:
             last_err=e
             log.warning("TikTok direct URL failed | index=%s total=%s err=%r",idx,len(video_urls),e)
@@ -821,15 +900,11 @@ async def _download_direct_album(media:dict,bot,chat_id,status_msg_id)->dict:
     items=await _download_album_images(session,image_urls,title,bot,chat_id,status_msg_id,headers=headers)
     if not items:
         raise RuntimeError("TikTok slideshow download failed")
-    log.info("TikTok direct scraping success | type=album items=%s",len(items))
-    return {"items":items,"title":title,"desc":media.get("desc") or "","source":"scraping","kind":"album"}
+    log.info("TikTok direct scraping success | type=album source=%s items=%s",media.get("source"),len(items))
+    return {"items":items,"title":title,"desc":media.get("desc") or "","source":media.get("source") or "scraping","kind":"album"}
 
-async def tiktok_scrape_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
-    if not metadata_ready:
-        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping TikTok metadata...</b>")
-    media=await _fetch_tiktok_direct(url,bot=bot)
+async def _download_tiktok_media(media:dict,bot,chat_id,status_msg_id,fmt_key="mp4"):
     kind=media.get("kind")
-    log.info("TikTok scraping metadata success | url=%s kind=%s title=%r target=%s",url,kind,media.get("title"),media.get("target_url"))
     if fmt_key=="mp3":
         if kind!="video":
             raise RuntimeError("TikTok slideshow does not contain audio")
@@ -841,21 +916,26 @@ async def tiktok_scrape_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",met
         return await _download_direct_album(media,bot,chat_id,status_msg_id)
     raise RuntimeError("Unsupported TikTok media type")
 
+async def tiktok_scrape_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
+    media=await _fetch_tiktok_metadata(url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
+    log.info("TikTok scraping metadata ready | url=%s kind=%s title=%r target=%s source=%s",url,media.get("kind"),media.get("title"),media.get("target_url"),media.get("source"))
+    return await _download_tiktok_media(media,bot,chat_id,status_msg_id,fmt_key=fmt_key)
+
 async def douyin_download(url,bot,chat_id,status_msg_id):
     result=await _tikwm_result(url=url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,fmt_key="mp4")
     if result.get("items"):
         raise RuntimeError("SLIDESHOW")
     return result
-    
+
 async def tiktok_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
     try:
-        log.info("TikTok primary start | source=scraping url=%s fmt=%s metadata_ready=%s",url,fmt_key,metadata_ready)
+        log.info("TikTok primary start | source=scraping url=%s fmt=%s metadata_ready=%s fast=%s engine=%s",url,fmt_key,metadata_ready,USE_GOVD_FAST,TIKTOK_DOWNLOAD_ENGINE)
         result=await tiktok_scrape_download(url=url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,fmt_key=fmt_key,metadata_ready=metadata_ready)
         if isinstance(result,dict):
             if result.get("path"):
-                log.info("TikTok primary success | source=scraping file=%s",result.get("path"))
+                log.info("TikTok primary success | source=%s file=%s",result.get("source"),result.get("path"))
             elif result.get("items"):
-                log.info("TikTok primary success | source=scraping items=%s",len(result.get("items") or []))
+                log.info("TikTok primary success | source=%s items=%s",result.get("source"),len(result.get("items") or []))
         return result
     except Exception as e:
         log.warning("TikTok scraping failed, fallback to tikwm | url=%s fmt=%s err=%r",url,fmt_key,e)
@@ -872,4 +952,3 @@ async def tiktok_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_r
             elif result.get("items"):
                 log.info("TikTok fallback success | source=tikwm items=%s",len(result.get("items") or []))
         return result
-
