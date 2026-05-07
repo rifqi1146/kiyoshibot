@@ -12,7 +12,7 @@ import logging
 from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR
-from handlers.dl.utils import sanitize_filename,is_invalid_video
+from handlers.dl.utils import sanitize_filename,is_invalid_video,progress_bar
 from utils.config import LOG_CHAT_ID
 from .fallback import _tikwm_result
 
@@ -39,11 +39,18 @@ except Exception as e:
 TIKTOK_COOKIES_PATH=os.path.abspath(os.path.join(BASE_DIR,"..","..","data","cookies.txt"))
 TIKTOK_COOKIE_DOMAINS=("tiktok.com","tiktokv.com","byteoversea.com","ibyteimg.com","muscdn.com","tikwm.com")
 _TIKTOK_COOKIE_HEADER_CACHE=None
+
 USE_GOVD_FAST=os.getenv("TIKTOK_GOVD_FAST","1").lower() not in ("0","false","off","no")
 USE_SCRAPLING=os.getenv("TIKTOK_USE_SCRAPLING","1").lower() not in ("0","false","off","no")
 DEBUG_TIKTOK_LOG=os.getenv("TIKTOK_DEBUG","0").lower() in ("1","true","on","yes")
 DEBUG_TIKTOK_DUMP=os.getenv("TIKTOK_DEBUG_DUMP","0").lower() in ("1","true","on","yes")
-TIKTOK_DOWNLOAD_ENGINE=os.getenv("TIKTOK_DOWNLOAD_ENGINE","aria2c-first").lower()
+
+TIKTOK_DOWNLOAD_ENGINE=os.getenv("TIKTOK_DOWNLOAD_ENGINE","aria2c").lower()
+TIKTOK_PROGRESS=os.getenv("TIKTOK_PROGRESS","1").lower() in ("1","true","on","yes")
+TIKTOK_PROGRESS_INTERVAL=float(os.getenv("TIKTOK_PROGRESS_INTERVAL","2.5"))
+TIKTOK_AIOHTTP_CHUNK_SIZE=int(os.getenv("TIKTOK_AIOHTTP_CHUNK_SIZE",str(256*1024)))
+TIKTOK_ALBUM_CHUNK_SIZE=int(os.getenv("TIKTOK_ALBUM_CHUNK_SIZE",str(256*1024)))
+
 ARIA2C_TIMEOUT=int(os.getenv("TIKTOK_ARIA2C_TIMEOUT","600"))
 AIOHTTP_DOWNLOAD_TIMEOUT=int(os.getenv("TIKTOK_AIOHTTP_TIMEOUT","600"))
 
@@ -191,6 +198,22 @@ def _cookies_from_header(cookie_header:str)->list[dict]:
             out.append({"name":name,"value":value})
     return out
 
+def _int_meta(*values)->int:
+    for value in values:
+        try:
+            if value is None:
+                continue
+            return int(float(value))
+        except (TypeError,ValueError):
+            continue
+    return 0
+
+def _duration_meta(*values)->int:
+    duration=_int_meta(*values)
+    if duration>3600:
+        return max(int(round(duration/1000)),0)
+    return max(duration,0)
+
 def _extract_debug_markers(html_text:str)->dict:
     text=html_text or ""
     low=text.lower()
@@ -319,11 +342,13 @@ def _format_eta(seconds:float)->str:
     return f"{s}s"
 
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
+    if not TIKTOK_PROGRESS:
+        return
     lines=[f"<b>{html.escape(title)}</b>",""]
     if total>0:
         pct=min(downloaded*100/total,100.0)
-        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))} downloaded</code>")
-        lines.append(f"<code>{pct:.1f}%</code>")
+        lines.append(f"<code>{html.escape(progress_bar(pct))}</code>")
+        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))}</code>")
     else:
         lines.append(f"<code>{html.escape(_format_size(downloaded))} downloaded</code>")
     if speed_bps>0:
@@ -390,7 +415,7 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
     aria2=shutil.which("aria2c")
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
-    total=await _probe_total_bytes(session,media_url,headers=headers)
+    total=await _probe_total_bytes(session,media_url,headers=headers) if TIKTOK_PROGRESS else 0
     out_dir=os.path.dirname(out_path) or "."
     out_name=os.path.basename(out_path)
     cmd=[
@@ -403,6 +428,16 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
             cmd.extend(["--header",f"{k}: {v}"])
     cmd.append(media_url)
     proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.PIPE)
+    if not TIKTOK_PROGRESS:
+        try:
+            _,stderr=await asyncio.wait_for(proc.communicate(),timeout=ARIA2C_TIMEOUT)
+        except asyncio.TimeoutError:
+            await _kill_process(proc,"aria2c")
+            raise RuntimeError(f"aria2c timeout after {ARIA2C_TIMEOUT}s")
+        if proc.returncode!=0:
+            err=stderr.decode(errors="ignore").strip() if stderr else ""
+            raise RuntimeError(err or f"aria2c exited with code {proc.returncode}")
+        return
     started=time.monotonic()
     last_edit,last_sample_size,last_sample_ts=-10.0,0,time.time()
     while proc.returncode is None:
@@ -423,7 +458,7 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
         elapsed=max(now-last_sample_ts,0.001)
         speed_bps=max(downloaded-last_sample_size,0)/elapsed
         eta_seconds=((total-downloaded)/speed_bps) if total>0 and speed_bps>0 and downloaded<=total else None
-        if now-last_edit<3 and last_edit>=0:
+        if now-last_edit<TIKTOK_PROGRESS_INTERVAL and last_edit>=0:
             continue
         await _safe_edit_progress(bot,chat_id,status_msg_id,title_text,downloaded,total,speed_bps,eta_seconds)
         last_edit,last_sample_size,last_sample_ts=now,downloaded,now
@@ -439,17 +474,20 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
         total=int(r.headers.get("Content-Length",0) or 0)
         downloaded=0
         last_edit,last_sample_size,last_sample_ts=-10.0,0,time.time()
+        chunk_size=max(64*1024,int(TIKTOK_AIOHTTP_CHUNK_SIZE or 256*1024))
         async with aiofiles.open(out_path,"wb") as f:
-            async for chunk in r.content.iter_chunked(64*1024):
+            async for chunk in r.content.iter_chunked(chunk_size):
                 if not chunk:
                     continue
                 await f.write(chunk)
                 downloaded+=len(chunk)
+                if not TIKTOK_PROGRESS:
+                    continue
                 now=time.time()
                 elapsed=max(now-last_sample_ts,0.001)
                 speed_bps=max(downloaded-last_sample_size,0)/elapsed
                 eta_seconds=((total-downloaded)/speed_bps) if total>0 and speed_bps>0 and downloaded<=total else None
-                if now-last_edit<3 and last_edit>=0:
+                if now-last_edit<TIKTOK_PROGRESS_INTERVAL and last_edit>=0:
                     continue
                 await _safe_edit_progress(bot,chat_id,status_msg_id,title_text,downloaded,total,speed_bps,eta_seconds)
                 last_edit,last_sample_size,last_sample_ts=now,downloaded,now
@@ -458,7 +496,7 @@ async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat
     aria2_path=shutil.which("aria2c")
     if aria2_path:
         try:
-            log.info("TikTok download engine | engine=aria2c path=%s",aria2_path)
+            log.info("TikTok download engine | engine=aria2c path=%s progress=%s",aria2_path,TIKTOK_PROGRESS)
             await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
             return
         except Exception as e:
@@ -466,12 +504,12 @@ async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat
             _safe_remove_file(out_path,"aria2c partial")
     else:
         log.warning("TikTok aria2c not found in PATH, using aiohttp")
-    log.info("TikTok download engine | engine=aiohttp")
+    log.info("TikTok download engine | engine=aiohttp progress=%s",TIKTOK_PROGRESS)
     await aiohttp_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
 
 async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
     try:
-        log.info("TikTok download engine | engine=aiohttp")
+        log.info("TikTok download engine | engine=aiohttp progress=%s chunk=%s",TIKTOK_PROGRESS,TIKTOK_AIOHTTP_CHUNK_SIZE)
         await aiohttp_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
         return
     except Exception as e:
@@ -480,7 +518,7 @@ async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,ch
     aria2_path=shutil.which("aria2c")
     if not aria2_path:
         raise RuntimeError("aiohttp failed and aria2c not found")
-    log.info("TikTok download engine | engine=aria2c path=%s",aria2_path)
+    log.info("TikTok download engine | engine=aria2c path=%s progress=%s",aria2_path,TIKTOK_PROGRESS)
     await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
 
 async def _download_with_best_engine(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
@@ -558,22 +596,38 @@ def _parse_direct_media(item:dict)->dict:
         if images:
             return {"kind":"album","title":title,"desc":desc,"images":images}
     video=item.get("video") or {}
+    duration=_duration_meta(video.get("duration"),video.get("Duration"))
+    width=_int_meta(video.get("width"),video.get("Width"))
+    height=_int_meta(video.get("height"),video.get("Height"))
     bitrate_info=video.get("bitrateInfo") if isinstance(video,dict) else []
     video_urls=[]
     candidates=[video.get("playAddr"),video.get("playAddrStruct"),video.get("downloadAddr"),video.get("downloadAddrStruct")]
     if isinstance(bitrate_info,list):
         for br in bitrate_info:
             if isinstance(br,dict):
+                width=width or _int_meta(br.get("Width"),br.get("width"))
+                height=height or _int_meta(br.get("Height"),br.get("height"))
                 candidates.append(br.get("PlayAddr"))
                 candidates.append(br.get("playAddr"))
     for candidate in candidates:
         if isinstance(candidate,dict):
+            width=width or _int_meta(candidate.get("Width"),candidate.get("width"))
+            height=height or _int_meta(candidate.get("Height"),candidate.get("height"))
             _add_unique_urls(video_urls,candidate.get("urlList") or candidate.get("UrlList"))
             _add_unique_urls(video_urls,candidate.get("url") or candidate.get("Uri"))
         elif isinstance(candidate,str):
             _add_unique_urls(video_urls,candidate)
     if video_urls:
-        return {"kind":"video","title":title,"desc":desc,"video_url":video_urls[0],"video_urls":video_urls}
+        return {
+            "kind":"video",
+            "title":title,
+            "desc":desc,
+            "video_url":video_urls[0],
+            "video_urls":video_urls,
+            "duration":duration,
+            "width":width,
+            "height":height,
+        }
     raise RuntimeError("TikTok direct media URL not found")
 
 def _parse_universal_data(html_text:str)->dict:
@@ -852,7 +906,16 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
                 _safe_remove_file(out_path,"invalid TikTok video")
                 raise RuntimeError("Invalid video file from TikTok scraping")
             log.info("TikTok direct scraping success | type=video source=%s file=%s url_index=%s",media.get("source"),out_path,idx)
-            return {"path":out_path,"title":title,"desc":media.get("desc") or "","source":media.get("source") or "scraping","kind":"video"}
+            return {
+                "path":out_path,
+                "title":title,
+                "desc":media.get("desc") or "",
+                "source":media.get("source") or "scraping",
+                "kind":"video",
+                "duration":media.get("duration") or 0,
+                "width":media.get("width") or 0,
+                "height":media.get("height") or 0,
+            }
         except Exception as e:
             last_err=e
             log.warning("TikTok direct URL failed | index=%s total=%s err=%r",idx,len(video_urls),e)
@@ -875,7 +938,7 @@ async def _download_album_images(session,image_urls:list[str],title:str,bot,chat
                     if r.status>=400:
                         raise RuntimeError(f"Image HTTP {r.status}")
                     async with aiofiles.open(out_path,"wb") as f:
-                        async for chunk in r.content.iter_chunked(64*1024):
+                        async for chunk in r.content.iter_chunked(max(64*1024,int(TIKTOK_ALBUM_CHUNK_SIZE or 256*1024))):
                             if chunk:
                                 await f.write(chunk)
                 results[idx]={"type":"photo","path":out_path}
@@ -929,7 +992,7 @@ async def douyin_download(url,bot,chat_id,status_msg_id):
 
 async def tiktok_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
     try:
-        log.info("TikTok primary start | source=scraping url=%s fmt=%s metadata_ready=%s fast=%s engine=%s",url,fmt_key,metadata_ready,USE_GOVD_FAST,TIKTOK_DOWNLOAD_ENGINE)
+        log.info("TikTok primary start | source=scraping url=%s fmt=%s metadata_ready=%s fast=%s engine=%s progress=%s",url,fmt_key,metadata_ready,USE_GOVD_FAST,TIKTOK_DOWNLOAD_ENGINE,TIKTOK_PROGRESS)
         result=await tiktok_scrape_download(url=url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,fmt_key=fmt_key,metadata_ready=metadata_ready)
         if isinstance(result,dict):
             if result.get("path"):
