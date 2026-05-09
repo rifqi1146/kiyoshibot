@@ -11,6 +11,11 @@ ASUPAN_COOLDOWN_SEC = 5
 DEFAULT_ASUPAN_KEYWORDS = [
     "acaawra0",
     "ayaa_1a6",
+    "kindiii1_",
+    "_micinn__",
+    "putihabuabuah",
+    "clrviia",
+    "ellmaviraw",
     "zarraa3742",
     "user112055011",
     "4vign",
