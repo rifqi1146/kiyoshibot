@@ -43,3 +43,15 @@ def autodl_detect_keyboard(dl_id: str):
             ]
         ]
     )
+    
+def tiktok_slideshow_keyboard(dl_id:str,has_audio:bool=True):
+    rows=[
+        [
+            InlineKeyboardButton("Images",callback_data=f"ttslide:{dl_id}:images"),
+            InlineKeyboardButton("Video",callback_data=f"ttslide:{dl_id}:video"),
+        ]
+    ]
+    if has_audio:
+        rows.append([InlineKeyboardButton("Audio",callback_data=f"ttslide:{dl_id}:audio")])
+    rows.append([InlineKeyboardButton("Cancel",callback_data=f"ttslide:{dl_id}:cancel")])
+    return InlineKeyboardMarkup(rows)

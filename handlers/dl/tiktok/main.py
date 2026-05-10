@@ -9,6 +9,7 @@ import asyncio
 import aiohttp
 import aiofiles
 import logging
+import subprocess
 from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR
@@ -50,6 +51,15 @@ TIKTOK_AIOHTTP_CHUNK_SIZE=int(os.getenv("TIKTOK_AIOHTTP_CHUNK_SIZE",str(256*1024
 TIKTOK_ALBUM_CHUNK_SIZE=int(os.getenv("TIKTOK_ALBUM_CHUNK_SIZE",str(256*1024)))
 ARIA2C_TIMEOUT=int(os.getenv("TIKTOK_ARIA2C_TIMEOUT","600"))
 AIOHTTP_DOWNLOAD_TIMEOUT=int(os.getenv("TIKTOK_AIOHTTP_TIMEOUT","600"))
+
+TIKTOK_SLIDESHOW_IMAGE_DURATION=float(os.getenv("TIKTOK_SLIDESHOW_IMAGE_DURATION","1.2"))
+TIKTOK_SLIDESHOW_WIDTH=int(os.getenv("TIKTOK_SLIDESHOW_WIDTH","720"))
+TIKTOK_SLIDESHOW_HEIGHT=int(os.getenv("TIKTOK_SLIDESHOW_HEIGHT","1280"))
+TIKTOK_SLIDESHOW_FPS=int(os.getenv("TIKTOK_SLIDESHOW_FPS","30"))
+TIKTOK_SLIDESHOW_TRANSITION=os.getenv("TIKTOK_SLIDESHOW_TRANSITION","slideleft").strip() or "slideleft"
+TIKTOK_SLIDESHOW_TRANSITION_DURATION=float(os.getenv("TIKTOK_SLIDESHOW_TRANSITION_DURATION","0.35"))
+TIKTOK_SLIDESHOW_MIN_IMAGE_DURATION=float(os.getenv("TIKTOK_SLIDESHOW_MIN_IMAGE_DURATION","0.6"))
+TIKTOK_SLIDESHOW_SYNC_AUDIO=os.getenv("TIKTOK_SLIDESHOW_SYNC_AUDIO","1").lower() in ("1","true","on","yes")
 
 def _ttdbg(msg:str,*args):
     if DEBUG_TIKTOK_LOG:
@@ -576,6 +586,20 @@ def _add_unique_urls(dst:list[str],value):
         if u and u not in dst:
             dst.append(u)
 
+def _extract_music_urls(item:dict)->list[str]:
+    music=item.get("music") or item.get("musicInfo") or {}
+    urls=[]
+    if isinstance(music,dict):
+        _add_unique_urls(urls,music.get("playUrl"))
+        _add_unique_urls(urls,music.get("play_url"))
+        _add_unique_urls(urls,music.get("playAddr"))
+        _add_unique_urls(urls,music.get("playAddrUrl"))
+        play_addr=music.get("playAddr") or music.get("play_addr") or {}
+        if isinstance(play_addr,dict):
+            _add_unique_urls(urls,play_addr.get("urlList") or play_addr.get("UrlList"))
+            _add_unique_urls(urls,play_addr.get("url") or play_addr.get("Uri"))
+    return urls
+    
 def _parse_direct_media(item:dict)->dict:
     desc=str(item.get("desc") or item.get("description") or "").strip()
     title=desc or "TikTok Video"
@@ -591,7 +615,15 @@ def _parse_direct_media(item:dict)->dict:
             if image_url:
                 images.append(image_url)
         if images:
-            return {"kind":"album","title":title,"desc":desc,"images":images}
+            music_urls=_extract_music_urls(item)
+            return {
+                "kind":"album",
+                "title":title,
+                "desc":desc,
+                "images":images,
+                "music_url":music_urls[0] if music_urls else "",
+                "music_urls":music_urls,
+            }
     video=item.get("video") or {}
     duration=_duration_meta(video.get("duration"),video.get("Duration"))
     width=_int_meta(video.get("width"),video.get("Width"))
@@ -963,15 +995,215 @@ async def _download_direct_album(media:dict,bot,chat_id,status_msg_id)->dict:
     log.info("TikTok direct scraping success | type=album source=%s items=%s",media.get("source"),len(items))
     return {"items":items,"title":title,"desc":media.get("desc") or "","source":media.get("source") or "scraping","kind":"album"}
 
+async def _download_slideshow_audio(media:dict,bot,chat_id,status_msg_id)->dict:
+    session=await get_http_session()
+    title=(media.get("title") or "TikTok Slideshow Audio").strip()
+    urls=[u for u in (media.get("music_urls") or []) if u]
+    if media.get("music_url") and media.get("music_url") not in urls:
+        urls.insert(0,media.get("music_url"))
+    if not urls:
+        raise RuntimeError("TikTok slideshow audio not found")
+    cookie_header=_cookie_header(media.get("cookies"))
+    headers={
+        "User-Agent":USER_AGENT,
+        "Referer":media.get("final_url") or media.get("resolved_url") or "https://www.tiktok.com/",
+        "Accept":"audio/*,*/*;q=0.8",
+        "Accept-Language":"en-US,en;q=0.9",
+    }
+    if cookie_header:
+        headers["Cookie"]=cookie_header
+    last_err=None
+    for idx,url in enumerate(urls,start=1):
+        out_path=f"{TMP_DIR}/{uuid.uuid4().hex}_{sanitize_filename(title)}.m4a"
+        try:
+            async with session.get(url,headers=headers,timeout=aiohttp.ClientTimeout(total=120),allow_redirects=True) as r:
+                if r.status>=400:
+                    raise RuntimeError(f"Audio HTTP {r.status}")
+                async with aiofiles.open(out_path,"wb") as f:
+                    async for chunk in r.content.iter_chunked(max(64*1024,int(TIKTOK_AIOHTTP_CHUNK_SIZE or 256*1024))):
+                        if chunk:
+                            await f.write(chunk)
+            if not os.path.exists(out_path) or os.path.getsize(out_path)<=0:
+                raise RuntimeError("Downloaded audio is empty")
+            log.info("TikTok slideshow audio saved | source=%s index=%s file=%s",media.get("source"),idx,out_path)
+            return {
+                "path":out_path,
+                "title":title,
+                "desc":media.get("desc") or "",
+                "source":media.get("source") or "scraping",
+                "kind":"audio",
+            }
+        except Exception as e:
+            last_err=e
+            log.warning("TikTok slideshow audio URL failed | index=%s total=%s err=%r",idx,len(urls),e)
+            _safe_remove_file(out_path,"failed slideshow audio")
+    raise RuntimeError(f"All TikTok slideshow audio URLs failed: {last_err}")
+
+def _ffprobe_duration(path:str)->float:
+    try:
+        result=subprocess.run(
+            ["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode==0:
+            return max(float((result.stdout or "0").strip() or 0),0.0)
+    except Exception as e:
+        log.warning("Failed to probe slideshow audio duration | file=%s err=%r",path,e)
+    return 0.0
+
+def _render_slideshow_video(image_paths:list[str],audio_path:str|None,out_path:str):
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found")
+    if not image_paths:
+        raise RuntimeError("No slideshow images to render")
+
+    audio_duration=_ffprobe_duration(audio_path) if audio_path else 0.0
+    base_duration=max(float(TIKTOK_SLIDESHOW_IMAGE_DURATION),0.3)
+    
+    if TIKTOK_SLIDESHOW_SYNC_AUDIO and audio_duration>0 and len(image_paths)>0:
+        per_image=max(audio_duration/len(image_paths),float(TIKTOK_SLIDESHOW_MIN_IMAGE_DURATION))
+    else:
+        per_image=base_duration
+    
+    transition=max(min(float(TIKTOK_SLIDESHOW_TRANSITION_DURATION),per_image-0.1),0.1)
+    transition_name=(TIKTOK_SLIDESHOW_TRANSITION or "slideleft").strip()
+    
+    log.info(
+        "TikTok slideshow timing | images=%s audio_duration=%.2fs per_image=%.2fs transition=%.2fs sync_audio=%s",
+        len(image_paths),audio_duration,per_image,transition,TIKTOK_SLIDESHOW_SYNC_AUDIO,
+    )
+
+    inputs=[]
+    filters=[]
+    video_labels=[]
+
+    for i,path in enumerate(image_paths):
+        inputs.extend(["-loop","1","-t",f"{per_image:.3f}","-i",path])
+        filters.append(
+            f"[{i}:v]"
+            f"scale={TIKTOK_SLIDESHOW_WIDTH}:{TIKTOK_SLIDESHOW_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={TIKTOK_SLIDESHOW_WIDTH}:{TIKTOK_SLIDESHOW_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+            f"fps={TIKTOK_SLIDESHOW_FPS},format=yuv420p,setsar=1"
+            f"[v{i}]"
+        )
+        video_labels.append(f"[v{i}]")
+
+    audio_index=len(image_paths)
+    if audio_path:
+        inputs.extend(["-i",audio_path])
+
+    if len(video_labels)==1:
+        filters.append(f"{video_labels[0]}copy[vout]")
+    else:
+        prev=video_labels[0]
+        for i in range(1,len(video_labels)):
+            out="[vout]" if i==len(video_labels)-1 else f"[vx{i}]"
+            offset=i*(per_image-transition)
+            filters.append(
+                f"{prev}{video_labels[i]}"
+                f"xfade=transition={transition_name}:duration={transition:.3f}:offset={offset:.3f}"
+                f"{out}"
+            )
+            prev=out
+
+    cmd=[
+        "ffmpeg","-y",
+        *inputs,
+        "-filter_complex",";".join(filters),
+        "-map","[vout]",
+    ]
+
+    if audio_path:
+        cmd.extend(["-map",f"{audio_index}:a:0"])
+
+    cmd.extend([
+        "-c:v","libx264",
+        "-preset","veryfast",
+        "-crf","23",
+        "-pix_fmt","yuv420p",
+        "-movflags","+faststart",
+    ])
+
+    if audio_path:
+        cmd.extend(["-c:a","aac","-b:a","128k","-shortest"])
+
+    cmd.append(out_path)
+
+    result=subprocess.run(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=300,
+    )
+
+    if result.returncode!=0:
+        raise RuntimeError((result.stderr or "ffmpeg slideshow render failed")[-1500:])
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path)<=0:
+        raise RuntimeError("Slideshow render output is empty")
+
+async def _download_direct_slideshow_video(media:dict,bot,chat_id,status_msg_id)->dict:
+    session=await get_http_session()
+    title=(media.get("title") or "TikTok Slideshow").strip()
+    image_urls=[u for u in (media.get("images") or []) if u]
+    if not image_urls:
+        raise RuntimeError("TikTok slideshow images not found")
+    cookie_header=_cookie_header(media.get("cookies"))
+    headers={"User-Agent":USER_AGENT,"Referer":media.get("final_url") or media.get("resolved_url") or "https://www.tiktok.com/"}
+    if cookie_header:
+        headers["Cookie"]=cookie_header
+    await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Downloading TikTok slideshow images...</b>",min_interval=0)
+    items=await _download_album_images(session,image_urls,title,bot,chat_id,status_msg_id,headers=headers)
+    image_paths=[item.get("path") for item in items if item.get("path")]
+    audio_meta=None
+    audio_path=None
+    out_path=f"{TMP_DIR}/{uuid.uuid4().hex}_{sanitize_filename(title)}_slideshow.mp4"
+    try:
+        if media.get("music_url") or media.get("music_urls"):
+            await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Downloading TikTok slideshow audio...</b>",min_interval=0)
+            audio_meta=await _download_slideshow_audio(media,bot,chat_id,status_msg_id)
+            audio_path=audio_meta.get("path")
+        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Converting slideshow to MP4...</b>",min_interval=0)
+        await asyncio.to_thread(_render_slideshow_video,image_paths,audio_path,out_path)
+        duration=int(round(_ffprobe_duration(out_path)))
+        log.info("TikTok slideshow rendered | source=%s images=%s audio=%s file=%s",media.get("source"),len(image_paths),bool(audio_path),out_path)
+        return {
+            "path":out_path,
+            "title":title,
+            "desc":media.get("desc") or "",
+            "source":media.get("source") or "scraping",
+            "kind":"video",
+            "duration":duration,
+            "width":TIKTOK_SLIDESHOW_WIDTH,
+            "height":TIKTOK_SLIDESHOW_HEIGHT,
+        }
+    except Exception:
+        _safe_remove_file(out_path,"failed slideshow video")
+        raise
+    finally:
+        for path in image_paths:
+            _safe_remove_file(path,"slideshow image")
+        _safe_remove_file(audio_path,"slideshow audio")
+        
 async def _download_tiktok_media(media:dict,bot,chat_id,status_msg_id,fmt_key="mp4"):
     kind=media.get("kind")
+    if kind=="album" and fmt_key in ("video","mp4"):
+        return {"choice_required":"tiktok_slideshow","media":media}
     if fmt_key=="mp3":
+        if kind=="album":
+            return await _download_slideshow_audio(media,bot,chat_id,status_msg_id)
         if kind!="video":
-            raise RuntimeError("TikTok slideshow does not contain audio")
+            raise RuntimeError("TikTok media does not contain audio")
         return await _download_direct_video(media,bot,chat_id,status_msg_id)
     if kind=="video":
         return await _download_direct_video(media,bot,chat_id,status_msg_id)
     if kind=="album":
+        if fmt_key=="slideshow_video":
+            return await _download_direct_slideshow_video(media,bot,chat_id,status_msg_id)
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Downloading TikTok slideshow...</b>",min_interval=0)
         return await _download_direct_album(media,bot,chat_id,status_msg_id)
     raise RuntimeError("Unsupported TikTok media type")

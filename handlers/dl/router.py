@@ -15,7 +15,7 @@ from .constants import TMP_DIR,DL_FORMATS,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOM
 from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
 from .utils import normalize_url,is_invalid_video
-from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard
+from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
 from .probe import get_resolutions,supports_resolution_picker,supports_ytdlp_resolution
 from .tiktok.main import is_tiktok,douyin_download,tiktok_download
 from .service import download_non_tiktok,send_downloaded_media
@@ -140,6 +140,7 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
             engine=engine,
             message_thread_id=data.get("message_thread_id",getattr(message,"message_thread_id",None)),
             metadata_ready=status_ready,
+            user_id=data.get("user"),
         )
     )
 
@@ -323,7 +324,31 @@ async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"download request menu")
     await q.edit_message_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
 
-async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,_flood_retry:int=0):
+async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,media:dict,message_thread_id=None):
+    dl_id=uuid.uuid4().hex[:8]
+    media["slideshow_choice_ready"]=True
+    DL_CACHE[dl_id]={
+        "url":data.get("url"),
+        "user":data.get("user"),
+        "reply_to":data.get("reply_to"),
+        "message_thread_id":message_thread_id or data.get("message_thread_id"),
+        "media":media,
+        "ts":time.time(),
+    }
+    has_audio=bool(media.get("music_url") or media.get("music_urls"))
+    text=(
+        "<b>TikTok Slideshow Detected</b>\n\n"
+        "Choose output format:"
+    )
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=status_msg_id,
+        text=text,
+        reply_markup=tiktok_slideshow_keyboard(dl_id,has_audio=has_audio),
+        parse_mode="HTML",
+    )
+    
+async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0):
     bot=app.bot
     path=None
     try:
@@ -334,8 +359,28 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
         if is_tiktok(raw_url):
             async with TIKTOK_LOCK:
                 path=await tiktok_download(raw_url,bot,chat_id,status_msg_id,fmt_key,metadata_ready=metadata_ready)
+                if isinstance(path,dict) and path.get("choice_required")=="tiktok_slideshow":
+                    data={
+                        "url":raw_url,
+                        "user":user_id,
+                        "reply_to":reply_to,
+                        "message_thread_id":message_thread_id,
+                    }
+                    await _show_tiktok_slideshow_picker(
+                        bot=bot,
+                        chat_id=chat_id,
+                        status_msg_id=status_msg_id,
+                        data=data,
+                        media=path.get("media") or {},
+                        message_thread_id=message_thread_id,
+                    )
+                    return
+        
                 actual_path=path.get("path") if isinstance(path,dict) else path
-                if actual_path and is_invalid_video(actual_path):
+                result_kind=str((path or {}).get("kind") or "").lower() if isinstance(path,dict) else ""
+                should_validate_video=fmt_key!="mp3" and result_kind!="audio"
+        
+                if should_validate_video and actual_path and is_invalid_video(actual_path):
                     await _remove_file(actual_path,"invalid TikTok")
                     raise RuntimeError("Static video")
         else:
@@ -383,6 +428,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                 engine=engine,
                 message_thread_id=message_thread_id,
                 metadata_ready=metadata_ready,
+                user_id=user_id,
                 _flood_retry=_flood_retry+1,
             )
         log.warning("Download worker failed | chat_id=%s url=%s err=%r",chat_id,raw_url,e)
@@ -463,6 +509,42 @@ async def dl_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text("Cancelled")
     return await _process_choice(context=context,message=q.message,dl_id=dl_id,data=data,choice=choice,user_id=q.from_user.id)
 
+async def tiktok_slideshow_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not await require_join_or_block(update,context):
+        return
+    q=update.callback_query
+    if not q or not q.data:
+        return
+    await q.answer()
+    _,dl_id,choice=q.data.split(":",2)
+    data=DL_CACHE.get(dl_id)
+    if not data:
+        return await q.edit_message_text("Request expired")
+    if q.from_user.id!=data["user"]:
+        return await q.answer("This is not your request",show_alert=True)
+    if choice=="cancel":
+        DL_CACHE.pop(dl_id,None)
+        return await q.edit_message_text("Cancelled")
+    fmt_map={
+        "images":"slideshow_images",
+        "video":"slideshow_video",
+        "audio":"mp3",
+    }
+    fmt_key=fmt_map.get(choice)
+    if not fmt_key:
+        return await q.edit_message_text("Invalid slideshow option")
+    await q.edit_message_text(_metadata_status(data["url"]),parse_mode="HTML")
+    DL_CACHE.pop(dl_id,None)
+    return await _start_dl_task(
+        context=context,
+        message=q.message,
+        data=data,
+        fmt_key=fmt_key,
+        format_id=None,
+        has_audio=False,
+        status_ready=True,
+    )
+    
 async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
         return
