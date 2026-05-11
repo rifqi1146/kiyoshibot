@@ -12,6 +12,7 @@ DEFAULT_ASUPAN_KEYWORDS = [
     "acaawra0",
     "ayaa_1a6",
     "kindiii1_",
+    "kailaa.nii",
     "tasyaa_191",
     "ceacantik3",
     "samanthaawaa",

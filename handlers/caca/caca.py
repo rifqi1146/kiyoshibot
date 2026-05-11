@@ -94,28 +94,40 @@ async def _reply_thread(bot,msg,text,parse_mode=None):
             return await bot.send_message(**kwargs)
 
 def _normalize_caca_output(text:str)->str:
-    text=(text or "").replace("\r\n","\n").replace("\r","\n")
-    text=re.sub(r"\n[ \t]+\n","\n\n",text)
-    lines=[line.strip() for line in text.split("\n")]
-    merged=[]
-    i=0
-    while i<len(lines):
-        line=lines[i]
+    text=html.unescape(text or "")
+    text=text.replace("\r\n","\n").replace("\r","\n")
+
+    text=re.sub(r"<[^>\n]+>"," ",text)
+
+    text=re.sub(r"\b/?(?:b|i|u|s|code|pre|strong|em|tg-spoiler)\b"," ",text,flags=re.I)
+
+    text=re.sub(r"&[a-zA-Z#0-9]+;"," ",text)
+
+    text=re.sub(r"[ \t]+"," ",text)
+    text=re.sub(r"\n\s*\n+","\n",text)
+
+    lines=[]
+    for line in text.split("\n"):
+        line=line.strip()
+
         if not line:
-            i+=1
             continue
-        if i+1<len(lines) and lines[i+1]:
-            current=line
-            nxt=lines[i+1]
-            if len(current)<=35:
-                merged.append(f"{current} {nxt}".strip())
-                i+=2
-                continue
-        merged.append(line)
-        i+=1
-    text="\n".join(merged)
-    text=re.sub(r"\n{2,}","\n",text)
-    text=re.sub(r"[ \t]{2,}"," ",text)
+
+        line=re.sub(r"\s+"," ",line)
+
+        if (
+            lines
+            and len(lines[-1])<=35
+            and not re.search(r"[.!?:]$",lines[-1])
+        ):
+            lines[-1]+=f" {line}"
+        else:
+            lines.append(line)
+
+    text="\n".join(lines)
+
+    text=re.sub(r"\s{2,}"," ",text)
+
     return text.strip()
 
 def _strip_thinking_leak(text:str)->str:
