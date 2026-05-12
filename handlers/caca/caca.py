@@ -105,25 +105,17 @@ async def _reply_thread(bot,msg,text,parse_mode=None):
 def _normalize_caca_output(text:str)->str:
     text=html.unescape(text or "")
     text=text.replace("\r\n","\n").replace("\r","\n")
-
     text=re.sub(r"<[^>\n]+>"," ",text)
-
     text=re.sub(r"\b/?(?:b|i|u|s|code|pre|strong|em|tg-spoiler)\b"," ",text,flags=re.I)
-
     text=re.sub(r"&[a-zA-Z#0-9]+;"," ",text)
-
     text=re.sub(r"[ \t]+"," ",text)
     text=re.sub(r"\n\s*\n+","\n",text)
-
     lines=[]
     for line in text.split("\n"):
         line=line.strip()
-
         if not line:
             continue
-
         line=re.sub(r"\s+"," ",line)
-
         if (
             lines
             and len(lines[-1])<=35
@@ -132,11 +124,8 @@ def _normalize_caca_output(text:str)->str:
             lines[-1]+=f" {line}"
         else:
             lines.append(line)
-
     text="\n".join(lines)
-
     text=re.sub(r"\s{2,}"," ",text)
-
     return text.strip()
 
 def _strip_thinking_leak(text:str)->str:
