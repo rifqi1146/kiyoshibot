@@ -13,7 +13,7 @@ DEFAULT_ASUPAN_KEYWORDS = [
     "ayaa_1a6",
     "estehmanisanget071",
     "kindiii1_",
-    "shel_ytta
+    "shel_ytta",
     "kailaa.nii",
     "tasyaa_191",
     "ceacantik3",
