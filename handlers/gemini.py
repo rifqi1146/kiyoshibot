@@ -15,20 +15,28 @@ from utils import gemini_memory
 log=logging.getLogger(__name__)
 LOCAL_CONTEXTS=load_local_contexts()
 
-async def _typing_loop(bot,chat_id,stop:asyncio.Event,message_thread_id=None):
+async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_id=None):
     try:
-        while not stop.is_set():
-            await bot.send_chat_action(
-                chat_id=chat_id,
-                action=ChatAction.TYPING,
-                message_thread_id=message_thread_id,
-            )
-            await asyncio.sleep(4)
+        kwargs = {
+            "chat_id": chat_id,
+            "action": ChatAction.TYPING,
+        }
+        if message_thread_id:
+            kwargs["message_thread_id"] = message_thread_id
+        while not stop_event.is_set():
+            try:
+                await bot.send_chat_action(**kwargs)
+            except Exception as api_err:
+                log.warning("Typing action gagal, hapus thread_id. Error: %s", api_err)
+                kwargs.pop("message_thread_id", None)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=4.0)
+            except asyncio.TimeoutError:
+                pass
     except asyncio.CancelledError:
-        log.debug("Gemini typing loop cancelled | chat_id=%s thread_id=%s",chat_id,message_thread_id)
-        raise
+        log.debug("Gemini typing task cancelled")
     except Exception as e:
-        log.warning("Gemini typing loop stopped | chat_id=%s thread_id=%s err=%r",chat_id,message_thread_id,e)
+        log.warning("Gemini typing loop stopped | err=%r", e)
 
 async def _stop_typing_task(stop,typing):
     if stop:
@@ -173,7 +181,8 @@ async def ai_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not prompt:
         return
     try:
-        thread_id=getattr(msg,"message_thread_id",None)
+        is_forum = getattr(msg.chat, "is_forum", False)
+        thread_id = msg.message_thread_id if is_forum else None
         stop=asyncio.Event()
         typing=asyncio.create_task(_typing_loop(context.bot,msg.chat_id,stop,thread_id))
         history=[] if fresh_session else await gemini_memory.get_history(user_id)

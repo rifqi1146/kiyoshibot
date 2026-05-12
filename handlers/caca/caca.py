@@ -64,9 +64,9 @@ async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_i
             except asyncio.TimeoutError:
                 pass
     except asyncio.CancelledError:
-        log.debug("Groq typing task cancelled")
+        log.debug("Caca typing task cancelled")
     except Exception as e:
-        log.warning("Groq typing loop stopped | err=%r", e)
+        log.warning("Caca typing loop stopped | err=%r", e)
 
 async def _stop_typing_task(stop,typing):
     if stop:
