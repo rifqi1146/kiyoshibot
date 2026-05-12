@@ -45,19 +45,28 @@ def _get_thread_id(msg):
         return getattr(reply,"message_thread_id",None)
     return None
 
-async def _typing_loop(bot,chat_id,stop:asyncio.Event):
+async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_id=None):
     try:
-        while not stop.is_set():
-            await bot.send_chat_action(
-                chat_id=chat_id,
-                action=ChatAction.TYPING,
-            )
-            await asyncio.sleep(4)
+        kwargs = {
+            "chat_id": chat_id,
+            "action": ChatAction.TYPING,
+        }
+        if message_thread_id:
+            kwargs["message_thread_id"] = message_thread_id
+        while not stop_event.is_set():
+            try:
+                await bot.send_chat_action(**kwargs)
+            except Exception as api_err:
+                log.warning("Typing action gagal, hapus thread_id. Error: %s", api_err)
+                kwargs.pop("message_thread_id", None)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=4.0)
+            except asyncio.TimeoutError:
+                pass
     except asyncio.CancelledError:
-        logger.debug("Caca typing loop cancelled | chat_id=%s",chat_id)
-        raise
+        log.debug("Groq typing task cancelled")
     except Exception as e:
-        logger.warning("Caca typing loop stopped | chat_id=%s err=%r",chat_id,e)
+        log.warning("Groq typing loop stopped | err=%r", e)
 
 async def _stop_typing_task(stop,typing):
     if stop:
@@ -440,8 +449,9 @@ async def meta_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if not prompt and not image_data_url:
             return
         logger.debug("Caca typing start | chat_id=%s message_id=%s has_reply=%s",msg.chat_id,msg.message_id,bool(msg.reply_to_message))
-        stop=asyncio.Event()
-        typing=asyncio.create_task(_typing_loop(context.bot,msg.chat_id,stop))
+        stop = asyncio.Event()
+        thread_id = _get_thread_id(msg)
+        typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, message_thread_id=thread_id))
         search_context=""
         if use_search:
             try:
