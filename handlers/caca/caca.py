@@ -37,6 +37,8 @@ def _cleanup_memory():
         logger.warning("Failed to schedule Caca memory cleanup | err=%r",e)
 
 def _get_thread_id(msg):
+    if not getattr(msg.chat, "is_forum", False):
+        return None
     thread_id=getattr(msg,"message_thread_id",None)
     if thread_id:
         return thread_id
@@ -58,7 +60,10 @@ async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_i
                 await bot.send_chat_action(**kwargs)
             except Exception as api_err:
                 logger.warning("Typing action gagal, hapus thread_id. Error: %s", api_err)
-                kwargs.pop("message_thread_id", None)
+                if "message_thread_id" in kwargs:
+                    kwargs.pop("message_thread_id", None)
+                    # Langsung gas retry saat itu juga tanpa nunggu 4 detik
+                    continue
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=4.0)
             except asyncio.TimeoutError:
@@ -67,6 +72,7 @@ async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_i
         logger.debug("Caca typing task cancelled")
     except Exception as e:
         logger.warning("Caca typing loop stopped | err=%r", e)
+
 
 async def _stop_typing_task(stop,typing):
     if stop:
