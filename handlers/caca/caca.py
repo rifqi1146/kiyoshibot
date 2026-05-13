@@ -57,16 +57,16 @@ async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_i
             try:
                 await bot.send_chat_action(**kwargs)
             except Exception as api_err:
-                log.warning("Typing action gagal, hapus thread_id. Error: %s", api_err)
+                logger.warning("Typing action gagal, hapus thread_id. Error: %s", api_err)
                 kwargs.pop("message_thread_id", None)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=4.0)
             except asyncio.TimeoutError:
                 pass
     except asyncio.CancelledError:
-        log.debug("Caca typing task cancelled")
+        logger.debug("Caca typing task cancelled")
     except Exception as e:
-        log.warning("Caca typing loop stopped | err=%r", e)
+        logger.warning("Caca typing loop stopped | err=%r", e)
 
 async def _stop_typing_task(stop,typing):
     if stop:
