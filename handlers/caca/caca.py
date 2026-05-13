@@ -13,7 +13,7 @@ from database import caca_db
 from utils import caca_memory
 from utils.config import CLOUDFLARE_ACCOUNT_ID,CLOUDFLARE_AUTH_TOKEN,CLOUDFLARE_MODEL
 
-log=logging.getLogger(__name__)
+logger=logging.getLogger(__name__)
 CLOUDFLARE_TIMEOUT=int(os.getenv("CLOUDFLARE_TIMEOUT","60"))
 TMP_DIR=os.getenv("TMP_DIR","downloads")
 CACA_IMAGE_MAX_SIZE=int(os.getenv("CACA_IMAGE_MAX_SIZE",str(5*1024*1024)))
