@@ -15,8 +15,7 @@ psutil
 python-dateutil
 six
 python-whois
-yt-dlp
-yt-dlp-ejs
+yt-dlp[default]
 gallery-dl
 deep-translator
 dnspython
