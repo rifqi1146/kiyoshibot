@@ -5,6 +5,8 @@ import uuid
 import html
 import shutil
 import json
+import hashlib
+import base64
 import asyncio
 import aiohttp
 import aiofiles
@@ -60,6 +62,56 @@ TIKTOK_SLIDESHOW_TRANSITION=os.getenv("TIKTOK_SLIDESHOW_TRANSITION","slideleft")
 TIKTOK_SLIDESHOW_TRANSITION_DURATION=float(os.getenv("TIKTOK_SLIDESHOW_TRANSITION_DURATION","0.6"))
 TIKTOK_SLIDESHOW_MIN_IMAGE_DURATION=float(os.getenv("TIKTOK_SLIDESHOW_MIN_IMAGE_DURATION","0.6"))
 TIKTOK_SLIDESHOW_SYNC_AUDIO=os.getenv("TIKTOK_SLIDESHOW_SYNC_AUDIO","1").lower() in ("1","true","on","yes")
+
+def _decode_tt_base64(val: str) -> bytes:
+    padding = (4 - len(val) % 4) % 4
+    return base64.b64decode(val + ("=" * padding))
+
+def _solve_tt_challenge(html_text: str) -> str:
+    wci_match = re.search(r'(?is)<[^>]+\bid="wci"[^>]*\bclass="([^"]*)"', html_text)
+    cs_match = re.search(r'(?is)<[^>]+\bid="cs"[^>]*\bclass="([^"]*)"', html_text)
+    rci_match = re.search(r'(?is)<[^>]+\bid="rci"[^>]*\bclass="([^"]*)"', html_text)
+    rs_match = re.search(r'(?is)<[^>]+\bid="rs"[^>]*\bclass="([^"]*)"', html_text)
+    
+    if not wci_match or not cs_match:
+        return ""
+        
+    chal_name = wci_match.group(1).strip()
+    chal_enc = cs_match.group(1).strip()
+    
+    try:
+        chal_bytes = _decode_tt_base64(chal_enc)
+        chal_data = json.loads(chal_bytes)
+        
+        v = chal_data.get("v", {})
+        base_val = _decode_tt_base64(v.get("a", ""))
+        expected_digest = _decode_tt_base64(v.get("c", ""))
+        
+        solution = ""
+        for i in range(1_000_000 + 1):
+            candidate = base_val + str(i).encode('utf-8')
+            if hashlib.sha256(candidate).digest() == expected_digest:
+                solution = str(i)
+                break
+                
+        if not solution:
+            return ""
+            
+        chal_data["d"] = base64.b64encode(solution.encode('utf-8')).decode('utf-8')
+        chal_cookie_val = base64.b64encode(json.dumps(chal_data, separators=(',', ':')).encode('utf-8')).decode('utf-8')
+        
+        cookies = [f"{chal_name}={chal_cookie_val}"]
+        
+        if rci_match and rs_match:
+            rci = rci_match.group(1).strip()
+            rs = rs_match.group(1).strip()
+            if rci:
+                cookies.append(f"{rci}={rs}")
+                
+        return "; ".join(cookies)
+    except Exception as e:
+        log.warning("Failed to solve TikTok challenge | err=%r", e)
+        return ""
 
 def _ttdbg(msg:str,*args):
     if DEBUG_TIKTOK_LOG:
@@ -805,13 +857,28 @@ async def _fetch_tiktok_govd_fast(url:str)->dict:
     session=await get_http_session()
     target=f"https://www.tiktok.com/@_/video/{aweme_id}"
     headers=_build_tiktok_headers("https://www.tiktok.com/",resolved_cookie)
+    
     async with session.get(target,headers=headers,timeout=aiohttp.ClientTimeout(total=12),allow_redirects=True) as resp:
         final_url=str(resp.url)
         status=resp.status
         html_text=await resp.text()
         resp_cookie=_cookie_header([{"name":c.key,"value":c.value} for c in resp.cookies.values()])
         merged_cookie=_merge_cookie_headers(headers.get("Cookie",""),resp_cookie)
-        _ttdbg("fast fetch | target=%s status=%s final=%s len=%s cookie=%s",target,status,final_url,len(html_text),bool(merged_cookie))
+
+    if "Please wait..." in html_text and 'id="cs"' in html_text and 'id="wci"' in html_text:
+        log.info("TikTok challenge detected, solving PoW...")
+        chal_cookie = await asyncio.to_thread(_solve_tt_challenge, html_text)
+        if chal_cookie:
+            headers["Cookie"] = _merge_cookie_headers(merged_cookie, chal_cookie)
+            async with session.get(target,headers=headers,timeout=aiohttp.ClientTimeout(total=12),allow_redirects=True) as resp2:
+                final_url=str(resp2.url)
+                status=resp2.status
+                html_text=await resp2.text()
+                resp_cookie2=_cookie_header([{"name":c.key,"value":c.value} for c in resp2.cookies.values()])
+                merged_cookie=_merge_cookie_headers(headers.get("Cookie",""),resp_cookie2)
+
+    _ttdbg("fast fetch | target=%s status=%s final=%s len=%s cookie=%s",target,status,final_url,len(html_text),bool(merged_cookie))
+    
     item_struct=_extract_item_struct(html_text,final_url)
     media=_parse_direct_media(item_struct)
     media["cookies"]=_cookies_from_header(merged_cookie)
@@ -838,6 +905,7 @@ async def _fetch_tiktok_direct(url:str,bot=None)->dict:
     html_text=""
     merged_cookie=resolved_cookie
     headers_dump={}
+    
     for attempt in range(5):
         try:
             async with session.get(target,headers=headers,timeout=aiohttp.ClientTimeout(total=25),allow_redirects=True) as resp:
@@ -847,7 +915,21 @@ async def _fetch_tiktok_direct(url:str,bot=None)->dict:
                 resp_cookie=_cookie_header([{"name":c.key,"value":c.value} for c in resp.cookies.values()])
                 merged_cookie=_merge_cookie_headers(headers.get("Cookie",""),resp_cookie)
                 headers_dump=dict(resp.headers)
-                _ttdbg("aiohttp fetch | attempt=%s target=%s status=%s final=%s len=%s cookie=%s resolved=%s",attempt+1,target,status,final_url,len(html_text),bool(merged_cookie),resolved)
+            
+            if "Please wait..." in html_text and 'id="cs"' in html_text and 'id="wci"' in html_text:
+                log.info("TikTok challenge detected in full-scraping, solving PoW...")
+                chal_cookie = await asyncio.to_thread(_solve_tt_challenge, html_text)
+                if chal_cookie:
+                    headers["Cookie"] = _merge_cookie_headers(merged_cookie, chal_cookie)
+                    async with session.get(target,headers=headers,timeout=aiohttp.ClientTimeout(total=25),allow_redirects=True) as resp2:
+                        final_url=str(resp2.url)
+                        status=resp2.status
+                        html_text=await resp2.text()
+                        resp_cookie2=_cookie_header([{"name":c.key,"value":c.value} for c in resp2.cookies.values()])
+                        merged_cookie=_merge_cookie_headers(headers.get("Cookie",""),resp_cookie2)
+                        headers_dump=dict(resp2.headers)
+
+            _ttdbg("aiohttp fetch | attempt=%s target=%s status=%s final=%s len=%s cookie=%s resolved=%s",attempt+1,target,status,final_url,len(html_text),bool(merged_cookie),resolved)
             item_struct=_extract_item_struct(html_text,final_url)
             break
         except Exception as e:
@@ -879,6 +961,7 @@ async def _fetch_tiktok_direct(url:str,bot=None)->dict:
                         "has_cookie":bool(merged_cookie),
                     })
                 raise RuntimeError(f"TikTok scraping failed: aiohttp={last_aio_err} ; scrapling={scrap_err}") from scrap_err
+                
     media=_parse_direct_media(item_struct)
     media["cookies"]=_cookies_from_header(merged_cookie)
     media["resolved_url"]=resolved
@@ -887,6 +970,7 @@ async def _fetch_tiktok_direct(url:str,bot=None)->dict:
     media["final_url"]=final_url
     media["source"]="full-scraping"
     return media
+
 
 async def _fetch_tiktok_metadata(url:str,bot=None,chat_id=None,status_msg_id=None,metadata_ready:bool=False)->dict:
     fast_err=None
