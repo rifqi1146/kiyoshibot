@@ -447,7 +447,10 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not msg or not update.effective_user:
         return
     if not context.args:
-        return await msg.reply_text("Send a TikTok link / YT-dlp supported platform link")
+        return await msg.reply_text(
+            "Send a video link to download.\n\n"
+            "By using this downloader, you are responsible for the content you download and how you use it."
+        )
     url=context.args[0]
     if is_premium_required(url,PREMIUM_ONLY_DOMAINS) and not is_premium_user(update.effective_user.id):
         return await msg.reply_text("🔞 Download from this website is for premium users only")
