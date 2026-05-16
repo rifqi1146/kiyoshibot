@@ -136,41 +136,42 @@ HELP_TEXT = {
 
     "terms": (
         "<b>Terms of Use</b>\n\n"
-        "Before using this bot, please understand these simple rules:\n\n"
+        "By using this bot, you agree to the following terms:\n\n"
 
-        "<b>1. Your Responsibility</b>\n"
-        "You are responsible for the links you send, the commands you use, "
-        "and any files or content you download through this bot.\n\n"
+        "<b>1. User Responsibility</b>\n"
+        "You are fully responsible for every command you run, every link you submit, "
+        "and every file or content you download using this bot.\n\n"
 
         "<b>2. Downloader Usage</b>\n"
-        "The downloader feature is only a tool to help process links. "
-        "Please make sure you have the right to download, save, share, or reuse any content.\n\n"
+        "The downloader feature is provided only as a technical tool. "
+        "You must make sure that you have the right or permission to download, save, "
+        "share, or reuse any content from third-party platforms.\n\n"
 
-        "Do not use this bot to download or share content that is:\n"
+        "You agree not to use this bot to download or distribute content that is:\n"
         "• Copyrighted without permission\n"
         "• Private or restricted\n"
-        "• Paid content without proper access\n"
-        "• Illegal, harmful, or used to violate someone else's rights\n\n"
+        "• Paid content without authorization\n"
+        "• Illegal, harmful, abusive, or used to violate someone else's rights\n\n"
 
         "<b>3. Third-Party Platforms</b>\n"
-        "This bot is not connected to Instagram, TikTok, YouTube, Facebook, X, "
-        "or any other platform. Each platform has its own rules, and you are responsible "
-        "for following them.\n\n"
+        "This bot is not affiliated with Instagram, TikTok, YouTube, Facebook, X, "
+        "or any other third-party platform. Each platform may have its own terms, "
+        "rules, and restrictions. You are responsible for following them.\n\n"
 
-        "<b>4. Content Ownership</b>\n"
-        "This bot does not own or claim any content downloaded through it. "
-        "All rights belong to the original owners.\n\n"
+        "<b>4. No Ownership Claim</b>\n"
+        "This bot does not claim ownership of any content downloaded through it. "
+        "All rights belong to their respective owners.\n\n"
 
-        "<b>5. Service Availability</b>\n"
-        "This bot is provided as-is. Some features may fail, change, stop working, "
-        "or be limited at any time because of technical issues, platform changes, "
+        "<b>5. No Guarantee</b>\n"
+        "The bot is provided as-is. Features may fail, change, stop working, "
+        "or be limited at any time due to technical issues, platform changes, "
         "rate limits, or maintenance.\n\n"
 
-        "<b>6. Misuse</b>\n"
-        "Access may be limited or blocked if the bot is used for spam, abuse, overload, "
-        "or harmful activity.\n\n"
+        "<b>6. Abuse and Restrictions</b>\n"
+        "The bot owner may limit, block, or disable access for users who abuse the service, "
+        "spam commands, overload the bot, or use the bot for harmful activities.\n\n"
 
-        "By continuing to use this bot, you agree to these terms."
+        "By continuing to use this bot, you confirm that you understand and accept these terms."
     ),
     
     "settings": (
