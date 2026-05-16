@@ -24,9 +24,9 @@ except Exception as e:
 _CLIENT=None
 _CLIENT_LOCK=asyncio.Lock()
 _PROGRESS_LOCKS={}
-_SESSION_NAME=os.getenv("MTPROTO_SESSION","data/mtproto_bot")
+_SESSION_NAME=os.getenv("MTPROTO_SESSION","tgdata/mtproto_bot")
 _ENABLED=os.getenv("MTPROTO_UPLOAD","1").lower() not in ("0","false","off","no")
-_FAST_STATE_FILE=os.getenv("MTPROTO_FAST_STATE_FILE","data/fasttelethon.json")
+_FAST_STATE_FILE=os.getenv("MTPROTO_FAST_STATE_FILE","tgdata/fasttelethon.json")
 _FAST_UPLOAD_DEFAULT=os.getenv("MTPROTO_FAST_UPLOAD","0").lower() in ("1","true","on","yes")
 _PROGRESS_MIN_BYTES=int(os.getenv("MTPROTO_PROGRESS_MIN_BYTES",str(5*1024*1024)))
 _PROGRESS_SMALL_LIMIT=int(os.getenv("MTPROTO_PROGRESS_SMALL_LIMIT",str(100*1024*1024)))

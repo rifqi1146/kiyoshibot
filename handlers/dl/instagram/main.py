@@ -22,6 +22,10 @@ log=logging.getLogger(__name__)
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 _LAST_IG_STATUS_TEXT={}
 
+IG_PROGRESS=os.getenv("INSTAGRAM_PROGRESS","1").lower() in ("1","true","on","yes")
+IG_PROGRESS_INTERVAL=float(os.getenv("INSTAGRAM_PROGRESS_INTERVAL","1.5"))
+IG_AIOHTTP_CHUNK_SIZE=int(os.getenv("INSTAGRAM_AIOHTTP_CHUNK_SIZE",str(256*1024)))
+
 GRAPHQL_ENDPOINT="https://www.instagram.com/graphql/query/"
 POLARIS_ACTION="PolarisPostActionLoadPostQueryQuery"
 GRAPHQL_DOC_ID="8845758582119845"
@@ -407,6 +411,27 @@ def _format_size(num_bytes:int)->str:
         value/=1024
     return f"{value:.1f} TB"
 
+def _format_speed(bytes_per_sec:float)->str:
+    if bytes_per_sec<=0:
+        return "0 B/s"
+    value=float(bytes_per_sec)
+    for unit in ("B/s","KB/s","MB/s","GB/s"):
+        if value<1024 or unit=="GB/s":
+            return f"{int(value)} {unit}" if unit=="B/s" else f"{value:.1f} {unit}"
+        value/=1024
+    return f"{value:.1f} GB/s"
+
+def _format_eta(seconds:float)->str:
+    if seconds<=0:
+        return "0s"
+    seconds=int(seconds)
+    h,m,s=seconds//3600,(seconds%3600)//60,seconds%60
+    if h>0:
+        return f"{h}h {m}m {s}s"
+    if m>0:
+        return f"{m}m {s}s"
+    return f"{s}s"
+    
 def _safe_title(media_type:str,count:int)->str:
     if count>1:
         return "Instagram Media"
@@ -654,40 +679,97 @@ def _download_candidates(url:str)->list[str]:
             out.append(item)
     return out
 
-async def _safe_edit_status(bot,chat_id,message_id,text:str):
+async def _safe_edit_status(bot,chat_id,message_id,text:str,min_interval:float=1.2):
+    if not bot or not chat_id or not message_id:
+        return
+    cache=getattr(bot,"_ig_status_edit_cache",{})
     key=(int(chat_id),int(message_id))
     text=str(text or "")
-    if _LAST_IG_STATUS_TEXT.get(key)==text:
+    now=time.monotonic()
+    prev=cache.get(key) or {}
+
+    if prev.get("text")==text:
         return
+    if now-prev.get("ts",0)<min_interval:
+        return
+
+    for _ in range(2):
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            cache[key]={"text":text,"ts":time.monotonic()}
+            setattr(bot,"_ig_status_edit_cache",cache)
+            return
+        except RetryAfter as e:
+            wait=max(int(getattr(e,"retry_after",1)),1)
+            log.warning("Instagram status RetryAfter | chat_id=%s wait=%s",chat_id,wait)
+            await asyncio.sleep(wait+1)
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                cache[key]={"text":text,"ts":time.monotonic()}
+                setattr(bot,"_ig_status_edit_cache",cache)
+                return
+            log.warning("Failed to edit Instagram status | chat_id=%s message_id=%s err=%r",chat_id,message_id,e)
+            return
+
+async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
+    if not IG_PROGRESS or not bot or not chat_id or not status_msg_id:
+        return
+
+    lines=[f"<b>{html.escape(title)}</b>",""]
+
+    if total>0:
+        pct=min(downloaded*100/total,100.0)
+        lines.append(f"<code>{html.escape(progress_bar(pct))}</code>")
+        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))}</code>")
+    else:
+        lines.append(f"<code>{html.escape(_format_size(downloaded))} downloaded</code>")
+
+    if speed_bps>0:
+        lines.append(f"<code>Speed: {html.escape(_format_speed(speed_bps))}</code>")
+
+    if eta_seconds is not None and eta_seconds>=0 and total>0 and speed_bps>0:
+        lines.append(f"<code>ETA: {html.escape(_format_eta(eta_seconds))}</code>")
+
     try:
-        await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML",disable_web_page_preview=True)
-        _LAST_IG_STATUS_TEXT[key]=text
-        log.info("Instagram status updated | chat_id=%s message_id=%s text=%r",chat_id,message_id,text)
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg_id,
+            text="\n".join(lines),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     except RetryAfter as e:
         wait=max(int(getattr(e,"retry_after",1)),1)
-        log.warning("Instagram status RetryAfter | chat_id=%s wait=%s",chat_id,wait)
+        log.warning("Instagram progress RetryAfter | chat_id=%s wait=%s",chat_id,wait)
         await asyncio.sleep(wait+1)
     except Exception as e:
-        err=str(e or "").lower()
-        if "message is not modified" in err:
-            _LAST_IG_STATUS_TEXT[key]=text
-            return
-        log.warning("Failed to edit Instagram status message | chat_id=%s message_id=%s err=%s",chat_id,message_id,e)
-
+        if "message is not modified" not in str(e).lower():
+            log.debug("Instagram progress edit failed | chat_id=%s message_id=%s err=%r",chat_id,status_msg_id,e)
+                        
 async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,status_msg_id=None,label:str="Downloading Instagram media")->dict:
     _ensure_tmp_dir()
     session=await get_http_session()
     last_error=None
+
     for candidate in _download_candidates(url):
         headers=_download_headers_for_url(candidate,source)
+
         for attempt in range(3):
             out_path=None
+
             try:
                 async with session.get(candidate,headers=headers,allow_redirects=True,timeout=aiohttp.ClientTimeout(total=180)) as resp:
                     if resp.status in (408,429,500,502,503,504):
                         raise RetryableDownloadError(f"Temporary download failure: HTTP {resp.status}")
                     if resp.status>=400:
                         raise RuntimeError(f"Failed to download media: HTTP {resp.status}")
+
                     content_type=resp.headers.get("Content-Type","")
                     if not _is_valid_media_content_type(content_type):
                         preview=""
@@ -696,50 +778,91 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                             preview=_truncate_text(preview.replace("\n"," ").strip(),120)
                         except Exception as preview_err:
                             log.warning("Failed to read invalid Instagram media response preview | host=%s err=%s",urlparse(candidate).hostname,preview_err)
+
                         msg=f"Invalid media response: {content_type or 'unknown content-type'}"
                         if preview:
                             msg+=f" ({preview})"
                         raise RuntimeError(msg)
+
                     final_url=str(resp.url)
                     media_type=_guess_media_type_from_url(final_url)
+
                     if content_type.lower().startswith("video/"):
                         media_type="video"
                     elif content_type.lower().startswith("image/"):
                         media_type="photo"
+
                     ext=_guess_ext(final_url,content_type,media_type)
                     out_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}{ext}")
+
                     total=int(resp.headers.get("Content-Length",0) or 0)
                     written=0
-                    last_edit=asyncio.get_running_loop().time()
+                    last_edit=-10.0
+                    last_sample_size=0
+                    last_sample_ts=time.time()
+                    chunk_size=max(64*1024,int(IG_AIOHTTP_CHUNK_SIZE or 256*1024))
+
                     async with aiofiles.open(out_path,"wb") as f:
-                        async for chunk in resp.content.iter_chunked(64*1024):
+                        async for chunk in resp.content.iter_chunked(chunk_size):
                             if not chunk:
                                 continue
+
                             written+=len(chunk)
                             await f.write(chunk)
-                            now=asyncio.get_running_loop().time()
-                            if bot and chat_id and status_msg_id and total>0 and now-last_edit>=3.0:
-                                pct=min(written*100/total,100.0)
-                                await _safe_edit_status(
-                                    bot,
-                                    chat_id,
-                                    status_msg_id,
-                                    f"<b>{html.escape(label)}</b>\n\n<code>{progress_bar(pct)}</code>\n<code>{html.escape(_format_size(written))}/{html.escape(_format_size(total))}</code>",
-                                )
-                                last_edit=now
+
+                            if not IG_PROGRESS or not bot or not chat_id or not status_msg_id:
+                                continue
+
+                            now=time.time()
+                            elapsed=max(now-last_sample_ts,0.001)
+                            speed_bps=max(written-last_sample_size,0)/elapsed
+                            eta_seconds=((total-written)/speed_bps) if total>0 and speed_bps>0 and written<=total else None
+
+                            if now-last_edit<IG_PROGRESS_INTERVAL and last_edit>=0:
+                                continue
+
+                            await _safe_edit_progress(
+                                bot,
+                                chat_id,
+                                status_msg_id,
+                                label,
+                                written,
+                                total,
+                                speed_bps,
+                                eta_seconds,
+                            )
+                            last_edit,last_sample_size,last_sample_ts=now,written,now
+
                     if written<=0:
                         raise RuntimeError("Downloaded media is empty")
-                    log.info("Instagram media saved | source=%s file=%s type=%s size=%s",source or "-",os.path.basename(out_path),media_type,written)
+
+                    log.info(
+                        "Instagram media saved | source=%s file=%s type=%s size=%s",
+                        source or "-",
+                        os.path.basename(out_path),
+                        media_type,
+                        written,
+                    )
                     return {"path":out_path,"type":media_type}
+
             except Exception as e:
                 last_error=e
+
                 if out_path and os.path.exists(out_path):
                     _safe_remove_file(out_path,"download_remote_media_cleanup")
+
                 if attempt<2 and _is_retryable_download_exception(e):
-                    log.warning("Retryable Instagram media download error | source=%s attempt=%s err=%r",source,attempt+1,e)
+                    log.warning(
+                        "Retryable Instagram media download error | source=%s attempt=%s err=%r",
+                        source,
+                        attempt+1,
+                        e,
+                    )
                     await asyncio.sleep(1.2*(attempt+1))
                     continue
+
                 break
+
     raise last_error or RuntimeError("Failed to download media")
 
 def _safe_remove_file(path:str,context:str=""):
@@ -845,8 +968,16 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
 
 async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,metadata_ready:bool=False):
     meta={"caption":"","username":"","nickname":"","items":[]}
+
     if not metadata_ready:
-        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Fetching Instagram metadata...</b>")
+        await _safe_edit_status(
+            bot,
+            chat_id,
+            status_msg_id,
+            "<b>Scraping Instagram metadata...</b>",
+            min_interval=0,
+        )
+
     try:
         meta=await _fetch_instagram_metadata(raw_url)
         log.info(
@@ -874,6 +1005,7 @@ async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_
                 log.warning("Instagram fallback metadata empty | url=%s",raw_url)
         except Exception as fe:
             log.warning("Instagram fallback metadata extractor failed | url=%s err=%r",raw_url,fe)
+
     log.info(
         "Instagram metadata result | url=%s caption=%r username=%r nickname=%r items=%s",
         raw_url,
@@ -882,20 +1014,24 @@ async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_
         meta.get("nickname"),
         len(meta.get("items") or []),
     )
-    await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Downloading Instagram media...</b>")
+
     collected=await _collect_instagram_downloads(raw_url,fmt_key,bot,chat_id,status_msg_id,meta=meta)
     items=collected["items"]
     source=collected["source"]
     failed_count=collected.get("failed_count",0)
+
     if failed_count:
         log.warning("Instagram scraper partial success | url=%s downloaded=%s failed=%s source=%s",raw_url,len(items),failed_count,source)
+
     _LAST_IG_STATUS_TEXT.pop((int(chat_id),int(status_msg_id)),None)
+
     if len(items)==1:
         item=items[0]
         media_type=item.get("type") or "photo"
         title=_build_title(meta,media_type)
         log.info("Instagram scraper success | url=%s file=%s source=%s title=%r",raw_url,item.get("path"),source,title)
         return {"path":item["path"],"title":title,"source":source}
+
     first_type=((items[0] or {}).get("type") or "photo")
     title=_build_title(meta,first_type,len(items))
     log.info("Instagram scraper success | url=%s items=%s source=%s title=%r",raw_url,len(items),source,title)

@@ -21,7 +21,7 @@ _PROGRESS_LOCKS={}
 _PYROFORK_STATE={
     "enabled":True,
     "session_name":"pyrogram_bot",
-    "workdir":"data",
+    "workdir":"tgdata",
     "no_updates":False,
     "max_concurrent_transmissions":10,
     "progress_min_bytes":5*1024*1024,
