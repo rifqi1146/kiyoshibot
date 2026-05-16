@@ -542,68 +542,12 @@ async def welcome_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not chat or not msg.new_chat_members:
         return
 
-    for user in msg.new_chat_members:
-        await _process_new_member(chat, user, context)
-
     if chat.id not in WELCOME_ENABLED_CHATS:
-        log.info(f"Welcome skipped in chat {chat.id}: not enabled")
+        log.info("Welcome skipped in chat %s: not enabled", chat.id)
         return
 
-    bot_username = context.bot.username
-    if not bot_username:
-        try:
-            me = await context.bot.get_me()
-            bot_username = me.username or ""
-        except Exception as e:
-            log.warning(f"Failed to resolve bot username in chat {chat.id}: {e}")
-            bot_username = ""
-
     for user in msg.new_chat_members:
-        async with _get_verify_lock(chat.id, user.id):
-            if user.id in VERIFIED_USERS.get(chat.id, set()):
-                VERIFIED_USERS.setdefault(chat.id, set()).discard(user.id)
-                try:
-                    delete_verified_user(chat.id, user.id)
-                except Exception as e:
-                    log.warning(f"Failed to clear verified status for rejoined user {user.id} in chat {chat.id}: {e}")
-
-            await _cleanup_pending_state(context.bot, chat.id, user.id, delete_message=True)
-
-            try:
-                await context.bot.restrict_chat_member(
-                    chat_id=chat.id,
-                    user_id=user.id,
-                    permissions=ChatPermissions(can_send_messages=False)
-                )
-            except Exception as e:
-                log.warning(f"Failed to restrict user {user.id} in chat {chat.id}: {e}")
-
-            try:
-                sent = await _send_welcome_message(
-                    context=context,
-                    chat=chat,
-                    user=user,
-                    bot_username=bot_username,
-                )
-            except Exception as e:
-                log.warning(f"Welcome message failed for user {user.id} in chat {chat.id}: {e}")
-                continue
-
-            key = _verify_key(chat.id, user.id)
-            WELCOME_MESSAGES[key] = sent.message_id
-
-            try:
-                save_pending_welcome(chat.id, user.id, sent.message_id)
-            except Exception as e:
-                log.warning(f"Failed to save pending welcome for user {user.id} in chat {chat.id}: {e}")
-
-            PENDING_VERIFY[key] = {
-                "chat_id": chat.id,
-                "user_id": user.id,
-                "answer": None,
-                "created_at": time.time(),
-            }
-            _schedule_verify_timeout(context.application, chat.id, user.id)
+        await _process_new_member(chat, user, context)
 
 
 async def start_verify_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
