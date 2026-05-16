@@ -135,34 +135,34 @@ HELP_TEXT = {
     ),
 
     "terms": (
-        "<b>Terms of Use</b>\n\n"
-        "When you use this bot, you’re agreeing to these terms:\n\n"
+        "<b>Terms of Use</b>\n"
+        "By using this bot, you agree to these terms and conditions:\n\n"
 
         "<b>1. User Responsibility</b>\n"
-        "You’re on the hook for everything you do here every command you run, every link you drop in, every file or bit of content you download with this bot.\n\n"
+        "You’re responsible for everything you do on this site. Every command you run, every link you click, every file you download with this bot.\n\n"
 
         "<b>2. Downloader Usage</b>\n"
-        "The downloader is just a technical tool. It’s on you to make sure you actually have the proper rights or permission to download, save, share, or reuse anything from other platforms.\n\n"
+        "The downloader is just a tool. You are on your own to ensure that you have the right or permission to download, save, share, or reuse anything from other platforms.\n\n"
 
-        "You promise not to use this bot to grab or spread content that’s:\n"
-        "• Copyrighted and you don’t have permission\n"
-        "• Private or restricted\n"
-        "• Paid stuff that you haven’t been authorized to get\n"
-        "• Illegal, harmful, abusive, or anything that violates someone else’s rights\n\n"
+        "This bot is not intended to grab or share any content that is: "
+        "• Copyrighted and you don’t have permission to use; "
+        "• Private or restricted access; "
+        "• Paid stuff you haven’t been granted permission to get; "
+        "• Illegal, harmful, abusive, or in violation of someone else’s rights.\n\n"
 
         "<b>3. Third-Party Platforms</b>\n"
-        "This bot isn’t connected with Instagram, TikTok, YouTube, Facebook, X, or any other platform. Those places have their own rules and terms, and you need to stick to them.\n\n"
+        "You shouldn’t be on Instagram, TikTok, YouTube, Facebook, X, or any other platform. They have their own rules and terms that you should follow.\n\n"
 
         "<b>4. No Ownership Claim</b>\n"
-        "Anything you download through this bot stays owned by whoever created it. The bot doesn’t claim rights over any content.\n\n"
+        "Everything you download through this bot will stay the property of its creator. The bot doesn’t claim any rights to it.\n\n"
 
         "<b>5. No Guarantee</b>\n"
-        "You get the bot as-is. Features can break, change, disappear, or get limited at any time because of technical stuff, platform updates, rate limits, or maintenance.\n\n"
+        "You get the bot as-is. Features can break, change, disappear, or be limited at any time due to technical stuff, platform updates, rate limits, or maintenance.\n\n"
 
         "<b>6. Abuse and Restrictions</b>\n"
-        "If you abuse the bot, spam commands, overload it, or use it for harmful stuff, the bot owner might block, limit, or disable your access.\n\n"
+        "If you abuse the bot, spam commands, overburden it, or use it for malicious stuff, the bot owner may block, limit, or disable your access to it.\n\n"
 
-        "If you keep using this bot, you’re saying you get these terms and you accept them."
+        "As long as you continue to use the bot, you agree to this."
     ),
     
     "settings": (
