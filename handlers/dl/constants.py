@@ -31,6 +31,7 @@ PREMIUM_ONLY_DOMAINS = {
 AUTO_DOWNLOAD_DOMAINS = {
     "pornhub.com",
     "xnxx.com",
+    "pixiv.net",
     "bdsmstreak.com",
     "xhamster.com",
     "threads.net",

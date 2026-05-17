@@ -3,6 +3,7 @@ import uuid
 import html
 import time
 import logging
+import re
 import json
 import subprocess
 import asyncio
@@ -21,6 +22,7 @@ from .pinterest.main import is_pinterest_url,pinterest_download
 from .remux import video_meta,make_video_thumbnail
 from .mtproto_uploader import try_send_video_via_mtproto
 from .pyrogram_uploader import try_send_video_via_pyrogram
+from .ytdlp import gallerydl_fallback
 
 log=logging.getLogger(__name__)
 
@@ -503,6 +505,20 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
         return await twitter_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
     if is_threads_url(raw_url):
         return await threads_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+    if re.search(r'(?:pixiv\.net|pixiv\.me)', raw_url, re.I):
+        log.info("Pixiv URL detected, routing directly to gallery-dl | url=%s", raw_url)
+        try:
+            job_id = uuid.uuid4().hex[:10]
+            return await gallerydl_fallback(
+                url=raw_url,
+                job_id=job_id,
+                bot=bot,
+                chat_id=chat_id,
+                status_msg_id=status_msg_id,
+                status_text="<b>Downloading from Pixiv...</b>"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Gallery-dl Pixiv download failed: {e}")
     if is_youtube_url(raw_url):
         if (engine or "").strip().lower() not in ("","ytdlp"):
             log.warning("Unsupported YouTube engine ignored | url=%s engine=%s",raw_url,engine)
@@ -511,4 +527,5 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
         if not file_path:
             raise RuntimeError("yt-dlp returned no file")
         return result
+
     return await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio)
