@@ -937,34 +937,55 @@ def _trim_downloaded_items_by_meta(items:list[dict],meta:dict)->list[dict]:
     return picked
     
 async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_msg_id,meta:dict|None=None)->dict:
-    scraped=await igdl_scrape(url)
-    source=scraped.get("source") or "Instagram Scraper"
-    urls=_uniq_media_urls(scraped.get("urls") or [])
-    urls=_filter_urls_for_media(urls,fmt_key,(meta or {}).get("items") or [])
-    log.info("Instagram downloadable media selected | source=%s count=%s types=%s",source,len(urls),[_guess_media_type_from_url(u) for u in urls])
+    urls = []
+    source = "Instagram API"
+    
+    if meta and meta.get("items"):
+        urls = [item.get("url") for item in meta.get("items") if item.get("url")]
+        
     if not urls:
-        if fmt_key=="mp3":
+        try:
+            scraped = await igdl_scrape(url)
+            source = scraped.get("source") or "Instagram Scraper"
+            urls = scraped.get("urls") or []
+        except Exception as e:
+            log.warning("Third party scraper failed | err=%r", e)
+
+    urls = _uniq_media_urls(urls)
+    urls = _filter_urls_for_media(urls, fmt_key, (meta or {}).get("items") or [])
+    
+    log.info("Instagram downloadable media selected | source=%s count=%s types=%s", source, len(urls), [_guess_media_type_from_url(u) for u in urls])
+    
+    if not urls:
+        if fmt_key == "mp3":
             raise RuntimeError("Instagram post does not contain video/audio")
         raise RuntimeError("No downloadable media found")
-    downloaded=[]
-    failed_count=0
-    last_error=None
+        
+    downloaded = []
+    failed_count = 0
+    last_error = None
+    
     for media_url in urls:
         try:
-            downloaded.append(await _download_remote_media(media_url,source=source,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,label="Downloading Instagram media"))
+            downloaded.append(await _download_remote_media(media_url, source=source, bot=bot, chat_id=chat_id, status_msg_id=status_msg_id, label="Downloading Instagram media"))
         except Exception as e:
-            failed_count+=1
-            last_error=e
-            log.warning("Instagram media download failed | source=%s host=%s err=%r",source,urlparse(media_url).hostname,e)
+            failed_count += 1
+            last_error = e
+            log.warning("Instagram media download failed | source=%s host=%s err=%r", source, urlparse(media_url).hostname, e)
+            
     if not downloaded:
         if last_error:
             raise RuntimeError(f"All media downloads failed: {last_error}")
         raise RuntimeError("All media downloads failed")
-    downloaded=await _dedupe_downloaded_items(downloaded)
-    downloaded=_trim_downloaded_items_by_meta(downloaded,meta or {})
+        
+    downloaded = await _dedupe_downloaded_items(downloaded)
+    downloaded = _trim_downloaded_items_by_meta(downloaded, meta or {})
+    
     if not downloaded:
         raise RuntimeError("All media downloads were duplicates or invalid")
-    return {"items":downloaded,"source":source,"failed_count":failed_count}
+        
+    return {"items": downloaded, "source": source, "failed_count": failed_count}
+
 
 async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,metadata_ready:bool=False):
     meta={"caption":"","username":"","nickname":"","items":[]}
