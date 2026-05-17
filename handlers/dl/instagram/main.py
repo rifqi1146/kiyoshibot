@@ -983,7 +983,6 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
     
     for idx, media_url in enumerate(urls, start=1):
         try:
-            # Bikin label dinamis 1/7, 2/7, dst.
             label = f"Downloading Instagram media ({idx}/{total_items})" if total_items > 1 else "Downloading Instagram media"
             downloaded.append(await _download_remote_media(media_url, source=source, bot=bot, chat_id=chat_id, status_msg_id=status_msg_id, label=label))
         except Exception as e:

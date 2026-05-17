@@ -477,10 +477,11 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
     total=await _probe_total_bytes(session,media_url,headers=headers) if TIKTOK_PROGRESS else 0
     out_dir=os.path.dirname(out_path) or "."
     out_name=os.path.basename(out_path)
+    
     cmd=[
         aria2,"--dir",out_dir,"--out",out_name,"--file-allocation=none","--allow-overwrite=true",
-        "--auto-file-renaming=false","--continue=true","--max-connection-per-server=8","--split=8",
-        "--min-split-size=1M","--summary-interval=0","--download-result=hide","--console-log-level=warn",
+        "--auto-file-renaming=false","--continue=true",
+        "--summary-interval=0","--download-result=hide","--console-log-level=warn",
     ]
     for k,v in (headers or {}).items():
         if v:
@@ -525,6 +526,7 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
     if proc.returncode!=0:
         err=stderr.decode(errors="ignore").strip() if stderr else ""
         raise RuntimeError(err or f"aria2c exited with code {proc.returncode}")
+
 
 async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
     async with session.get(media_url,headers=headers,timeout=aiohttp.ClientTimeout(total=AIOHTTP_DOWNLOAD_TIMEOUT),allow_redirects=True) as r:
