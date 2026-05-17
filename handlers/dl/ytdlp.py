@@ -125,7 +125,7 @@ def _strip_job_prefix(path:str,prefix:str)->str:
         return path
 
 def _pick_latest_media_file(since_ts:float,prefix:str)->str|None:
-    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp")
+    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv")
     try:
         files=[]
         for f in os.listdir(TMP_DIR):
@@ -150,7 +150,7 @@ def _pick_latest_media_file(since_ts:float,prefix:str)->str|None:
         return None
 
 def _collect_media_files_recursive(root_dir:str)->list[str]:
-    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp")
+    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv")
     files=[]
     try:
         for root,_,names in os.walk(root_dir):
@@ -158,7 +158,7 @@ def _collect_media_files_recursive(root_dir:str)->list[str]:
                 if not name.lower().endswith(exts):
                     continue
                 p=os.path.join(root,name)
-                if os.path.isfile(p):
+                if os.path.isfile(p) and os.path.getsize(p) > 0:
                     files.append(p)
     except Exception as e:
         log.warning("Failed to collect media files recursively | root_dir=%s err=%s",root_dir,e)
@@ -168,6 +168,8 @@ def _collect_media_files_recursive(root_dir:str)->list[str]:
     except Exception as e:
         log.warning("Failed to sort collected media files | root_dir=%s err=%s",root_dir,e)
     return files
+
+
 
 def _append_cookies_args(cmd:list[str])->list[str]:
     if COOKIES_PATH and os.path.exists(COOKIES_PATH):
@@ -233,7 +235,11 @@ async def gallerydl_fallback(url:str,job_id:str,bot,chat_id,status_msg_id,status
         await _safe_edit_status(bot=bot,chat_id=chat_id,message_id=status_msg_id,text=status_text)
         cmd=[GALLERY_DL]
         _append_cookies_args(cmd)
-        cmd+=[url]
+        cmd.extend([
+            "--dest", job_dir,
+            "--ugoira", "mp4",
+            url
+        ])
         log.info("Running gallery-dl fallback | url=%s job_id=%s",url,job_id)
         log.debug("gallery-dl command: %s"," ".join(cmd))
         proc=await asyncio.create_subprocess_exec(*cmd,cwd=job_dir,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
@@ -276,6 +282,7 @@ async def gallerydl_fallback(url:str,job_id:str,bot,chat_id,status_msg_id,status
         return None
     finally:
         _safe_rmtree(job_dir,"gallery-dl temp")
+
 
 def _probe_total_size_sync(url:str,fmt:str)->int:
     YT_DLP=shutil.which("yt-dlp")
@@ -361,7 +368,7 @@ def _media_priority(p:str)->int:
     return 9
 
 def _list_job_outputs(job_id:str)->list[str]:
-    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp")
+    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv")
     try:
         files=[
             os.path.join(TMP_DIR,f)
