@@ -151,8 +151,8 @@ HELP_TEXT = {
         "• Illegal, harmful, abusive, or in violation of someone else’s rights.\n\n"
 
         "<b>3. Third-Party Platforms</b>\n"
-        "You shouldn’t be on Instagram, TikTok, YouTube, Facebook, X, or any other platform. They have their own rules and terms that you should follow.\n\n"
-
+        "This bot is not affiliated with, endorsed, or sponsored by Instagram, TikTok, YouTube, Facebook, X, or any other platform. You must respect their respective terms of service when downloading their content.\n\n"
+        
         "<b>4. No Ownership Claim</b>\n"
         "Everything you download through this bot will stay the property of its creator. The bot doesn’t claim any rights to it.\n\n"
 
