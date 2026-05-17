@@ -127,6 +127,26 @@ async def reencode_mp3(src_path:str)->str:
         return fixed_path
     return await asyncio.to_thread(_run)
 
+async def _ensure_photo_size(file_path: str):
+    if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) < 10000000:
+        return
+    
+    log.info("Photo exceeds 10MB limit, compressing | file=%s", os.path.basename(file_path))
+    tmp_path = f"{file_path}_compressed.jpg"
+    
+    def _run():
+        cmd = [
+            "ffmpeg", "-y", "-i", file_path,
+            "-vf", "scale='min(3840,iw)':'min(3840,ih)':force_original_aspect_ratio=decrease",
+            "-q:v", "4", tmp_path
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+    await asyncio.to_thread(_run)
+    
+    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+        os.replace(tmp_path, file_path)
+
 def _clean_caption_from_path(path:str)->str:
     raw_name=os.path.splitext(os.path.basename(path))[0]
     parts=raw_name.split("_",1)
@@ -379,6 +399,8 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
                 item_parse_mode="HTML" if is_first else None
                 if file_path and os.path.exists(file_path):
                     detected=detect_media_type(file_path)
+                    if detected == "photo":
+                        await _ensure_photo_size(file_path)
                     fh=open(file_path,"rb")
                     handles.append((fh,os.path.basename(file_path)))
                     if detected=="video":
@@ -437,6 +459,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             return
         if media_type=="photo":
             await _set_uploading_status(bot,chat_id,status_msg_id,"photo")
+            await _ensure_photo_size(file_path)
             await _send_photo_with_fallback(bot=bot,chat_id=chat_id,photo=file_path,caption=_build_safe_photo_caption(caption_text,bot_name),reply_to=reply_to,message_thread_id=message_thread_id)
             return
         if media_type=="video":
