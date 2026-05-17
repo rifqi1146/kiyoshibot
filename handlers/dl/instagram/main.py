@@ -721,6 +721,14 @@ async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int
     if not IG_PROGRESS or not bot or not chat_id or not status_msg_id:
         return
 
+    cache=getattr(bot,"_ig_status_edit_cache",{})
+    key=(int(chat_id),int(status_msg_id))
+    now=time.monotonic()
+    prev=cache.get(key) or {}
+
+    if now - prev.get("ts", 0) < 2.0:
+        return
+
     lines=[f"<b>{html.escape(title)}</b>",""]
 
     if total>0:
@@ -736,14 +744,20 @@ async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int
     if eta_seconds is not None and eta_seconds>=0 and total>0 and speed_bps>0:
         lines.append(f"<code>ETA: {html.escape(_format_eta(eta_seconds))}</code>")
 
+    text = "\n".join(lines)
+    if prev.get("text") == text:
+        return
+
     try:
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg_id,
-            text="\n".join(lines),
+            text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+        cache[key]={"text":text,"ts":time.monotonic()}
+        setattr(bot,"_ig_status_edit_cache",cache)
     except RetryAfter as e:
         wait=max(int(getattr(e,"retry_after",1)),1)
         log.warning("Instagram progress RetryAfter | chat_id=%s wait=%s",chat_id,wait)
@@ -751,6 +765,7 @@ async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int
     except Exception as e:
         if "message is not modified" not in str(e).lower():
             log.debug("Instagram progress edit failed | chat_id=%s message_id=%s err=%r",chat_id,status_msg_id,e)
+
                         
 async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,status_msg_id=None,label:str="Downloading Instagram media")->dict:
     _ensure_tmp_dir()
@@ -964,10 +979,13 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
     downloaded = []
     failed_count = 0
     last_error = None
+    total_items = len(urls)
     
-    for media_url in urls:
+    for idx, media_url in enumerate(urls, start=1):
         try:
-            downloaded.append(await _download_remote_media(media_url, source=source, bot=bot, chat_id=chat_id, status_msg_id=status_msg_id, label="Downloading Instagram media"))
+            # Bikin label dinamis 1/7, 2/7, dst.
+            label = f"Downloading Instagram media ({idx}/{total_items})" if total_items > 1 else "Downloading Instagram media"
+            downloaded.append(await _download_remote_media(media_url, source=source, bot=bot, chat_id=chat_id, status_msg_id=status_msg_id, label=label))
         except Exception as e:
             failed_count += 1
             last_error = e
@@ -985,6 +1003,7 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
         raise RuntimeError("All media downloads were duplicates or invalid")
         
     return {"items": downloaded, "source": source, "failed_count": failed_count}
+
 
 
 async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,metadata_ready:bool=False):
