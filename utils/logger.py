@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from utils.config import LOG_CHAT_ID
 from utils.commands import BOT_COMMANDS
+from handlers.dl.constants import AUTO_DOWNLOAD_DOMAINS
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +62,10 @@ async def log_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = str(chat.type or "unknown").upper()
     chat_name = chat.title or chat.full_name or "Private"
     text = (msg.text or msg.caption or "").strip()
+    
     is_command = text.startswith("/") or text.startswith("$")
+    has_dl_link = any(domain in text.lower() for domain in AUTO_DOWNLOAD_DOMAINS)
+    
     should_forward = False
     forward_chat_id = None
     forward_message_id = None
@@ -80,11 +84,7 @@ async def log_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             forward_message_id = replied.message_id
             content += f"\n<i>Replied media: {html.escape(_media_label(replied))} forwarded below</i>"
 
-    elif msg.reply_to_message:
-        bot = context.bot
-        replied = msg.reply_to_message
-        if not replied.from_user or replied.from_user.id != bot.id:
-            return
+    elif msg.reply_to_message and getattr(msg.reply_to_message.from_user, "id", None) == context.bot.id:
         title = "<b>Reply Log</b>"
         if _is_loggable_reply_media(msg):
             should_forward = True
@@ -93,6 +93,11 @@ async def log_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             content = f"<i>{html.escape(_media_label(msg))} forwarded below</i>"
         else:
             content = html.escape(text) if text else "<i>(non-text message)</i>"
+            
+    elif has_dl_link:
+        title = "<b>Auto-Download Link Detected</b>"
+        content = f"<code>{html.escape(text)}</code>"
+        
     else:
         return
 
