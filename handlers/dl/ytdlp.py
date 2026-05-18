@@ -290,7 +290,7 @@ def _probe_total_size_sync(url:str,fmt:str)->int:
         return 0
     cmd=[YT_DLP]
     _append_cookies_args(cmd)
-    cmd+=["--js-runtimes",YTDLP_DENO_PATH,"--impersonate","chrome","--no-playlist","-J","-f",fmt,url]
+    cmd+=["--js-runtimes",YTDLP_DENO_PATH,"--no-playlist","-J","-f",fmt,url]
     try:
         p=subprocess.run(cmd,capture_output=True,text=True,timeout=YTDLP_PROBE_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -469,7 +469,6 @@ async def ytdlp_download(url,fmt_key,bot,chat_id,status_msg_id,format_id:str|Non
         _append_cookies_args(cmd)
         cmd+=[
             "--js-runtimes",YTDLP_DENO_PATH,
-            "--impersonate", "chrome",
             "--extractor-args","youtube:player_client=web",
             "--concurrent-fragments","8",
             "--no-playlist",
@@ -500,7 +499,6 @@ async def ytdlp_download(url,fmt_key,bot,chat_id,status_msg_id,format_id:str|Non
         _append_cookies_args(cmd)
         cmd+=[
             "--js-runtimes",YTDLP_DENO_PATH,
-            "--impersonate", "chrome",
             "--concurrent-fragments","8",
             "--no-playlist",
             "-f",fmt,
