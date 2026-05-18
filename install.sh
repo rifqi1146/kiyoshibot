@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-echo "== Group Bot Installer =="
+echo "Kiyoshi Bot Installer"
 echo
 
 if [[ $EUID -ne 0 ]]; then
