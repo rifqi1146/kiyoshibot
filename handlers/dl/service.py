@@ -26,6 +26,8 @@ from .ytdlp import gallerydl_fallback
 
 log=logging.getLogger(__name__)
 
+_BOT_FIRST_NAME_CACHE=None
+
 _ALBUM_CHUNK_SIZE=10
 _ALBUM_CHUNK_COOLDOWN=5
 
@@ -192,13 +194,19 @@ def _is_reply_not_found_error(exc:Exception)->bool:
     return any(k in text for k in keys)
 
 async def _get_bot_name(bot)->str:
-    cached=getattr(bot,"_cached_first_name",None)
-    if cached:
-        return cached
-    me=await bot.get_me()
-    name=me.first_name or "Bot"
-    setattr(bot,"_cached_first_name",name)
-    return name
+    global _BOT_FIRST_NAME_CACHE
+
+    if _BOT_FIRST_NAME_CACHE:
+        return _BOT_FIRST_NAME_CACHE
+
+    try:
+        me=await bot.get_me()
+        _BOT_FIRST_NAME_CACHE=me.first_name or "Bot"
+    except Exception as e:
+        log.warning("Failed to resolve bot name | err=%r",e)
+        _BOT_FIRST_NAME_CACHE="Bot"
+
+    return _BOT_FIRST_NAME_CACHE
 
 async def _safe_edit_status(bot,chat_id,message_id,text:str):
     try:
