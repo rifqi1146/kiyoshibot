@@ -402,21 +402,47 @@ def _format_eta(seconds: float) -> str:
     return f"{s}s"
 
 async def _safe_edit_progress(bot, chat_id, status_msg_id, title: str, downloaded: int, total: int = 0, speed_bps: float = 0.0, eta_seconds: float | None = None):
-    lines = [f"<b>{title}</b>", ""]
+    import html
+    from handlers.dl.utils import progress_bar
+    cache = getattr(bot, "_fb_status_edit_cache", {})
+    key = (int(chat_id), int(status_msg_id))
+    now = time.monotonic()
+    prev = cache.get(key) or {}
+    if now - prev.get("ts", 0) < 2.0:
+        return
+    lines = [f"<b>{html.escape(title)}</b>", ""]
     if total > 0:
         pct = min(downloaded * 100 / total, 100.0)
-        lines.append(f"<code>{_format_size(downloaded)}/{_format_size(total)} downloaded</code>")
-        lines.append(f"<code>{pct:.1f}%</code>")
+        lines.append(f"<code>{html.escape(progress_bar(pct))}</code>")
+        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))}</code>")
     else:
-        lines.append(f"<code>{_format_size(downloaded)} downloaded</code>")
+        lines.append(f"<code>{html.escape(_format_size(downloaded))} downloaded</code>")
+
     if speed_bps > 0:
-        lines.append(f"<code>Speed: {_format_speed(speed_bps)}</code>")
+        lines.append(f"<code>Speed: {html.escape(_format_speed(speed_bps))}</code>")
+
     if eta_seconds is not None and eta_seconds >= 0 and total > 0 and speed_bps > 0:
-        lines.append(f"<code>ETA: {_format_eta(eta_seconds)}</code>")
+        lines.append(f"<code>ETA: {html.escape(_format_eta(eta_seconds))}</code>")
+    text = "\n".join(lines)
+    if prev.get("text") == text:
+        return
     try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text="\n".join(lines), parse_mode="HTML")
-    except Exception:
-        pass
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        cache[key] = {"text": text, "ts": time.monotonic()}
+        setattr(bot, "_fb_status_edit_cache", cache)
+    except RetryAfter as e:
+        wait = max(int(getattr(e, "retry_after", 1)), 1)
+        log.warning("Facebook progress RetryAfter | chat_id=%s wait=%s", chat_id, wait)
+        await asyncio.sleep(wait + 1)
+    except Exception as e:
+        if "message is not modified" not in str(e).lower():
+            log.debug("Facebook progress edit failed | chat_id=%s message_id=%s err=%r", chat_id, status_msg_id, e)
 
 async def _probe_total_bytes(session, url: str, headers: dict | None = None) -> int:
     total = 0
