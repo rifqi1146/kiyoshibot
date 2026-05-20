@@ -7,6 +7,7 @@ services:
       - telegram-bot-api
     volumes:
       - ./:/app
+      - ./tg-api-data:/var/lib/telegram-bot-api
     environment:
       - PYTHONUNBUFFERED=1
       - LOCAL_BOT_API_HOST=telegram-bot-api
