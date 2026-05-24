@@ -5,25 +5,29 @@ services:
     restart: unless-stopped
     depends_on:
       - telegram-bot-api
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOCAL_BOT_API_HOST: telegram-bot-api
+      LOCAL_BOT_API_PORT: "8081"
+      PREFER_LOCAL_BOT_API: "1"
+      QUOTE_API_URI: "http://host.docker.internal:3000"
     volumes:
       - ./:/app
       - ./tg-api-data:/var/lib/telegram-bot-api
-    environment:
-      - PYTHONUNBUFFERED=1
-      - LOCAL_BOT_API_HOST=telegram-bot-api
-      - LOCAL_BOT_API_PORT=8081
-    env_file:
-      - .env
 
   telegram-bot-api:
     image: aiogram/telegram-bot-api:latest
     container_name: local_bot_api
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - TELEGRAM_API_ID=${API_ID}
-      - TELEGRAM_API_HASH=${API_HASH}
-      - TELEGRAM_LOCAL=1
+      TELEGRAM_API_ID: ${API_ID}
+      TELEGRAM_API_HASH: ${API_HASH}
+      TELEGRAM_LOCAL: "1"
     volumes:
       - ./tg-api-data:/var/lib/telegram-bot-api
-    ports:
-      - "8081:8081"
