@@ -1007,15 +1007,19 @@ def _trim_downloaded_items_by_meta(items:list[dict],meta:dict)->list[dict]:
     
 async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_msg_id,meta:dict|None=None)->dict:
     urls = []
-    source = "Instagram Scraper"
-    
-    try:
-        scraped = await igdl_scrape(url)
-        urls = scraped.get("urls") or []
-        source = scraped.get("source") or "Instagram Scraper"
-    except Exception as e:
-        log.warning("Step 1 Failed: Internal scraper broken | err=%r", e)
+    source = "Instagram API"
+
+    if meta and meta.get("items"):
+        urls = [item.get("url") for item in meta.get("items") if item.get("url")]
         
+    if not urls:
+        try:
+            scraped = await igdl_scrape(url)
+            urls = scraped.get("urls") or []
+            source = scraped.get("source") or "Instagram Scraper"
+        except Exception as e:
+            log.warning("Step 1 Failed: Internal scraper broken | err=%r", e)
+            
     if not urls:
         log.info("Step 2: Scraper internal gagal, mencoba Neoxr API...")
         neoxr_res = await _fetch_neoxr_api(url)
@@ -1062,6 +1066,7 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
         raise RuntimeError("All media downloads were duplicates or invalid")
         
     return {"items": downloaded, "source": source, "failed_count": failed_count}
+
 
 async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,metadata_ready:bool=False):
     meta={"caption":"","username":"","nickname":"","items":[]}
