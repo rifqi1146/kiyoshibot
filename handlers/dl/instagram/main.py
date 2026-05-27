@@ -16,6 +16,7 @@ from urllib.parse import urlparse,parse_qs,unquote
 from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR
+from curl_cffi.requests import AsyncSession
 from handlers.dl.utils import progress_bar
 
 log=logging.getLogger(__name__)
@@ -526,66 +527,119 @@ def _collect_urls_from_html(text:str)->list[str]:
             found.append(link)
     return [re.sub(r"&dl=1$","",link) for link in _uniq_media_urls(found)]
 
+from utils.config import NEOXR_API_KEY
+
+async def _fetch_neoxr_api(raw_url: str) -> dict:
+    if not NEOXR_API_KEY:
+        raise RuntimeError("NEOXR_API_KEY is not set in config")
+        
+    session = await get_http_session()
+    api_url = "https://api.neoxr.eu/api/ig"
+    params = {"url": raw_url, "apikey": NEOXR_API_KEY}
+    
+    log.info("Instagram Neoxr API fetch start | url=%s", raw_url)
+    try:
+        async with session.get(api_url, params=params, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"HTTP {resp.status}: {text[:100]}")
+            data = await resp.json()
+            
+        if not data.get("status"):
+            raise RuntimeError(data.get("msg") or data.get("message") or "API returned false status")
+            
+        results = data.get("data") or []
+        urls = []
+        for item in results:
+            media_url = item.get("url")
+            if media_url:
+                urls.append(media_url)
+                
+        if not urls:
+            raise RuntimeError("No URLs found in Neoxr response data")
+            
+        return {"status": True, "source": "Neoxr API", "urls": urls}
+    except Exception as e:
+        log.warning("Neoxr API failed | err=%r", e)
+        return {"status": False, "message": str(e)}
+
 async def _indown(url:str)->dict:
-    session=await get_http_session()
-    headers={"User-Agent":USER_AGENT,"Accept":"text/html,application/xhtml+xml"}
-    async with session.get("https://indown.io/en1",headers=headers,timeout=aiohttp.ClientTimeout(total=25)) as resp:
-        page_data=await resp.text()
-    token_match=re.search(r'''name=["']_token["'][^>]*value=["']([^"']+)["']''',page_data,flags=re.I)
-    token=token_match.group(1).strip() if token_match else ""
-    if not token:
-        return {"status":False,"message":"Token Indown not found"}
-    form={"referer":"https://indown.io/en1","locale":"en","_token":token,"link":url,"p":"i"}
-    async with session.post(
-        "https://indown.io/download",
-        data=form,
-        headers={
-            "Content-Type":"application/x-www-form-urlencoded",
-            "User-Agent":USER_AGENT,
-            "Referer":"https://indown.io/en1",
-            "Origin":"https://indown.io",
-        },
-        timeout=aiohttp.ClientTimeout(total=30),
-    ) as resp:
-        result_data=await resp.text()
+    async with AsyncSession(impersonate="chrome120") as session:
+        headers={"User-Agent":USER_AGENT,"Accept":"text/html,application/xhtml+xml"}
+        try:
+            resp = await session.get("https://indown.io/en1", headers=headers, timeout=25)
+            page_data = resp.text
+        except Exception as e:
+            return {"status":False, "message":f"Indown get token failed: {e}"}
+
+        token_match=re.search(r'''name=["']_token["'][^>]*value=["']([^"']+)["']''',page_data,flags=re.I)
+        token=token_match.group(1).strip() if token_match else ""
+        if not token:
+            return {"status":False,"message":"Token Indown not found (Blocked by Cloudflare)"}
+            
+        form={"referer":"https://indown.io/en1","locale":"en","_token":token,"link":url,"p":"i"}
+        try:
+            resp_post = await session.post(
+                "https://indown.io/download",
+                data=form,
+                headers={
+                    "Content-Type":"application/x-www-form-urlencoded",
+                    "User-Agent":USER_AGENT,
+                    "Referer":"https://indown.io/en1",
+                    "Origin":"https://indown.io",
+                },
+                timeout=30,
+            )
+            result_data = resp_post.text
+        except Exception as e:
+            return {"status":False, "message":f"Indown POST failed: {e}"}
+
     urls=_collect_urls_from_html(result_data)
     if not urls:
-        return {"status":False,"message":"No media found"}
+        return {"status":False,"message":"No media found in Indown HTML"}
     return {"status":True,"source":"Indown","urls":urls}
 
 async def _snapsave(url:str)->dict:
-    session=await get_http_session()
-    async with session.post(
-        "https://snapsave.app/id/action.php?lang=id",
-        data={"url":url},
-        headers={
-            "Origin":"https://snapsave.app",
-            "Referer":"https://snapsave.app/id/download-video-instagram",
-            "User-Agent":USER_AGENT,
-            "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
-        },
-        timeout=aiohttp.ClientTimeout(total=30),
-    ) as resp:
-        data=await resp.text()
+    async with AsyncSession(impersonate="chrome120") as session:
+        try:
+            resp = await session.post(
+                "https://snapsave.app/id/action.php?lang=id",
+                data={"url":url},
+                headers={
+                    "Origin":"https://snapsave.app",
+                    "Referer":"https://snapsave.app/id/download-video-instagram",
+                    "User-Agent":USER_AGENT,
+                    "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
+                },
+                timeout=30,
+            )
+            data = resp.text
+        except Exception as e:
+            return {"status":False, "message":f"Snapsave POST failed: {e}"}
+            
     urls=_collect_urls_from_html(data)
     if not urls:
         rapid=re.findall(r'''https://d\.rapidcdn\.app/v2\?[^"'<> ]+''',data,flags=re.I)
         urls=_uniq_media_urls([x.replace("&amp;","&") for x in rapid])
     if not urls:
-        return {"status":False,"message":"No media found"}
+        return {"status":False,"message":"No media found in Snapsave HTML"}
     return {"status":True,"source":"Snapsave","urls":urls}
 
+
 async def igdl_scrape(url:str)->dict:
-    indown=await _indown(url)
+    indown = await _indown(url)
     if indown.get("status") and indown.get("urls"):
         log.info("Instagram scraper source selected | source=Indown urls=%s",len(indown.get("urls") or []))
         return indown
     log.warning("Instagram Indown failed, trying Snapsave | err=%s",indown.get("message"))
-    snapsave=await _snapsave(url)
+    
+    snapsave = await _snapsave(url)
     if snapsave.get("status") and snapsave.get("urls"):
         log.info("Instagram scraper source selected | source=Snapsave urls=%s",len(snapsave.get("urls") or []))
         return snapsave
-    raise RuntimeError(snapsave.get("message") or indown.get("message") or "No media found")
+        
+    raise RuntimeError(snapsave.get("message") or indown.get("message") or cobalt.get("message") or "No media found")
+
 
 def _guess_media_type_from_url(url:str)->str:
     parsed=urlparse(url or "")
@@ -953,28 +1007,29 @@ def _trim_downloaded_items_by_meta(items:list[dict],meta:dict)->list[dict]:
     
 async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_msg_id,meta:dict|None=None)->dict:
     urls = []
-    source = "Instagram API"
+    source = "Instagram Scraper"
     
-    if meta and meta.get("items"):
-        urls = [item.get("url") for item in meta.get("items") if item.get("url")]
+    try:
+        scraped = await igdl_scrape(url)
+        urls = scraped.get("urls") or []
+        source = scraped.get("source") or "Instagram Scraper"
+    except Exception as e:
+        log.warning("Step 1 Failed: Internal scraper broken | err=%r", e)
         
     if not urls:
-        try:
-            scraped = await igdl_scrape(url)
-            source = scraped.get("source") or "Instagram Scraper"
-            urls = scraped.get("urls") or []
-        except Exception as e:
-            log.warning("Third party scraper failed | err=%r", e)
-
+        log.info("Step 2: Scraper internal gagal, mencoba Neoxr API...")
+        neoxr_res = await _fetch_neoxr_api(url)
+        if neoxr_res.get("status") and neoxr_res.get("urls"):
+            urls = neoxr_res.get("urls")
+            source = "Neoxr API"
+            
     urls = _uniq_media_urls(urls)
     urls = _filter_urls_for_media(urls, fmt_key, (meta or {}).get("items") or [])
-    
-    log.info("Instagram downloadable media selected | source=%s count=%s types=%s", source, len(urls), [_guess_media_type_from_url(u) for u in urls])
     
     if not urls:
         if fmt_key == "mp3":
             raise RuntimeError("Instagram post does not contain video/audio")
-        raise RuntimeError("No downloadable media found")
+        raise RuntimeError("No downloadable media found from Scraper or Neoxr API")
         
     downloaded = []
     failed_count = 0
@@ -984,16 +1039,21 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
     for idx, media_url in enumerate(urls, start=1):
         try:
             label = f"Downloading Instagram media ({idx}/{total_items})" if total_items > 1 else "Downloading Instagram media"
-            downloaded.append(await _download_remote_media(media_url, source=source, bot=bot, chat_id=chat_id, status_msg_id=status_msg_id, label=label))
+            downloaded.append(await _download_remote_media(
+                media_url, 
+                source=source, 
+                bot=bot, 
+                chat_id=chat_id, 
+                status_msg_id=status_msg_id, 
+                label=label
+            ))
         except Exception as e:
             failed_count += 1
             last_error = e
             log.warning("Instagram media download failed | source=%s host=%s err=%r", source, urlparse(media_url).hostname, e)
             
     if not downloaded:
-        if last_error:
-            raise RuntimeError(f"All media downloads failed: {last_error}")
-        raise RuntimeError("All media downloads failed")
+        raise last_error or RuntimeError("All media downloads failed")
         
     downloaded = await _dedupe_downloaded_items(downloaded)
     downloaded = _trim_downloaded_items_by_meta(downloaded, meta or {})
@@ -1002,8 +1062,6 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
         raise RuntimeError("All media downloads were duplicates or invalid")
         
     return {"items": downloaded, "source": source, "failed_count": failed_count}
-
-
 
 async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,metadata_ready:bool=False):
     meta={"caption":"","username":"","nickname":"","items":[]}
