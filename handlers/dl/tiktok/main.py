@@ -54,7 +54,8 @@ TIKTOK_ALBUM_CHUNK_SIZE=int(os.getenv("TIKTOK_ALBUM_CHUNK_SIZE",str(256*1024)))
 ARIA2C_TIMEOUT=int(os.getenv("TIKTOK_ARIA2C_TIMEOUT","600"))
 AIOHTTP_DOWNLOAD_TIMEOUT=int(os.getenv("TIKTOK_AIOHTTP_TIMEOUT","600"))
 
-TIKTOK_SLIDESHOW_IMAGE_DURATION=float(os.getenv("TIKTOK_SLIDESHOW_IMAGE_DURATION","1.2"))
+TIKTOK_SLIDESHOW_IMAGE_DURATION=float(os.getenv("TIKTOK_SLIDESHOW_IMAGE_DURATION","3.0"))
+TIKTOK_SLIDESHOW_LOOP_IMAGES=os.getenv("TIKTOK_SLIDESHOW_LOOP_IMAGES","1").lower() in ("1","true","on","yes")
 TIKTOK_SLIDESHOW_WIDTH=int(os.getenv("TIKTOK_SLIDESHOW_WIDTH","720"))
 TIKTOK_SLIDESHOW_HEIGHT=int(os.getenv("TIKTOK_SLIDESHOW_HEIGHT","1280"))
 TIKTOK_SLIDESHOW_FPS=int(os.getenv("TIKTOK_SLIDESHOW_FPS","30"))
@@ -1148,25 +1149,34 @@ def _render_slideshow_video(image_paths:list[str],audio_path:str|None,out_path:s
 
     audio_duration=_ffprobe_duration(audio_path) if audio_path else 0.0
     base_duration=max(float(TIKTOK_SLIDESHOW_IMAGE_DURATION),0.3)
-    
-    if TIKTOK_SLIDESHOW_SYNC_AUDIO and audio_duration>0 and len(image_paths)>0:
+    transition_name=(TIKTOK_SLIDESHOW_TRANSITION or "slideleft").strip()
+
+    render_paths=list(image_paths)
+
+    if TIKTOK_SLIDESHOW_LOOP_IMAGES and audio_duration>0:
+        raw_transition=float(TIKTOK_SLIDESHOW_TRANSITION_DURATION)
+        transition_probe=max(min(raw_transition,base_duration-0.1),0.1)
+        step=max(base_duration-transition_probe,0.1)
+        loop_count=max(len(image_paths),int(audio_duration/step)+2)
+        render_paths=[image_paths[i % len(image_paths)] for i in range(loop_count)]
+        per_image=base_duration
+    elif TIKTOK_SLIDESHOW_SYNC_AUDIO and audio_duration>0 and len(image_paths)>0:
         per_image=max(audio_duration/len(image_paths),float(TIKTOK_SLIDESHOW_MIN_IMAGE_DURATION))
     else:
         per_image=base_duration
-    
+
     transition=max(min(float(TIKTOK_SLIDESHOW_TRANSITION_DURATION),per_image-0.1),0.1)
-    transition_name=(TIKTOK_SLIDESHOW_TRANSITION or "slideleft").strip()
-    
+
     log.info(
-        "TikTok slideshow timing | images=%s audio_duration=%.2fs per_image=%.2fs transition=%.2fs sync_audio=%s",
-        len(image_paths),audio_duration,per_image,transition,TIKTOK_SLIDESHOW_SYNC_AUDIO,
+        "TikTok slideshow timing | images=%s render_images=%s audio_duration=%.2fs per_image=%.2fs transition=%.2fs loop=%s sync_audio=%s",
+        len(image_paths),len(render_paths),audio_duration,per_image,transition,TIKTOK_SLIDESHOW_LOOP_IMAGES,TIKTOK_SLIDESHOW_SYNC_AUDIO,
     )
 
     inputs=[]
     filters=[]
     video_labels=[]
 
-    for i,path in enumerate(image_paths):
+    for i,path in enumerate(render_paths):
         inputs.extend(["-loop","1","-t",f"{per_image:.3f}","-i",path])
         filters.append(
             f"[{i}:v]"
@@ -1177,7 +1187,7 @@ def _render_slideshow_video(image_paths:list[str],audio_path:str|None,out_path:s
         )
         video_labels.append(f"[v{i}]")
 
-    audio_index=len(image_paths)
+    audio_index=len(render_paths)
     if audio_path:
         inputs.extend(["-i",audio_path])
 
