@@ -24,6 +24,7 @@ PREMIUM_ONLY_DOMAINS = {
     "youporn.com",
     "eporner.com",
     "xhamster.com",
+    "xhamster.com",
     "japaneseporn.xxx",
     "xhsocial.com",
 }

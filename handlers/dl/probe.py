@@ -12,6 +12,7 @@ YTDLP_RESOLUTION_DOMAINS = (
     "youtube.com",
     "youtu.be",
     "pornhub.com",
+    "xhamster.com",
     "xnxx.com",
 )
 
