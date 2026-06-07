@@ -13,6 +13,7 @@ from utils.startup import startup_tasks
 from utils.config import BOT_TOKEN
 from handlers.dl.mtproto_uploader import warmup_mtproto_uploader,shutdown_mtproto_uploader
 from handlers.dl.pyrogram_uploader import warmup_pyrogram_uploader,shutdown_pyrogram_uploader
+from handlers.welcome import start_welcome_server
 
 BOT_USERNAME=None
 LOCAL_BOT_API_HOST=os.getenv("LOCAL_BOT_API_HOST","127.0.0.1")
@@ -141,6 +142,10 @@ def _local_bot_api_available(host:str,port:int,timeout:float=1.0)->bool:
 
 async def post_init(app):
     global BOT_USERNAME
+    try:
+        await start_welcome_server(app.bot)
+    except Exception:
+        log.exception("Welcome Failed")
     try:
         await app.bot.delete_webhook(drop_pending_updates=True)
     except Exception:
