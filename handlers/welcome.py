@@ -30,7 +30,7 @@ from database.welcome_db import (
 
 log = logging.getLogger(__name__)
 
-# --- WEB CONFIG ---
+#WEB CONFIG
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", f"http://{WEB_HOST}:{WEB_PORT}")
@@ -43,8 +43,8 @@ PENDING_VERIFY = {}
 PENDING_VERIFY_TASKS = {}
 WELCOME_MESSAGES = {}
 VERIFY_LOCKS = {}
-VERIFY_TOKENS = {}  # nyimpen token web
-BOT_INSTANCE = None # buat dipake di web handler
+VERIFY_TOKENS = {}
+BOT_INSTANCE = None
 
 VERIFY_TIMEOUT_SECONDS = 5 * 60
 RESTORE_MAX_AGE_SECONDS = 15 * 60
@@ -374,11 +374,7 @@ async def welcome_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for user in msg.new_chat_members:
         await _process_new_member(chat, user, context)
 
-
-# ===============================================
-# WEB VERIFICATION HANDLERS
-# ===============================================
-
+#web verification 
 async def start_verify_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not context.args:
         return
@@ -457,45 +453,151 @@ async def _on_verification_success(bot, chat_id: int, user_id: int):
         except Exception:
             pass
 
-# --- WEB APP AIOHTTP ---
+#web app
+# web app
 async def web_verify_get(request):
     token = request.query.get("token")
     if not token or token not in VERIFY_TOKENS:
         return web.Response(text="Invalid or expired verification token.", status=400)
 
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Bot Verification</title>
-        <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body {{ font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f0f2f5; margin: 0; }}
-            .container {{ background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center; }}
-        </style>
-        <script>
-            function onCaptchaSuccess() {{
-                document.getElementById("verify-form").submit();
-            }}
-        </script>
-    </head>
-    <body>
-        <div class="container">
-            <h2>Human Verification</h2>
-            <p style="color: #666; margin-bottom: 20px;">Please solve the captcha below to join the group.</p>
-            <form id="verify-form" action="/verify" method="POST">
-                <input type="hidden" name="token" value="{token}">
-                <div class="cf-turnstile" data-sitekey="{TURNSTILE_SITE_KEY}" data-callback="onCaptchaSuccess"></div>
-                <noscript>
-                    <button type="submit" style="margin-top:15px; padding: 10px 20px; border: none; background: #0088cc; color: white; border-radius: 5px;">Submit</button>
-                </noscript>
-            </form>
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verification</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+    <style>
+        *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        :root {{
+            --bg: #0e1117; --card: #161b26;
+            --border: rgba(255,255,255,0.08);
+            --accent: #2AABEE; --accent-dim: rgba(42,171,238,0.12);
+            --accent-border: rgba(42,171,238,0.22);
+            --text: #e4e8f0; --muted: #667080;
+            --font: 'Figtree', sans-serif;
+        }}
+        body {{
+            font-family: var(--font);
+            background: var(--bg);
+            min-height: 100svh;
+            display: flex; align-items: center; justify-content: center;
+            padding: 24px 16px;
+            color: var(--text); overflow: hidden;
+        }}
+        body::before {{
+            content: '';
+            position: fixed; inset: 0;
+            background:
+                radial-gradient(ellipse 65% 55% at 15% 25%, rgba(42,171,238,0.07) 0%, transparent 60%),
+                radial-gradient(ellipse 55% 45% at 85% 75%, rgba(99,102,241,0.05) 0%, transparent 60%);
+            pointer-events: none;
+        }}
+        .card {{
+            position: relative;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 44px 36px 40px;
+            width: 100%; max-width: 380px;
+            text-align: center;
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.025), 0 24px 64px rgba(0,0,0,0.5);
+            animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }}
+        @keyframes rise {{
+            from {{ opacity: 0; transform: translateY(20px) scale(0.97); }}
+            to   {{ opacity: 1; transform: translateY(0) scale(1); }}
+        }}
+        .card::before {{
+            content: '';
+            position: absolute; top: 0; left: 50%;
+            transform: translateX(-50%);
+            width: 55%; height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            opacity: 0.55;
+        }}
+        .icon-wrap {{
+            width: 64px; height: 64px;
+            background: var(--accent-dim);
+            border: 1px solid var(--accent-border);
+            border-radius: 18px;
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 22px;
+        }}
+        .icon-wrap svg {{
+            width: 28px; height: 28px;
+            stroke: var(--accent); fill: none;
+            stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+        }}
+        h1 {{
+            font-size: 1.4rem; font-weight: 700;
+            letter-spacing: -0.025em; margin-bottom: 8px;
+        }}
+        .subtitle {{
+            font-size: 0.875rem; color: var(--muted);
+            line-height: 1.65; margin-bottom: 28px;
+        }}
+        .divider {{ height: 1px; background: var(--border); margin: 0 -36px 28px; }}
+        .captcha-wrap {{ display: flex; justify-content: center; }}
+        .footer-note {{
+            margin-top: 20px; font-size: 0.77rem;
+            color: var(--muted); opacity: 0.6;
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+        }}
+        .footer-note svg {{
+            width: 12px; height: 12px; stroke: currentColor; fill: none;
+            stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0;
+        }}
+        .submit-btn {{
+            margin-top: 16px; padding: 12px 32px;
+            background: var(--accent); color: #fff; border: none;
+            border-radius: 10px; font-family: var(--font);
+            font-size: 0.95rem; font-weight: 600; cursor: pointer;
+            transition: opacity 0.2s, transform 0.15s;
+        }}
+        .submit-btn:hover {{ opacity: 0.88; transform: translateY(-1px); }}
+        @media (max-width: 420px) {{
+            .card {{ padding: 36px 24px 32px; }}
+            .divider {{ margin: 0 -24px 24px; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon-wrap">
+            <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
-    </body>
-    </html>
-    """
+        <h1>Verification</h1>
+        <p class="subtitle">Please complete the CAPTCHA below<br>to join the group.</p>
+        <div class="divider"></div>
+        <form id="verify-form" action="/verify" method="POST">
+            <input type="hidden" name="token" value="{token}">
+            <div class="captcha-wrap">
+                <div class="cf-turnstile"
+                     data-sitekey="{TURNSTILE_SITE_KEY}"
+                     data-callback="onCaptchaSuccess"
+                     data-theme="dark"></div>
+            </div>
+            <noscript>
+                <button type="submit" class="submit-btn">Submit Verification</button>
+            </noscript>
+        </form>
+        <p class="footer-note">
+            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Protected by Cloudflare Turnstile
+        </p>
+    </div>
+    <script>
+        function onCaptchaSuccess() {{
+            document.getElementById("verify-form").submit();
+        }}
+    </script>
+</body>
+</html>"""
     return web.Response(text=html, content_type='text/html')
+
 
 async def web_verify_post(request):
     data = await request.post()
@@ -512,14 +614,10 @@ async def web_verify_post(request):
         log.warning("WEB_DEBUG: Captcha empty")
         return web.Response(text="Captcha validation missing.", status=400)
 
-    # Validasi ke server Cloudflare
     async with aiohttp.ClientSession() as session:
         async with session.post(
             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-            data={
-                "secret": TURNSTILE_SECRET_KEY,
-                "response": cf_response
-            }
+            data={"secret": TURNSTILE_SECRET_KEY, "response": cf_response}
         ) as resp:
             result = await resp.json()
             log.info(f"WEB_DEBUG: Cloudflare result: {result}")
@@ -529,14 +627,146 @@ async def web_verify_post(request):
         return web.Response(text="Verification failed.", status=403)
 
     chat_id, user_id = VERIFY_TOKENS.pop(token)
-    
+
     if BOT_INSTANCE:
         log.info(f"WEB_DEBUG: Triggering unban for {user_id} in {chat_id}")
         await _on_verification_success(BOT_INSTANCE, chat_id, user_id)
     else:
         log.error("WEB_DEBUG: BOT_INSTANCE is None!")
 
-    return web.Response(text="Success! You can go back.", content_type='text/html')
+    success_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verification Successful</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --bg: #0e1117; --card: #161b26;
+            --border: rgba(255,255,255,0.08);
+            --success: #22c55e; --success-dim: rgba(34,197,94,0.12);
+            --success-border: rgba(34,197,94,0.22);
+            --text: #e4e8f0; --muted: #667080;
+            --font: 'Figtree', sans-serif;
+        }
+        body {
+            font-family: var(--font);
+            background: var(--bg);
+            min-height: 100svh;
+            display: flex; align-items: center; justify-content: center;
+            padding: 24px 16px; color: var(--text); overflow: hidden;
+        }
+        body::before {
+            content: '';
+            position: fixed; inset: 0;
+            background: radial-gradient(ellipse 65% 55% at 50% 40%, rgba(34,197,94,0.06) 0%, transparent 60%);
+            pointer-events: none;
+        }
+        .card {
+            position: relative;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 44px 36px 40px;
+            width: 100%; max-width: 380px;
+            text-align: center;
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.025), 0 24px 64px rgba(0,0,0,0.5);
+            animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(20px) scale(0.97); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .card::before {
+            content: '';
+            position: absolute; top: 0; left: 50%;
+            transform: translateX(-50%);
+            width: 55%; height: 1px;
+            background: linear-gradient(90deg, transparent, var(--success), transparent);
+            opacity: 0.55;
+        }
+        .icon-wrap {
+            width: 64px; height: 64px;
+            background: var(--success-dim);
+            border: 1px solid var(--success-border);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 22px;
+        }
+        .icon-wrap svg {
+            width: 30px; height: 30px;
+            stroke: var(--success); fill: none;
+            stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+        }
+        .badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 5px 14px; border-radius: 99px;
+            background: var(--success-dim); border: 1px solid var(--success-border);
+            color: var(--success); font-size: 0.8rem; font-weight: 600;
+            margin-bottom: 20px;
+        }
+        .badge .dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: currentColor; animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+        h1 {
+            font-size: 1.4rem; font-weight: 700;
+            letter-spacing: -0.025em; margin-bottom: 8px;
+        }
+        .subtitle {
+            font-size: 0.875rem; color: var(--muted);
+            line-height: 1.65; margin-bottom: 28px;
+        }
+        .divider { height: 1px; background: var(--border); margin: 0 -36px 28px; }
+        .close-btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 11px 28px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px; font-family: var(--font);
+            font-size: 0.9rem; font-weight: 500;
+            color: var(--muted); cursor: pointer; text-decoration: none;
+            transition: all 0.2s;
+        }
+        .close-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+        .footer-note {
+            margin-top: 20px; font-size: 0.77rem;
+            color: var(--muted); opacity: 0.55;
+        }
+        #countdown { font-variant-numeric: tabular-nums; }
+        @media (max-width: 420px) {
+            .card { padding: 36px 24px 32px; }
+            .divider { margin: 0 -24px 24px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon-wrap">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <div class="badge"><span class="dot"></span> Verified</div>
+        <h1>Verification Successful!</h1>
+        <p class="subtitle">You have been verified and<br>can now join the group.</p>
+        <div class="divider"></div>
+        <a href="javascript:window.close()" class="close-btn">Close this page</a>
+        <p class="footer-note">Automatically closing in <span id="countdown">5</span> seconds</p>
+    </div>
+    <script>
+        let t = 5;
+        const el = document.getElementById('countdown');
+        const iv = setInterval(() => {
+            el.textContent = --t;
+            if (t <= 0) { clearInterval(iv); window.close(); }
+        }, 1000);
+    </script>
+</body>
+</html>"""
+    return web.Response(text=success_html, content_type='text/html')
 
 
 
@@ -557,8 +787,6 @@ async def start_welcome_server(bot):
     await site.start()
     log.info(f"Web Verification Server running on {WEB_HOST}:{WEB_PORT}")
 
-
-# --- DB INIT ---
 try: init_welcome_db()
 except Exception: pass
 try: WELCOME_ENABLED_CHATS = load_welcome_chats()
