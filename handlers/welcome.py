@@ -453,7 +453,6 @@ async def _on_verification_success(bot, chat_id: int, user_id: int):
         except Exception:
             pass
 
-#web app
 # web app
 async def web_verify_get(request):
     token = request.query.get("token")
@@ -465,130 +464,146 @@ async def web_verify_get(request):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Verification</title>
+    <title>Verification Protocol</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     <style>
         *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
         :root {{
-            --bg: #0e1117; --card: #161b26;
-            --border: rgba(255,255,255,0.08);
-            --accent: #2AABEE; --accent-dim: rgba(42,171,238,0.12);
-            --accent-border: rgba(42,171,238,0.22);
-            --text: #e4e8f0; --muted: #667080;
-            --font: 'Figtree', sans-serif;
+            --bg: #080a0f;
+            --editorial-text: #ffffff;
+            --border: rgba(255, 255, 255, 0.05);
+            --font-main: 'Plus Jakarta Sans', sans-serif;
         }}
+        
         body {{
-            font-family: var(--font);
-            background: var(--bg);
+            font-family: var(--font-main);
+            background-color: var(--bg);
+            color: var(--editorial-text);
             min-height: 100svh;
-            display: flex; align-items: center; justify-content: center;
-            padding: 24px 16px;
-            color: var(--text); overflow: hidden;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
         }}
-        body::before {{
-            content: '';
-            position: fixed; inset: 0;
-            background:
-                radial-gradient(ellipse 65% 55% at 15% 25%, rgba(42,171,238,0.07) 0%, transparent 60%),
-                radial-gradient(ellipse 55% 45% at 85% 75%, rgba(99,102,241,0.05) 0%, transparent 60%);
-            pointer-events: none;
+
+        body::after {{
+            content: ''; position: fixed; inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            opacity: 0.035; pointer-events: none; z-index: 10;
         }}
-        .card {{
-            position: relative;
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 24px;
-            padding: 44px 36px 40px;
-            width: 100%; max-width: 380px;
-            text-align: center;
-            box-shadow: 0 0 0 1px rgba(255,255,255,0.025), 0 24px 64px rgba(0,0,0,0.5);
-            animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+
+        .layout {{
+            display: grid; grid-template-columns: 1.2fr 1fr;
+            min-height: 100svh; position: relative; z-index: 1;
         }}
-        @keyframes rise {{
-            from {{ opacity: 0; transform: translateY(20px) scale(0.97); }}
-            to   {{ opacity: 1; transform: translateY(0) scale(1); }}
+
+        .editorial {{
+            padding: 12svh 8vw; display: flex; flex-direction: column; justify-content: center;
+            border-right: 1px solid var(--border);
+            background: radial-gradient(circle at 0% 0%, #111520 0%, transparent 70%);
         }}
-        .card::before {{
-            content: '';
-            position: absolute; top: 0; left: 50%;
-            transform: translateX(-50%);
-            width: 55%; height: 1px;
-            background: linear-gradient(90deg, transparent, var(--accent), transparent);
-            opacity: 0.55;
+
+        .protocol-label {{
+            font-size: 0.85rem; text-transform: uppercase;
+            letter-spacing: 0.05em; color: #aeaeae; margin-bottom: 2rem; font-weight: 600;
+            opacity: 0; animation: fadeUp 1s 0.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }}
-        .icon-wrap {{
-            width: 64px; height: 64px;
-            background: var(--accent-dim);
-            border: 1px solid var(--accent-border);
-            border-radius: 18px;
-            display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 22px;
-        }}
-        .icon-wrap svg {{
-            width: 28px; height: 28px;
-            stroke: var(--accent); fill: none;
-            stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
-        }}
+
         h1 {{
-            font-size: 1.4rem; font-weight: 700;
-            letter-spacing: -0.025em; margin-bottom: 8px;
+            font-size: clamp(3rem, 5.5vw, 5.5rem);
+            font-weight: 700; line-height: 1.05; letter-spacing: -0.03em;
+            color: var(--editorial-text); margin-bottom: 1.5rem;
+            opacity: 0; animation: fadeUp 1s 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }}
+
         .subtitle {{
-            font-size: 0.875rem; color: var(--muted);
-            line-height: 1.65; margin-bottom: 28px;
+            font-size: 1.05rem; line-height: 1.6; font-weight: 400;
+            color: #d1d1d1; max-width: 420px;
+            opacity: 0; animation: fadeUp 1s 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }}
-        .divider {{ height: 1px; background: var(--border); margin: 0 -36px 28px; }}
-        .captcha-wrap {{ display: flex; justify-content: center; }}
-        .footer-note {{
-            margin-top: 20px; font-size: 0.77rem;
-            color: var(--muted); opacity: 0.6;
-            display: flex; align-items: center; justify-content: center; gap: 5px;
+
+        .functional {{
+            padding: 10svh 6vw; display: flex; align-items: center; justify-content: center;
+            background-color: #0a0b0f;
         }}
-        .footer-note svg {{
-            width: 12px; height: 12px; stroke: currentColor; fill: none;
-            stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0;
+
+        .functional-surface {{
+            background: rgba(255,255,255,0.015); border: 1px solid rgba(255,255,255,0.03);
+            padding: 48px 40px; width: 100%; max-width: 440px; position: relative;
+            opacity: 0; animation: fadeUp 1s 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }}
-        .submit-btn {{
-            margin-top: 16px; padding: 12px 32px;
-            background: var(--accent); color: #fff; border: none;
-            border-radius: 10px; font-family: var(--font);
-            font-size: 0.95rem; font-weight: 600; cursor: pointer;
-            transition: opacity 0.2s, transform 0.15s;
+
+        .functional-surface::before, .functional-surface::after {{
+            content: ''; position: absolute; width: 6px; height: 6px; 
+            border: 1px solid rgba(255,255,255,0.1); background: #0a0b0f;
         }}
-        .submit-btn:hover {{ opacity: 0.88; transform: translateY(-1px); }}
-        @media (max-width: 420px) {{
-            .card {{ padding: 36px 24px 32px; }}
-            .divider {{ margin: 0 -24px 24px; }}
+        .functional-surface::before {{ top: -4px; left: -4px; }}
+        .functional-surface::after {{ bottom: -4px; right: -4px; }}
+
+        .functional-header {{
+            font-size: 1.15rem; font-weight: 600;
+            margin-bottom: 2rem; display: flex; align-items: center; gap: 16px;
+        }}
+        .functional-header::after {{
+            content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.06);
+        }}
+
+        .captcha-wrapper {{ min-height: 65px; }}
+
+        .btn {{
+            width: 100%; background: #ffffff; color: #080a0f; border: none;
+            padding: 16px 32px; font-family: var(--font-main); font-size: 1rem;
+            font-weight: 700; cursor: pointer; margin-top: 1.5rem; border-radius: 4px;
+            transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s;
+        }}
+
+        .btn:hover {{ transform: translateY(-2px); background: #eaeaea; }}
+
+        @keyframes fadeUp {{
+            from {{ opacity: 0; transform: translateY(30px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+
+        @media (max-width: 900px) {{
+            .layout {{ grid-template-columns: 1fr; grid-template-rows: auto 1fr; }}
+            .editorial {{ border-right: none; border-bottom: 1px solid var(--border); padding: 8svh 6vw 6svh; background: none; }}
+            h1 {{ font-size: clamp(2.5rem, 10vw, 3.5rem); }}
+            .functional {{ padding: 6svh 6vw 10svh; align-items: flex-start; }}
+            .functional-surface {{ padding: 32px 24px; }}
         }}
     </style>
 </head>
 <body>
-    <div class="card">
-        <div class="icon-wrap">
-            <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        </div>
-        <h1>Verification</h1>
-        <p class="subtitle">Please complete the CAPTCHA below<br>to join the group.</p>
-        <div class="divider"></div>
-        <form id="verify-form" action="/verify" method="POST">
-            <input type="hidden" name="token" value="{token}">
-            <div class="captcha-wrap">
-                <div class="cf-turnstile"
-                     data-sitekey="{TURNSTILE_SITE_KEY}"
-                     data-callback="onCaptchaSuccess"
-                     data-theme="dark"></div>
+    <main class="layout">
+        <section class="editorial">
+            <div class="protocol-label">Identity protocol</div>
+            <h1>Human<br>Verification.</h1>
+            <p class="subtitle">Please wait until the verification process is complete.</p>
+        </section>
+        
+        <section class="functional">
+            <div class="functional-surface">
+                <div class="functional-header">Please wait</div>
+                
+                <form id="verify-form" action="/verify" method="POST">
+                    <input type="hidden" name="token" value="{token}">
+                    
+                    <div class="captcha-wrapper">
+                        <div class="cf-turnstile"
+                             data-sitekey="{TURNSTILE_SITE_KEY}"
+                             data-callback="onCaptchaSuccess"
+                             data-theme="dark"></div>
+                    </div>
+                    
+                    <noscript>
+                        <button type="submit" class="btn">Submit Verification</button>
+                    </noscript>
+                </form>
             </div>
-            <noscript>
-                <button type="submit" class="submit-btn">Submit Verification</button>
-            </noscript>
-        </form>
-        <p class="footer-note">
-            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            Protected by Cloudflare Turnstile
-        </p>
-    </div>
+        </section>
+    </main>
+
     <script>
         function onCaptchaSuccess() {{
             document.getElementById("verify-form").submit();
@@ -641,105 +656,130 @@ async def web_verify_post(request):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Verification Successful</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
-            --bg: #0e1117; --card: #161b26;
-            --border: rgba(255,255,255,0.08);
-            --success: #22c55e; --success-dim: rgba(34,197,94,0.12);
-            --success-border: rgba(34,197,94,0.22);
-            --text: #e4e8f0; --muted: #667080;
-            --font: 'Figtree', sans-serif;
+            --bg: #080a0f;
+            --editorial-text: #ffffff;
+            --border: rgba(255, 255, 255, 0.05);
+            --font-main: 'Plus Jakarta Sans', sans-serif;
         }
+        
         body {
-            font-family: var(--font);
-            background: var(--bg);
-            min-height: 100svh;
-            display: flex; align-items: center; justify-content: center;
-            padding: 24px 16px; color: var(--text); overflow: hidden;
+            font-family: var(--font-main); background-color: var(--bg);
+            color: var(--editorial-text); min-height: 100svh;
+            overflow-x: hidden; -webkit-font-smoothing: antialiased;
         }
-        body::before {
-            content: '';
-            position: fixed; inset: 0;
-            background: radial-gradient(ellipse 65% 55% at 50% 40%, rgba(34,197,94,0.06) 0%, transparent 60%);
-            pointer-events: none;
+
+        body::after {
+            content: ''; position: fixed; inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            opacity: 0.035; pointer-events: none; z-index: 10;
         }
-        .card {
-            position: relative;
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 24px;
-            padding: 44px 36px 40px;
-            width: 100%; max-width: 380px;
-            text-align: center;
-            box-shadow: 0 0 0 1px rgba(255,255,255,0.025), 0 24px 64px rgba(0,0,0,0.5);
-            animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+
+        .layout {
+            display: grid; grid-template-columns: 1.2fr 1fr;
+            min-height: 100svh; position: relative; z-index: 1;
         }
-        @keyframes rise {
-            from { opacity: 0; transform: translateY(20px) scale(0.97); }
-            to   { opacity: 1; transform: translateY(0) scale(1); }
+
+        .editorial {
+            padding: 12svh 8vw; display: flex; flex-direction: column; justify-content: center;
+            border-right: 1px solid var(--border);
+            background: radial-gradient(circle at 0% 0%, #111520 0%, transparent 70%);
         }
-        .card::before {
-            content: '';
-            position: absolute; top: 0; left: 50%;
-            transform: translateX(-50%);
-            width: 55%; height: 1px;
-            background: linear-gradient(90deg, transparent, var(--success), transparent);
-            opacity: 0.55;
+
+        .protocol-label {
+            font-size: 0.85rem; text-transform: uppercase; font-weight: 600;
+            letter-spacing: 0.05em; color: var(--editorial-text); margin-bottom: 2rem;
+            opacity: 0; animation: fadeUp 1s 0.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }
-        .icon-wrap {
-            width: 64px; height: 64px;
-            background: var(--success-dim);
-            border: 1px solid var(--success-border);
-            border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 22px;
-        }
-        .icon-wrap svg {
-            width: 30px; height: 30px;
-            stroke: var(--success); fill: none;
-            stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
-        }
-        .badge {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 5px 14px; border-radius: 99px;
-            background: var(--success-dim); border: 1px solid var(--success-border);
-            color: var(--success); font-size: 0.8rem; font-weight: 600;
-            margin-bottom: 20px;
-        }
-        .badge .dot {
-            width: 6px; height: 6px; border-radius: 50%;
-            background: currentColor; animation: pulse 2s ease-in-out infinite;
-        }
-        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+        .protocol-label::before { content: ''; display: inline-block; width: 6px; height: 6px; background-color: var(--editorial-text); vertical-align: middle; margin-right: 10px; margin-top: -2px; }
+
         h1 {
-            font-size: 1.4rem; font-weight: 700;
-            letter-spacing: -0.025em; margin-bottom: 8px;
-        }
+            font-size: clamp(3rem, 5.5vw, 5.5rem);
+            font-weight: 700; line-height: 1.05; letter-spacing: -0.03em;
+            color: var(--editorial-text); margin-bottom: 1.5rem;
+            opacity: 0; animation: fadeUp 1s 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }}
+
         .subtitle {
-            font-size: 0.875rem; color: var(--muted);
-            line-height: 1.65;
+            font-size: 1.05rem; line-height: 1.6; font-weight: 400;
+            color: #d1d1d1; max-width: 420px;
+            opacity: 0; animation: fadeUp 1s 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }
-        @media (max-width: 420px) {
-            .card { padding: 36px 24px 32px; }
+
+        .functional {
+            padding: 10svh 6vw; display: flex; align-items: center; justify-content: center;
+            background-color: #0a0b0f;
+        }
+
+        .functional-surface {
+            background: rgba(255,255,255,0.015); border: 1px solid rgba(255,255,255,0.03);
+            padding: 48px 40px; width: 100%; max-width: 440px; position: relative;
+            opacity: 0; animation: fadeUp 1s 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        .functional-surface::before, .functional-surface::after {
+            content: ''; position: absolute; width: 6px; height: 6px; border: 1px solid rgba(255,255,255,0.1); background: #0a0b0f;
+        }
+        .functional-surface::before { top: -4px; left: -4px; }
+        .functional-surface::after { bottom: -4px; right: -4px; }
+
+        .functional-header {
+            font-size: 1.15rem; font-weight: 600;
+            margin-bottom: 2rem; display: flex; align-items: center; gap: 16px;
+        }
+        .functional-header::after {
+            content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.06);
+        }
+
+        .status-text {
+            font-size: 1.05rem; font-weight: 400;
+            color: var(--editorial-text); line-height: 1.6;
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (max-width: 900px) {
+            .layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+            .editorial { border-right: none; border-bottom: 1px solid var(--border); padding: 8svh 6vw 6svh; background: none; }
+            h1 { font-size: clamp(2.5rem, 10vw, 3.5rem); }
+            .functional { padding: 6svh 6vw 10svh; align-items: flex-start; }
+            .functional-surface { padding: 32px 24px; }
         }
     </style>
 </head>
 <body>
-    <div class="card">
-        <div class="icon-wrap">
-            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-        </div>
-        <div class="badge"><span class="dot"></span> Verified</div>
-        <h1>Verification Successful!</h1>
-        <p class="subtitle">You have been verified and<br>can now join the group.</p>
-    </div>
+    <main class="layout">
+        <section class="editorial">
+            <div class="protocol-label">Verification complete</div>
+            <h1>Verification<br>Successful.</h1>
+            <p class="subtitle">Process complete. Your group access has been successfully unlocked.</p>
+        </section>
+        
+        <section class="functional">
+            <div class="functional-surface">
+                <div class="functional-header">Verification Status</div>
+                
+                <div class="status-text">
+                    Identity verified. You may now return to the Telegram app.
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // Auto-close silently after 3 seconds
+        setTimeout(() => { window.close(); }, 3000);
+    </script>
 </body>
 </html>"""
     return web.Response(text=success_html, content_type='text/html')
-
-
 
 async def start_welcome_server(bot):
     """Fungsi ini dipanggil di post_init buat nyalain web server"""
