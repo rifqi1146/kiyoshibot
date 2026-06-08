@@ -36,6 +36,8 @@ WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", f"http://{WEB_HOST}:{WEB_PORT}")
 TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY", "")
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "")
+HCAPTCHA_SITE_KEY = os.getenv("HCAPTCHA_SITE_KEY", "")
+HCAPTCHA_SECRET_KEY = os.getenv("HCAPTCHA_SECRET_KEY", "")
 
 WELCOME_ENABLED_CHATS = set()
 VERIFIED_USERS = {}
@@ -374,7 +376,6 @@ async def welcome_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for user in msg.new_chat_members:
         await _process_new_member(chat, user, context)
 
-#web verification 
 async def start_verify_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not context.args:
         return
@@ -398,25 +399,69 @@ async def start_verify_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pending:
             return await update.message.reply_text("Verification expired or not found. Please rejoin the group.")
 
-        # Generate unique URL token
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Cloudflare", callback_data=f"vmethod:cf:{chat_id}:{user_id}")],
+            [InlineKeyboardButton("hCaptcha", callback_data=f"vmethod:hc:{chat_id}:{user_id}")]
+        ])
+
+        await update.message.reply_text(
+            "<b>Choose Verification Method</b>\n\nSelect your preferred CAPTCHA method below to proceed:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+
+
+async def verify_method_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data or not q.data.startswith("vmethod:"):
+        return
+
+    try:
+        _, method, chat_id, user_id = q.data.split(":")
+        chat_id, user_id = int(chat_id), int(user_id)
+    except Exception:
+        return
+
+    if update.effective_user.id != user_id:
+        return await q.answer("This verification request is not for you.", show_alert=True)
+
+    if method == "back":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Cloudflare", callback_data=f"vmethod:cf:{chat_id}:{user_id}")],
+            [InlineKeyboardButton("hCaptcha", callback_data=f"vmethod:hc:{chat_id}:{user_id}")]
+        ])
+        return await q.edit_message_text(
+            "<b>Choose Verification Method</b>\n\nSelect your preferred CAPTCHA method below to proceed:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+
+    async with _get_verify_lock(chat_id, user_id):
+        key = _verify_key(chat_id, user_id)
+        pending = PENDING_VERIFY.get(key)
+        if not pending:
+            return await q.answer("Verification expired or not found. Please rejoin the group.", show_alert=True)
+
         token = str(uuid.uuid4())
-        VERIFY_TOKENS[token] = key
+        VERIFY_TOKENS[token] = (chat_id, user_id, method)
 
         verify_url = f"{PUBLIC_URL}/verify?token={token}"
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Click here to Verify", url=verify_url)]
+            [InlineKeyboardButton("Click here to Verify", url=verify_url)],
+            [InlineKeyboardButton("Back to Methods", callback_data=f"vmethod:back:{chat_id}:{user_id}")]
         ])
 
-        await update.message.reply_text(
-            "<b>Verify you are human</b>\n\nClick the button below to complete the CAPTCHA.",
+        method_name = "Cloudflare" if method == "cf" else "hCaptcha"
+        await q.edit_message_text(
+            f"<b>Verify you are human ({method_name})</b>\n\nClick the button below to complete the CAPTCHA.",
             reply_markup=keyboard,
             parse_mode="HTML"
         )
 
 
 async def _on_verification_success(bot, chat_id: int, user_id: int):
-    """Callback pas Web Server dapet validasi sukses dari Cloudflare"""
+    """Callback pas Web Server dapet validasi sukses dari Cloudflare/hCaptcha"""
     async with _get_verify_lock(chat_id, user_id):
         key = _verify_key(chat_id, user_id)
         pending = PENDING_VERIFY.get(key)
@@ -453,11 +498,19 @@ async def _on_verification_success(bot, chat_id: int, user_id: int):
         except Exception:
             pass
 
-# web app
 async def web_verify_get(request):
     token = request.query.get("token")
     if not token or token not in VERIFY_TOKENS:
         return web.Response(text="Invalid or expired verification token.", status=400)
+
+    _, _, method = VERIFY_TOKENS[token]
+
+    if method == "cf":
+        script_tag = '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>'
+        widget_tag = f'<div class="cf-turnstile" data-sitekey="{TURNSTILE_SITE_KEY}" data-callback="onCaptchaSuccess" data-theme="dark"></div>'
+    else:
+        script_tag = '<script src="https://js.hcaptcha.com/1/api.js" async defer></script>'
+        widget_tag = f'<div class="h-captcha" data-sitekey="{HCAPTCHA_SITE_KEY}" data-callback="onCaptchaSuccess" data-theme="dark"></div>'
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -468,7 +521,7 @@ async def web_verify_get(request):
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+    {script_tag}
     <style>
         *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
         :root {{
@@ -549,7 +602,7 @@ async def web_verify_get(request):
             content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.06);
         }}
 
-        .captcha-wrapper {{ min-height: 65px; }}
+        .captcha-wrapper {{ min-height: 65px; display: flex; justify-content: center; }}
 
         .btn {{
             width: 100%; background: #ffffff; color: #080a0f; border: none;
@@ -579,21 +632,18 @@ async def web_verify_get(request):
         <section class="editorial">
             <div class="protocol-label">Identity protocol</div>
             <h1>Human<br>Verification.</h1>
-            <p class="subtitle">Please wait until the verification process is complete.</p>
+            <p class="subtitle">Please complete the captcha challenge to verify your identity.</p>
         </section>
         
         <section class="functional">
             <div class="functional-surface">
-                <div class="functional-header">Please wait</div>
+                <div class="functional-header">Verify</div>
                 
                 <form id="verify-form" action="/verify" method="POST">
                     <input type="hidden" name="token" value="{token}">
                     
                     <div class="captcha-wrapper">
-                        <div class="cf-turnstile"
-                             data-sitekey="{TURNSTILE_SITE_KEY}"
-                             data-callback="onCaptchaSuccess"
-                             data-theme="dark"></div>
+                        {widget_tag}
                     </div>
                     
                     <noscript>
@@ -617,31 +667,41 @@ async def web_verify_get(request):
 async def web_verify_post(request):
     data = await request.post()
     token = data.get("token")
-    cf_response = data.get("cf-turnstile-response")
-
-    log.info(f"WEB_DEBUG: Post received. Token: {token}, CF_Response: {bool(cf_response)}")
 
     if not token or token not in VERIFY_TOKENS:
         log.warning("WEB_DEBUG: Invalid token")
         return web.Response(text="Invalid or expired token.", status=400)
 
-    if not cf_response:
-        log.warning("WEB_DEBUG: Captcha empty")
+    chat_id, user_id, method = VERIFY_TOKENS[token]
+
+    if method == "cf":
+        captcha_response = data.get("cf-turnstile-response")
+        secret_key = TURNSTILE_SECRET_KEY
+        verify_url = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+        log_name = "Cloudflare"
+    else:
+        captcha_response = data.get("h-captcha-response")
+        secret_key = HCAPTCHA_SECRET_KEY
+        verify_url = "https://hcaptcha.com/siteverify"
+        log_name = "hCaptcha"
+
+    if not captcha_response:
+        log.warning(f"WEB_DEBUG: Captcha empty ({log_name})")
         return web.Response(text="Captcha validation missing.", status=400)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
-            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-            data={"secret": TURNSTILE_SECRET_KEY, "response": cf_response}
+            verify_url,
+            data={"secret": secret_key, "response": captcha_response}
         ) as resp:
             result = await resp.json()
-            log.info(f"WEB_DEBUG: Cloudflare result: {result}")
+            log.info(f"WEB_DEBUG: {log_name} result: {result}")
 
     if not result.get("success"):
-        log.warning("WEB_DEBUG: Cloudflare rejected")
-        return web.Response(text="Verification failed.", status=403)
+        log.warning(f"WEB_DEBUG: {log_name} rejected")
+        return web.Response(text="Verification failed. Please try again.", status=403)
 
-    chat_id, user_id = VERIFY_TOKENS.pop(token)
+    VERIFY_TOKENS.pop(token)
 
     if BOT_INSTANCE:
         log.info(f"WEB_DEBUG: Triggering unban for {user_id} in {chat_id}")
