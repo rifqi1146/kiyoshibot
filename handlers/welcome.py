@@ -719,28 +719,10 @@ async def web_verify_post(request):
         }
         .subtitle {
             font-size: 0.875rem; color: var(--muted);
-            line-height: 1.65; margin-bottom: 28px;
+            line-height: 1.65;
         }
-        .divider { height: 1px; background: var(--border); margin: 0 -36px 28px; }
-        .close-btn {
-            display: inline-flex; align-items: center; gap: 8px;
-            padding: 11px 28px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 10px; font-family: var(--font);
-            font-size: 0.9rem; font-weight: 500;
-            color: var(--muted); cursor: pointer; text-decoration: none;
-            transition: all 0.2s;
-        }
-        .close-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
-        .footer-note {
-            margin-top: 20px; font-size: 0.77rem;
-            color: var(--muted); opacity: 0.55;
-        }
-        #countdown { font-variant-numeric: tabular-nums; }
         @media (max-width: 420px) {
             .card { padding: 36px 24px 32px; }
-            .divider { margin: 0 -24px 24px; }
         }
     </style>
 </head>
@@ -752,18 +734,7 @@ async def web_verify_post(request):
         <div class="badge"><span class="dot"></span> Verified</div>
         <h1>Verification Successful!</h1>
         <p class="subtitle">You have been verified and<br>can now join the group.</p>
-        <div class="divider"></div>
-        <a href="javascript:window.close()" class="close-btn">Close this page</a>
-        <p class="footer-note">Automatically closing in <span id="countdown">5</span> seconds</p>
     </div>
-    <script>
-        let t = 5;
-        const el = document.getElementById('countdown');
-        const iv = setInterval(() => {
-            el.textContent = --t;
-            if (t <= 0) { clearInterval(iv); window.close(); }
-        }, 1000);
-    </script>
 </body>
 </html>"""
     return web.Response(text=success_html, content_type='text/html')
