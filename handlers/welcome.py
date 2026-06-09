@@ -66,7 +66,7 @@ def verify_keyboard(user_id: int, chat_id: int, bot_username: str):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
-                "Verify",
+                "Verify Here",
                 url=f"https://t.me/{bot_username}?start=verify_{chat_id}_{user_id}"
             )
         ]
@@ -292,6 +292,10 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
         bot_username = me.username or ""
 
     async with _get_verify_lock(chat.id, user.id):
+        key = _verify_key(chat.id, user.id)
+        if key in PENDING_VERIFY:
+            return
+
         if user.id in VERIFIED_USERS.get(chat.id, set()):
             VERIFIED_USERS.setdefault(chat.id, set()).discard(user.id)
             try: delete_verified_user(chat.id, user.id)
@@ -314,7 +318,6 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
             log.warning(f"Welcome message failed: {e}")
             return
 
-        key = _verify_key(chat.id, user.id)
         WELCOME_MESSAGES[key] = sent.message_id
         try: save_pending_welcome(chat.id, user.id, sent.message_id)
         except Exception: pass
@@ -365,6 +368,7 @@ async def welcome_chat_member_handler(update: Update, context: ContextTypes.DEFA
         return
     old_status = getattr(cmu.old_chat_member, "status", None)
     new_status = getattr(cmu.new_chat_member, "status", None)
+    
     if old_status in ("left", "kicked") and new_status in ("member", "restricted"):
         await _process_new_member(cmu.chat, cmu.new_chat_member.user, context)
 
@@ -400,7 +404,7 @@ async def start_verify_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await update.message.reply_text("Verification expired or not found. Please rejoin the group.")
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Cloudflare", callback_data=f"vmethod:cf:{chat_id}:{user_id}")],
+            [InlineKeyboardButton("Cloudflare Turnstile", callback_data=f"vmethod:cf:{chat_id}:{user_id}")],
             [InlineKeyboardButton("hCaptcha", callback_data=f"vmethod:hc:{chat_id}:{user_id}")]
         ])
 
@@ -427,7 +431,7 @@ async def verify_method_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     if method == "back":
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Cloudflare", callback_data=f"vmethod:cf:{chat_id}:{user_id}")],
+            [InlineKeyboardButton("Cloudflare Turnstile", callback_data=f"vmethod:cf:{chat_id}:{user_id}")],
             [InlineKeyboardButton("hCaptcha", callback_data=f"vmethod:hc:{chat_id}:{user_id}")]
         ])
         return await q.edit_message_text(
