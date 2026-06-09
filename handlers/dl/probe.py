@@ -88,11 +88,21 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
         return []
 
     cmd = [yt_dlp_bin]
-    if COOKIES_PATH:
-        cmd += ["--cookies", COOKIES_PATH]
+    try:
+        if COOKIES_PATH:
+            cmd += ["--cookies", COOKIES_PATH]
+    except NameError:
+        pass
+        
+    host = _host(url)
+    if "youtube.com" in host or "youtu.be" in host:
+        cmd += [
+            "--extractor-args", "youtube:player_client=ios,tv,web;client=ios,tv,web"
+        ]
+
     cmd += ["--no-playlist", "-J", url]
 
-    log.info("yt-dlp probe start | url=%s cookies=%s", url, bool(COOKIES_PATH))
+    log.info("yt-dlp probe start | url=%s cookies=%s", url, "yes" if "--cookies" in cmd else "no")
     log.info("yt-dlp probe command | %s", " ".join(cmd))
 
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -235,6 +245,7 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
     print("yt-dlp probe final picker heights:", final_heights)
 
     return out
+
 
 async def get_resolutions(url: str, engine: str | None = None) -> list[dict]:
     chosen = (engine or "ytdlp").strip().lower()

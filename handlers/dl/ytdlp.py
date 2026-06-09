@@ -469,7 +469,7 @@ async def ytdlp_download(url,fmt_key,bot,chat_id,status_msg_id,format_id:str|Non
         _append_cookies_args(cmd)
         cmd+=[
             "--js-runtimes",YTDLP_DENO_PATH,
-            "--extractor-args","youtube:player_client=web",
+            "--extractor-args", "youtube:player_client=ios,tv,web;client=ios,tv,web"
             "--concurrent-fragments","8",
             "--no-playlist",
             "-f","bestaudio/best",
@@ -493,10 +493,18 @@ async def ytdlp_download(url,fmt_key,bot,chat_id,status_msg_id,format_id:str|Non
         log.info("yt-dlp selected format | url=%s format_id=%s has_audio=%s fmt=%s",url,format_id,has_audio,fmt)
         est_size=await asyncio.to_thread(_probe_total_size_sync,url,fmt)
         update_interval=7 if (not est_size and format_id) or est_size>=_SIZE_100MB else 5
+        
         cmd=[YT_DLP]
         if is_ig:
             cmd+=["--ignore-errors","--no-abort-on-error"]
+        
         _append_cookies_args(cmd)
+        
+        if is_yt:
+            cmd += [
+                "--extractor-args", "youtube:player_client=ios,tv,web;client=ios,tv,web"
+            ]
+
         cmd+=[
             "--js-runtimes",YTDLP_DENO_PATH,
             "--concurrent-fragments","8",
