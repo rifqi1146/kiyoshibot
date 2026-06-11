@@ -193,9 +193,7 @@ WEB_PORT=5050
 # External root address used to route captcha requests.
 PUBLIC_URL="https://hirohitokiyoshi.site"
 ```
-```
-source .env
-```
+
 ### Run Bot
 ```
 python main.py
