@@ -66,7 +66,7 @@ sudo chmod +x /usr/bin/speedtest
 git clone https://github.com/rifqi1146/kiyoshibot.git
 ```
 ```
-cd groupbot
+cd kiyoshibot
 ```
 ```
 python3 -m venv venv
