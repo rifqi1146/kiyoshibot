@@ -43,7 +43,6 @@ FULL_ADMIN_RIGHTS = {
     "can_change_info": True,
     "can_invite_users": True,
     "can_pin_messages": True,
-    "can_manage_topics": True,
     "can_manage_tags": True,
 }
 
