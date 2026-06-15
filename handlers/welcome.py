@@ -72,6 +72,35 @@ def verify_keyboard(user_id: int, chat_id: int, bot_username: str):
         ]
     ])
 
+async def _check_cas_ban(user_id: int) -> dict:
+    url = f"https://api.cas.chat/check?user_id={user_id}"
+    log.info(f"[CAS] Mengecek user_id {user_id} ke Combot API...")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=5) as resp:
+                log.info(f"[CAS] HTTP Status: {resp.status} untuk user {user_id}")
+                
+                if resp.status != 200:
+                    return {"banned": False}
+                
+                data = await resp.json()
+                log.info(f"[CAS] Raw JSON Response: {data}")
+                
+                result_data = data.get("result")
+                if data.get("ok") and result_data:
+                    offenses = result_data.get("offenses", 1)
+                    return {"banned": True, "offenses": offenses}
+                    
+    except asyncio.TimeoutError:
+        log.warning(f"[CAS] Request timeout untuk user {user_id}")
+    except Exception as e:
+        log.error(f"[CAS] Failed to check CAS API for {user_id} | err={e}")
+    
+    return {"banned": False}
+
+
+
 def _cancel_verify_timeout(chat_id: int, user_id: int):
     key = _verify_key(chat_id, user_id)
     task = PENDING_VERIFY_TASKS.pop(key, None)
@@ -293,6 +322,15 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
 
     async with _get_verify_lock(chat.id, user.id):
         key = _verify_key(chat.id, user.id)
+
+        if getattr(context.bot, "_recent_joins", None) is None:
+            context.bot._recent_joins = {}
+            
+        if context.bot._recent_joins.get(key, 0) > time.time() - 15:
+            return
+        
+        context.bot._recent_joins[key] = time.time()
+
         if key in PENDING_VERIFY:
             return
 
@@ -328,6 +366,45 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
             "created_at": time.time(),
         }
         _schedule_verify_timeout(context.application, chat.id, user.id)
+
+        log.info(f"[CAS] Memulai proses verifikasi CAS untuk {user.id} di chat {chat.id}")
+        cas_status = await _check_cas_ban(user.id)
+        
+        if cas_status["banned"]:
+            log.warning(f"[CAS] SPAMMER DETECTED! Mengeksekusi auto-ban untuk {user.id}...")
+
+            await _cleanup_pending_state(context.bot, chat.id, user.id, delete_message=True)
+            
+            try:
+                await context.bot.ban_chat_member(chat_id=chat.id, user_id=user.id, revoke_messages=True)
+                log.info(f"[CAS] Berhasil membanned {user.id}")
+            except Exception as e:
+                log.error(f"[CAS] GAGAL membanned user {user.id}: {e}")
+            
+            raw_fullname = user.full_name or "Unknown User"
+            fullname_html = html_lib.escape(raw_fullname)
+            
+            cas_url = f"https://cas.chat/query?u={user.id}"
+            
+            cas_message = (
+                f"<a href=\"tg://user?id={user.id}\">{fullname_html}</a> was banned from this group.\n"
+                f"<b>Reason:</b> <a href=\"{cas_url}\">#CAS #{user.id}</a>\n\n"
+                f"<i>Powered by <a href=\"https://cas.chat\">Combot Anti-Spam API</a></i>"
+            )
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=cas_message,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+                log.info(f"[CAS] Pesan notifikasi BAN terkirim.")
+            except Exception as e:
+                log.error(f"[CAS] GAGAL mengirim notifikasi BAN: {e}")
+
+
+
 
 async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
