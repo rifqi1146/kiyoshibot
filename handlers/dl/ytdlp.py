@@ -193,6 +193,8 @@ def _build_ytdlp_format(format_id:str|None,has_audio:bool=False)->str:
     return f"{fid}+bestaudio[ext=m4a]/{fid}+bestaudio"
 
 async def _safe_edit_status(bot,chat_id,message_id,text:str):
+    if not message_id:
+        return
     try:
         await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML")
     except RetryAfter as e:
@@ -232,7 +234,8 @@ async def gallerydl_fallback(url:str,job_id:str,bot,chat_id,status_msg_id,status
     os.makedirs(job_dir,exist_ok=True)
     proc=None
     try:
-        await _safe_edit_status(bot=bot,chat_id=chat_id,message_id=status_msg_id,text=status_text)
+        if status_msg_id:
+            await _safe_edit_status(bot=bot,chat_id=chat_id,message_id=status_msg_id,text=status_text)
         cmd=[GALLERY_DL]
         _append_cookies_args(cmd)
         cmd.extend([
@@ -428,12 +431,13 @@ async def ytdlp_download(url,fmt_key,bot,chat_id,status_msg_id,format_id:str|Non
                 last_pct=pct
                 now=time.time()
                 if now-last_edit>=update_interval or pct>=100:
-                    await _safe_edit_status(
-                        bot=bot,
-                        chat_id=chat_id,
-                        message_id=status_msg_id,
-                        text=_format_download_status(pct=pct,downloaded=downloaded,total=total,speed=speed,eta=eta),
-                    )
+                    if status_msg_id:
+                        await _safe_edit_status(
+                            bot=bot,
+                            chat_id=chat_id,
+                            message_id=status_msg_id,
+                            text=_format_download_status(pct=pct,downloaded=downloaded,total=total,speed=speed,eta=eta),
+                        )
                     last_edit=now
 
         async def read_stderr():
@@ -469,7 +473,7 @@ async def ytdlp_download(url,fmt_key,bot,chat_id,status_msg_id,format_id:str|Non
         _append_cookies_args(cmd)
         cmd+=[
             "--js-runtimes",YTDLP_DENO_PATH,
-            "--extractor-args", "youtube:player_client=ios,tv,web;client=ios,tv,web"
+            "--extractor-args", "youtube:player_client=ios,tv,web;client=ios,tv,web",
             "--concurrent-fragments","8",
             "--no-playlist",
             "-f","bestaudio/best",

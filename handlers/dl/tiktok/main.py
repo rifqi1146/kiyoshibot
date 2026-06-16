@@ -404,6 +404,8 @@ def _format_eta(seconds:float)->str:
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
     if not TIKTOK_PROGRESS:
         return
+    if not status_msg_id:
+        return    
     lines=[f"<b>{html.escape(title)}</b>",""]
     if total>0:
         pct=min(downloaded*100/total,100.0)

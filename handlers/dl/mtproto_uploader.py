@@ -170,6 +170,8 @@ async def shutdown_mtproto_uploader(app=None):
     _CLIENT=None
 
 async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="Uploading video"):
+    if not message_id: # <--- Tambahin baris ini doang
+            return
     key=(int(chat_id),int(message_id))
     lock=_get_progress_lock(key)
     async with lock:

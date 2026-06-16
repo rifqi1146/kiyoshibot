@@ -78,6 +78,9 @@ def set_upload_engine(value:str)->str:
     return engine
 
 async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None):
+    if not status_msg_id:
+        log.info("Silent mode detected, bypassing custom upload engine directly to PTB")
+        return False
     engine=get_upload_engine()
     try:
         if engine=="1":
@@ -113,6 +116,7 @@ async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,
     except Exception as e:
         log.warning("Upload engine failed, fallback to PTB | engine=%s name=%s file=%s err=%r",engine,_UPLOAD_ENGINE_NAMES.get(engine,"unknown"),os.path.basename(file_path or ""),e)
         return False
+
         
 async def reencode_mp3(src_path:str)->str:
     fixed_path=f"{TMP_DIR}/{uuid.uuid4().hex}.mp3"
@@ -209,6 +213,8 @@ async def _get_bot_name(bot)->str:
     return _BOT_FIRST_NAME_CACHE
 
 async def _safe_edit_status(bot,chat_id,message_id,text:str):
+    if not message_id:
+        return
     try:
         await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML")
     except RetryAfter as e:
@@ -232,7 +238,10 @@ async def _set_uploading_status(bot,chat_id,status_msg_id,kind:str):
         "photo":"upload_photo",
         "album":"upload_photo",
     }.get(kind,"typing")
-    await _safe_edit_status(bot=bot,chat_id=chat_id,message_id=status_msg_id,text=label)
+    
+    if status_msg_id: 
+        await _safe_edit_status(bot=bot,chat_id=chat_id,message_id=status_msg_id,text=label)
+        
     try:
         await bot.send_chat_action(chat_id=chat_id,action=action)
     except RetryAfter as e:
@@ -241,6 +250,7 @@ async def _set_uploading_status(bot,chat_id,status_msg_id,kind:str):
         await asyncio.sleep(retry_after+1)
     except Exception as e:
         log.warning("Failed to send chat action | chat_id=%s action=%s err=%s",chat_id,action,e)
+
 
 def _safe_seek(handle,label:str,chat_id):
     if not handle or not hasattr(handle,"seek"):
@@ -527,7 +537,7 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
         except Exception as e:
             log.warning("Instagram API download failed, falling back to yt-dlp | url=%s err=%r",raw_url,e)
     if is_pinterest_url(raw_url):
-        return await pinterest_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        return await pinterest_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
     if is_facebook_url(raw_url):
         return await facebook_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
     if is_reddit_url(raw_url):

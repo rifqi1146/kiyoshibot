@@ -48,6 +48,8 @@ def _build_reddit_media_headers()->dict:
     }
     
 async def _safe_edit_status(bot,chat_id,status_msg_id,text:str):
+    if not status_msg_id:
+        return
     try:
         await bot.edit_message_text(chat_id=chat_id,message_id=status_msg_id,text=text,parse_mode="HTML",disable_web_page_preview=True)
     except Exception:
@@ -120,6 +122,8 @@ def _format_eta(seconds:float)->str:
     return f"{s}s"
 
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
+    if not status_msg_id:
+        return
     pct=min(downloaded*100/total,100.0) if total>0 else 0.0
     lines=[f"<b>{html.escape(title)}</b>",""]
     if total>0:

@@ -222,6 +222,8 @@ async def shutdown_pyrogram_uploader(app=None):
     _CLIENT=None
 
 async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="Pyrofork uploading video"):
+    if not message_id:
+        return
     key=(int(chat_id),int(message_id))
     lock=_get_progress_lock(key)
     async with lock:

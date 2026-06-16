@@ -109,6 +109,8 @@ def _format_eta(seconds:float)->str:
     return f"{s}s"
 
 async def _safe_edit_status(bot,chat_id,status_msg_id,text:str,min_interval:float=1.2):
+    if not status_msg_id:
+        return
     cache=getattr(bot,"_threads_status_edit_cache",{})
     key=(chat_id,status_msg_id)
     now=time.monotonic()
@@ -133,6 +135,8 @@ async def _safe_edit_status(bot,chat_id,status_msg_id,text:str,min_interval:floa
         log.warning("Threads status edit failed | chat_id=%s msg_id=%s err=%r",chat_id,status_msg_id,e)
 
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
+    if not status_msg_id:
+        return
     lines=[f"<b>{html.escape(title)}</b>",""]
     if total>0:
         pct=min(downloaded*100/total,100.0)

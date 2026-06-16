@@ -21,27 +21,25 @@ from .tiktok.main import is_tiktok,douyin_download,tiktok_download
 from .service import download_non_tiktok,send_downloaded_media
 from database.user_settings_db import get_user_settings
 from .remux import prepare_download_result_for_send
+from .youtube.main import is_youtube_url
 
 log=logging.getLogger(__name__)
 os.makedirs(TMP_DIR,exist_ok=True)
 TIKTOK_LOCK=asyncio.Semaphore(3)
 YTDLP_SEM=asyncio.Semaphore(4)
 _MAX_FLOOD_RETRY=2
+
 DL_LIMIT_CACHE = {}
 
 def _check_and_consume_limit(user_id: int) -> int:
-    """Check if user exceeded limit. Returns cooldown time (sec) if limited, 0 if passed."""
     if is_premium_user(user_id):
         return 0
-    
     now = time.time()
     history = DL_LIMIT_CACHE.get(user_id, [])
     history = [ts for ts in history if now - ts < 60]
-    
     if len(history) >= 3:
         DL_LIMIT_CACHE[user_id] = history
         return max(1, 60 - int(now - history[0]))
-        
     history.append(now)
     DL_LIMIT_CACHE[user_id] = history
     return 0
@@ -115,6 +113,8 @@ def _metadata_status(url:str)->str:
     return f"<b>Scraping {_platform_label(url)} metadata...</b>"
     
 async def _safe_delete_message(bot,chat_id,message_id,label:str="message"):
+    if not message_id:
+        return
     try:
         await bot.delete_message(chat_id,message_id)
         log.debug("Deleted %s | chat_id=%s message_id=%s",label,chat_id,message_id)
@@ -122,6 +122,11 @@ async def _safe_delete_message(bot,chat_id,message_id,label:str="message"):
         log.debug("Failed to delete %s | chat_id=%s message_id=%s err=%r",label,chat_id,message_id,e)
 
 async def _safe_edit_error(bot,chat_id,message_id,text:str):
+    if not message_id:
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+        except Exception: pass
+        return
     try:
         await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML")
     except Exception as e:
@@ -142,21 +147,25 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
         "Start download task | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s label=%s status_ready=%s",
         data.get("url"),fmt_key,format_id,has_audio,engine,label,status_ready,
     )
-    if not status_ready:
+    if not status_ready and message:
         await message.edit_text(_metadata_status(data["url"]),parse_mode="HTML")
         status_ready=True
+        
+    chat_id = data.get("chat_id")
+    status_msg_id = message.message_id if message else None
+
     context.application.create_task(
         _dl_worker(
             app=context.application,
-            chat_id=message.chat.id,
+            chat_id=chat_id,
             reply_to=data.get("reply_to"),
             raw_url=data["url"],
             fmt_key=fmt_key,
-            status_msg_id=message.message_id,
+            status_msg_id=status_msg_id,
             format_id=format_id,
             has_audio=has_audio,
             engine=engine,
-            message_thread_id=data.get("message_thread_id",getattr(message,"message_thread_id",None)),
+            message_thread_id=data.get("message_thread_id",getattr(message,"message_thread_id",None) if message else None),
             metadata_ready=status_ready,
             user_id=data.get("user"),
         )
@@ -166,7 +175,10 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     res_list=await get_resolutions(data["url"],engine=engine)
     if not res_list:
         DL_CACHE.pop(dl_id,None)
-        return await message.edit_text("No valid resolutions available.",parse_mode="HTML")
+        if message:
+            return await message.edit_text("No valid resolutions available.",parse_mode="HTML")
+        return await context.bot.send_message(chat_id=data["chat_id"], text="No valid resolutions available.", parse_mode="HTML", reply_to_message_id=data["reply_to"])
+        
     res_map={}
     for r in res_list:
         h=int(r.get("height") or 0)
@@ -178,16 +190,16 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
                 "filesize":int(r.get("filesize") or 0),
                 "total_size":int(r.get("total_size") or 0),
             }
-    log.info("Resolution picker ready | url=%s engine=%s heights=%s map=%s",data.get("url"),engine,sorted(res_map.keys(),reverse=True),res_map)
+    
     settings=get_user_settings(data["user"])
-    preferred_height=int(settings.get("youtube_resolution") or 0)
+    raw_preferred = settings.get("youtube_resolution")
+    preferred_height = int(raw_preferred) if raw_preferred else 720 # DEFAULT KE 720p
     
     if preferred_height > 720 and not is_premium_user(data["user"]):
         preferred_height = 720
 
     if preferred_height>0:
         picked_height,picked=_pick_auto_resolution(res_map,preferred_height)
-        log.info("Auto resolution preference | url=%s preferred=%s picked_height=%s picked=%s engine=%s",data.get("url"),preferred_height,picked_height,picked,engine)
         if picked_height and picked:
             DL_CACHE.pop(dl_id,None)
             return await _start_dl_task(
@@ -201,18 +213,22 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
                 engine=engine,
                 status_ready=status_ready,
             )
+            
     DL_CACHE[dl_id]["res_map"]=res_map
     if engine:
         DL_CACHE[dl_id]["engine"]=engine
-    return await message.edit_text("<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML")
+        
+    if message:
+        return await message.edit_text("<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML")
+    else:
+        return await context.bot.send_message(chat_id=data["chat_id"], text="<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML", reply_to_message_id=data["reply_to"])
 
 async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id:int,status_ready:bool=False):
     url=data["url"]
     if choice=="video" and supports_resolution_picker(url):
         DL_CACHE[dl_id]["fmt_key"]="video"
         if supports_ytdlp_resolution(url):
-            log.info("Resolution engine selected | url=%s engine=ytdlp",url)
-            if not status_ready:
+            if not status_ready and message:
                 await message.edit_text(_metadata_status(url),parse_mode="HTML")
                 status_ready=True
             return await _show_resolution_picker(context,message,dl_id,data,engine="ytdlp",status_ready=status_ready)
@@ -313,27 +329,99 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     DL_CACHE[dl_id]={
         "url":text,
         "user":user_id,
+        "chat_id":chat.id,
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
         "ts":time.time(),
     }
+    
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
+    
+    # +++ FIX SILENT MODE YOUTUBE: Hapus "and not is_yt" +++
+    silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    
     if auto_choice in ("video","mp3"):
-        status=await msg.reply_text(_metadata_status(text),parse_mode="HTML")
+        if silent_mode:
+            try: await msg.set_reaction("😍")
+            except Exception: pass
+            status_msg = None
+            status_ready = True
+        else:
+            status_msg = await msg.reply_text(_metadata_status(text),parse_mode="HTML")
+            status_ready = True
+            
         return await _process_choice(
             context=context,
-            message=status,
+            message=status_msg,
             dl_id=dl_id,
             data=DL_CACHE[dl_id],
             choice=auto_choice,
             user_id=user_id,
-            status_ready=True,
+            status_ready=status_ready,
         )
+        
     await msg.reply_text(
         "👀 <b>Link detected</b>\n\nDo you want me to download it?",
         reply_markup=autodl_detect_keyboard(dl_id),
         parse_mode="HTML",
     )
+
+
+async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not await require_join_or_block(update,context):
+        return
+    msg=update.message
+    if not msg or not update.effective_user:
+        return
+    if not context.args:
+        return await msg.reply_text(
+            "Send a video link to download.\n\n"
+            "By using this downloader, you are responsible for the content you download and how you use it."
+        )
+    url=context.args[0]
+    
+    user_id = update.effective_user.id
+    if is_premium_required(url,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
+        return await msg.reply_text("🔞 Download from this website is for premium users only.")
+        
+    wait_time = _check_and_consume_limit(user_id)
+    if wait_time > 0:
+        return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+    
+    dl_id=uuid.uuid4().hex[:8]
+    DL_CACHE[dl_id]={
+        "url":url,
+        "user":user_id,
+        "chat_id":msg.chat.id,
+        "reply_to":msg.message_id,
+        "message_thread_id":getattr(msg,"message_thread_id",None),
+    }
+    settings=get_user_settings(user_id)
+    auto_choice=str(settings.get("autodl_format") or "ask").lower()
+    silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
+    if auto_choice in ("video","mp3"):
+        if silent_mode:
+            try: await msg.set_reaction("😍")
+            except Exception: pass
+            status_msg = None
+            status_ready = True
+        else:
+            status_msg = await msg.reply_text(_metadata_status(url),parse_mode="HTML")
+            status_ready = True
+            
+        return await _process_choice(
+            context=context,
+            message=status_msg,
+            dl_id=dl_id,
+            data=DL_CACHE[dl_id],
+            choice=auto_choice,
+            user_id=user_id,
+            status_ready=status_ready,
+        )
+        
+    await msg.reply_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
+
 
 async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
@@ -359,16 +447,21 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
     DL_CACHE[dl_id]={
         "url":data.get("url"),
         "user":data.get("user"),
+        "chat_id":chat_id,
         "reply_to":data.get("reply_to"),
         "message_thread_id":message_thread_id or data.get("message_thread_id"),
         "media":media,
         "ts":time.time(),
     }
     has_audio=bool(media.get("music_url") or media.get("music_urls"))
-    text=(
-        "<b>TikTok Slideshow Detected</b>\n\n"
-        "Choose output format:"
-    )
+    text="<b>TikTok Slideshow Detected</b>\n\nChoose output format:"
+    
+    if not status_msg_id:
+        try:
+            return await bot.send_message(chat_id=chat_id, text=text, reply_markup=tiktok_slideshow_keyboard(dl_id,has_audio=has_audio), parse_mode="HTML", reply_to_message_id=data.get("reply_to"))
+        except Exception: pass
+        return
+        
     await bot.edit_message_text(
         chat_id=chat_id,
         message_id=status_msg_id,
@@ -437,7 +530,8 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
             fmt_key=fmt_key,
             message_thread_id=message_thread_id,
         )
-        await _safe_delete_message(bot,chat_id,status_msg_id,"download status")
+        if status_msg_id:
+            await _safe_delete_message(bot,chat_id,status_msg_id,"download status")
     except Exception as e:
         err=str(e) or repr(e)
         if "Flood control exceeded" in err and "Retry in" in err and _flood_retry<_MAX_FLOOD_RETRY:
@@ -462,12 +556,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
             )
         log.warning("Download worker failed | chat_id=%s url=%s err=%r",chat_id,raw_url,e)
         public_err=html.escape(err.strip())[:3500] or "Unknown downloader error"
-        await _safe_edit_error(
-            bot,
-            chat_id,
-            status_msg_id,
-            f"<b>Download failed</b>\n\n<code>{public_err}</code>",
-        )
+        await _safe_edit_error(bot, chat_id, status_msg_id, f"<b>Download failed</b>\n\n<code>{public_err}</code>")
 
 async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
@@ -494,22 +583,36 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     DL_CACHE[dl_id]={
         "url":url,
         "user":user_id,
+        "chat_id":msg.chat.id,
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
     }
     settings=get_user_settings(user_id)
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
+    
+    is_yt = is_youtube_url(url)
+    silent_mode = bool(settings.get("silent_download")) and auto_choice == "video" and not is_yt
+    
     if auto_choice in ("video","mp3"):
-        status=await update.message.reply_text(_metadata_status(url),parse_mode="HTML")
+        if silent_mode:
+            try: await msg.set_reaction("😍")
+            except Exception: pass
+            status_msg = None
+            status_ready = True
+        else:
+            status_msg = await msg.reply_text(_metadata_status(url),parse_mode="HTML")
+            status_ready = True
+            
         return await _process_choice(
             context=context,
-            message=status,
+            message=status_msg,
             dl_id=dl_id,
             data=DL_CACHE[dl_id],
             choice=auto_choice,
             user_id=user_id,
-            status_ready=True,
+            status_ready=status_ready,
         )
+        
     await msg.reply_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
 
 async def dlengine_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):

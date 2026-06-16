@@ -737,6 +737,8 @@ async def _safe_edit_status(bot,chat_id,message_id,text:str,min_interval:float=1
     if not bot or not chat_id or not message_id:
         return
     cache=getattr(bot,"_ig_status_edit_cache",{})
+    if not message_id:
+        return
     key=(int(chat_id),int(message_id))
     text=str(text or "")
     now=time.monotonic()
@@ -1107,7 +1109,7 @@ async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_
                 log.warning("Instagram fallback metadata empty | url=%s",raw_url)
         except Exception as fe:
             log.warning("Instagram fallback metadata extractor failed | url=%s err=%r",raw_url,fe)
-
+            
     log.info(
         "Instagram metadata result | url=%s caption=%r username=%r nickname=%r items=%s",
         raw_url,
@@ -1116,17 +1118,14 @@ async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_
         meta.get("nickname"),
         len(meta.get("items") or []),
     )
-
     collected=await _collect_instagram_downloads(raw_url,fmt_key,bot,chat_id,status_msg_id,meta=meta)
     items=collected["items"]
     source=collected["source"]
     failed_count=collected.get("failed_count",0)
-
     if failed_count:
         log.warning("Instagram scraper partial success | url=%s downloaded=%s failed=%s source=%s",raw_url,len(items),failed_count,source)
-
-    _LAST_IG_STATUS_TEXT.pop((int(chat_id),int(status_msg_id)),None)
-
+    if status_msg_id:
+        _LAST_IG_STATUS_TEXT.pop((int(chat_id),int(status_msg_id)),None)
     if len(items)==1:
         item=items[0]
         media_type=item.get("type") or "photo"

@@ -365,6 +365,8 @@ def _parse_video_from_body(body: bytes, video_id: str) -> dict:
     return data
 
 async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
+    if not status_msg_id:
+        return
     try:
         await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
@@ -405,6 +407,8 @@ async def _safe_edit_progress(bot, chat_id, status_msg_id, title: str, downloade
     import html
     from handlers.dl.utils import progress_bar
     cache = getattr(bot, "_fb_status_edit_cache", {})
+    if not status_msg_id:
+        return
     key = (int(chat_id), int(status_msg_id))
     now = time.monotonic()
     prev = cache.get(key) or {}
