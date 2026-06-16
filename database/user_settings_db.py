@@ -10,6 +10,7 @@ DEFAULT_SETTINGS = {
     "youtube_resolution": 0,
     "youtube_download_engine": "sonzai",
     "music_format": "flac",
+    "silent_download": 0,  # Ditambahin default untuk silent download
 }
 
 def _connect():
@@ -30,13 +31,17 @@ def init_user_settings_db():
                 youtube_resolution INTEGER NOT NULL DEFAULT 0,
                 youtube_download_engine TEXT NOT NULL DEFAULT 'sonzai',
                 music_format TEXT NOT NULL DEFAULT 'flac',
+                silent_download INTEGER NOT NULL DEFAULT 0,
                 updated_at REAL NOT NULL
             )
         """)
+        # Auto-migration biar database lama gak error kalau belum ada kolom baru
         try:
             cols = [row[1] for row in con.execute("PRAGMA table_info(user_settings)").fetchall()]
             if "youtube_download_engine" not in cols:
                 con.execute("ALTER TABLE user_settings ADD COLUMN youtube_download_engine TEXT NOT NULL DEFAULT 'sonzai'")
+            if "silent_download" not in cols:
+                con.execute("ALTER TABLE user_settings ADD COLUMN silent_download INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
         con.commit()
@@ -50,8 +55,8 @@ def _ensure_user(user_id: int):
         now = float(time.time())
         con.execute("""
             INSERT OR IGNORE INTO user_settings
-            (user_id, force_autodl, autodl_format, youtube_resolution, youtube_download_engine, music_format, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (user_id, force_autodl, autodl_format, youtube_resolution, youtube_download_engine, music_format, silent_download, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             int(user_id),
             DEFAULT_SETTINGS["force_autodl"],
@@ -59,6 +64,7 @@ def _ensure_user(user_id: int):
             DEFAULT_SETTINGS["youtube_resolution"],
             DEFAULT_SETTINGS["youtube_download_engine"],
             DEFAULT_SETTINGS["music_format"],
+            DEFAULT_SETTINGS["silent_download"],
             now,
         ))
         con.commit()
@@ -70,7 +76,7 @@ def get_user_settings(user_id: int) -> dict:
     con = _connect()
     try:
         row = con.execute("""
-            SELECT force_autodl, autodl_format, youtube_resolution, youtube_download_engine, music_format
+            SELECT force_autodl, autodl_format, youtube_resolution, youtube_download_engine, music_format, silent_download
             FROM user_settings
             WHERE user_id=?
             LIMIT 1
@@ -83,6 +89,7 @@ def get_user_settings(user_id: int) -> dict:
             "youtube_resolution": int(row[2] or 0),
             "youtube_download_engine": str(row[3] or "sonzai"),
             "music_format": str(row[4] or "flac"),
+            "silent_download": int(row[5] or 0),
         }
     finally:
         con.close()
@@ -163,6 +170,20 @@ def set_music_format(user_id: int, value: str):
             SET music_format=?, updated_at=?
             WHERE user_id=?
         """, (value, float(time.time()), int(user_id)))
+        con.commit()
+    finally:
+        con.close()
+
+# Fungsi baru buat nyimpen settingan Silent Download
+def set_silent_download(user_id: int, enabled: bool):
+    _ensure_user(user_id)
+    con = _connect()
+    try:
+        con.execute("""
+            UPDATE user_settings
+            SET silent_download=?, updated_at=?
+            WHERE user_id=?
+        """, (1 if enabled else 0, float(time.time()), int(user_id)))
         con.commit()
     finally:
         con.close()
