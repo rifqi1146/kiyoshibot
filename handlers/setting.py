@@ -7,6 +7,7 @@ from database.user_settings_db import (
     set_youtube_resolution,
     set_music_format,
 )
+from database.download_db import is_premium_user
 
 def _fmt_bool(v: int) -> str:
     return "ON" if int(v) else "OFF"
@@ -108,6 +109,8 @@ def _youtube_resolution_keyboard(user_id: int, source: str = "direct") -> Inline
     current = int(s["youtube_resolution"] or 0)
     def label(v: int) -> str:
         text = "Ask" if v == 0 else f"{v}p"
+        if v == 1080:
+            text += " ⭐️"
         return f"• {text}" if current == v else text
     return InlineKeyboardMarkup([
         [
@@ -168,14 +171,18 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = int(parts[1])
     except Exception:
         return await q.answer("Invalid setting menu.", show_alert=True)
+        
     if q.from_user.id != owner_id:
-        return await q.answer("Ini bukan menu setting kamu.", show_alert=True)
+        return await q.answer("This is not your settings menu.", show_alert=True)
+        
     source = parts[2]
     action = parts[3]
     key = parts[4]
+    
     if action == "close":
         await q.answer()
         return await q.message.delete()
+        
     if action == "toggle" and key == "force_autodl":
         current = get_user_settings(owner_id)
         set_force_autodl(owner_id, not bool(current["force_autodl"]))
@@ -185,6 +192,7 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=_main_keyboard(owner_id, source),
         )
+        
     if action == "menu":
         await q.answer()
         if key == "main":
@@ -212,21 +220,30 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=_music_format_keyboard(owner_id, source),
             )
         return
+        
     if action == "set":
         if len(parts) < 6:
             return await q.answer("Invalid setting value.", show_alert=True)
         value = parts[5]
+        
         if key == "autodl_format":
             set_autodl_format(owner_id, value)
+            
         elif key == "youtube_resolution":
             try:
-                set_youtube_resolution(owner_id, int(value))
+                res_val = int(value)
+                if res_val > 720 and not is_premium_user(owner_id):
+                    return await q.answer("You are not a premium user! Upgrade to select resolutions above 720p.", show_alert=True)
+                set_youtube_resolution(owner_id, res_val)
             except Exception:
                 set_youtube_resolution(owner_id, 0)
+                
         elif key == "music_format":
             set_music_format(owner_id, value)
+            
         else:
             return await q.answer("Unknown setting.", show_alert=True)
+            
         await q.answer("Setting updated.")
         return await q.message.edit_text(
             _settings_text(owner_id),

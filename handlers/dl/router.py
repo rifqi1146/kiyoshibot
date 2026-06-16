@@ -27,6 +27,24 @@ os.makedirs(TMP_DIR,exist_ok=True)
 TIKTOK_LOCK=asyncio.Semaphore(3)
 YTDLP_SEM=asyncio.Semaphore(4)
 _MAX_FLOOD_RETRY=2
+DL_LIMIT_CACHE = {}
+
+def _check_and_consume_limit(user_id: int) -> int:
+    """Check if user exceeded limit. Returns cooldown time (sec) if limited, 0 if passed."""
+    if is_premium_user(user_id):
+        return 0
+    
+    now = time.time()
+    history = DL_LIMIT_CACHE.get(user_id, [])
+    history = [ts for ts in history if now - ts < 60]
+    
+    if len(history) >= 3:
+        DL_LIMIT_CACHE[user_id] = history
+        return max(1, 60 - int(now - history[0]))
+        
+    history.append(now)
+    DL_LIMIT_CACHE[user_id] = history
+    return 0
 
 def _host(url:str)->str:
     try:
@@ -163,6 +181,10 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     log.info("Resolution picker ready | url=%s engine=%s heights=%s map=%s",data.get("url"),engine,sorted(res_map.keys(),reverse=True),res_map)
     settings=get_user_settings(data["user"])
     preferred_height=int(settings.get("youtube_resolution") or 0)
+    
+    if preferred_height > 720 and not is_premium_user(data["user"]):
+        preferred_height = 720
+
     if preferred_height>0:
         picked_height,picked=_pick_auto_resolution(res_map,preferred_height)
         log.info("Auto resolution preference | url=%s preferred=%s picked_height=%s picked=%s engine=%s",data.get("url"),preferred_height,picked_height,picked,engine)
@@ -220,7 +242,7 @@ async def autodl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if chat.type=="private":
         return
     if not await _is_admin_or_owner(update,context):
-        return await msg.reply_text("<b>You are not an admin</b>",parse_mode="HTML")
+        return await msg.reply_text("<b>You are not an admin.</b>",parse_mode="HTML")
     groups=load_auto_dl()
     arg=context.args[0].lower() if context.args else ""
     if arg=="enable":
@@ -278,12 +300,19 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
             return
     if not await require_join_or_block(update,context):
         return
-    if is_premium_required(text,PREMIUM_ONLY_DOMAINS) and not is_premium_user(update.effective_user.id):
+        
+    user_id = update.effective_user.id
+    if is_premium_required(text,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
         return await msg.reply_text("🔞 This link can only be downloaded by premium users.")
+        
+    wait_time = _check_and_consume_limit(user_id)
+    if wait_time > 0:
+        return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+
     dl_id=uuid.uuid4().hex[:8]
     DL_CACHE[dl_id]={
         "url":text,
-        "user":update.effective_user.id,
+        "user":user_id,
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
         "ts":time.time(),
@@ -297,7 +326,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
             dl_id=dl_id,
             data=DL_CACHE[dl_id],
             choice=auto_choice,
-            user_id=update.effective_user.id,
+            user_id=user_id,
             status_ready=True,
         )
     await msg.reply_text(
@@ -316,9 +345,9 @@ async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     _,dl_id,action=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not data:
-        return await q.edit_message_text("Request expired")
+        return await q.edit_message_text("Request expired.")
     if q.from_user.id!=data["user"]:
-        return await q.answer("This is not your request",show_alert=True)
+        return await q.answer("This request does not belong to you.",show_alert=True)
     if action=="close":
         DL_CACHE.pop(dl_id,None)
         return await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"download request menu")
@@ -452,16 +481,23 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             "By using this downloader, you are responsible for the content you download and how you use it."
         )
     url=context.args[0]
-    if is_premium_required(url,PREMIUM_ONLY_DOMAINS) and not is_premium_user(update.effective_user.id):
-        return await msg.reply_text("🔞 Download from this website is for premium users only")
+    
+    user_id = update.effective_user.id
+    if is_premium_required(url,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
+        return await msg.reply_text("🔞 Download from this website is for premium users only.")
+        
+    wait_time = _check_and_consume_limit(user_id)
+    if wait_time > 0:
+        return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+    
     dl_id=uuid.uuid4().hex[:8]
     DL_CACHE[dl_id]={
         "url":url,
-        "user":update.effective_user.id,
+        "user":user_id,
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
     }
-    settings=get_user_settings(update.effective_user.id)
+    settings=get_user_settings(user_id)
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
     if auto_choice in ("video","mp3"):
         status=await update.message.reply_text(_metadata_status(url),parse_mode="HTML")
@@ -471,7 +507,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             dl_id=dl_id,
             data=DL_CACHE[dl_id],
             choice=auto_choice,
-            user_id=update.effective_user.id,
+            user_id=user_id,
             status_ready=True,
         )
     await msg.reply_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
@@ -486,9 +522,9 @@ async def dlengine_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     _,dl_id,_engine=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not data:
-        return await q.edit_message_text("Request expired")
+        return await q.edit_message_text("Request expired.")
     if q.from_user.id!=data["user"]:
-        return await q.answer("This is not your request",show_alert=True)
+        return await q.answer("This request does not belong to you.",show_alert=True)
     data["engine"]="ytdlp"
     log.info("Engine callback selected | url=%s engine=ytdlp",data.get("url"))
     await q.edit_message_text("<b>Fetching video formats...</b>",parse_mode="HTML")
@@ -504,12 +540,12 @@ async def dl_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     _,dl_id,choice=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not data:
-        return await q.edit_message_text("Data expired")
+        return await q.edit_message_text("Data expired.")
     if q.from_user.id!=data["user"]:
-        return await q.answer("This is not your request",show_alert=True)
+        return await q.answer("This request does not belong to you.",show_alert=True)
     if choice=="cancel":
         DL_CACHE.pop(dl_id,None)
-        return await q.edit_message_text("Cancelled")
+        return await q.edit_message_text("Cancelled.")
     return await _process_choice(context=context,message=q.message,dl_id=dl_id,data=data,choice=choice,user_id=q.from_user.id)
 
 async def tiktok_slideshow_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
@@ -522,12 +558,12 @@ async def tiktok_slideshow_callback(update:Update,context:ContextTypes.DEFAULT_T
     _,dl_id,choice=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not data:
-        return await q.edit_message_text("Request expired")
+        return await q.edit_message_text("Request expired.")
     if q.from_user.id!=data["user"]:
-        return await q.answer("This is not your request",show_alert=True)
+        return await q.answer("This request does not belong to you.",show_alert=True)
     if choice=="cancel":
         DL_CACHE.pop(dl_id,None)
-        return await q.edit_message_text("Cancelled")
+        return await q.edit_message_text("Cancelled.")
     fmt_map={
         "images":"slideshow_images",
         "video":"slideshow_video",
@@ -535,7 +571,7 @@ async def tiktok_slideshow_callback(update:Update,context:ContextTypes.DEFAULT_T
     }
     fmt_key=fmt_map.get(choice)
     if not fmt_key:
-        return await q.edit_message_text("Invalid slideshow option")
+        return await q.edit_message_text("Invalid slideshow option.")
     await q.edit_message_text(_metadata_status(data["url"]),parse_mode="HTML")
     DL_CACHE.pop(dl_id,None)
     return await _start_dl_task(
@@ -554,27 +590,41 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
     if not q or not q.data:
         return
-    await q.answer()
+        
     _,dl_id,height_raw=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
+    
     if not data:
-        return await q.edit_message_text("Request expired")
+        await q.answer()
+        return await q.edit_message_text("Request expired.")
+        
     if q.from_user.id!=data["user"]:
-        return await q.answer("This is not your request",show_alert=True)
+        return await q.answer("This request does not belong to you.",show_alert=True)
+        
     try:
         height=int(height_raw)
     except (TypeError,ValueError):
-        return await q.edit_message_text("Invalid resolution")
+        await q.answer()
+        return await q.edit_message_text("Invalid resolution.")
+        
+    if height > 720 and not is_premium_user(q.from_user.id):
+        return await q.answer("You are not a premium user! Upgrade to download resolutions above 720p.", show_alert=True)
+
+    await q.answer()
+
     res_map=data.get("res_map") or {}
     picked=res_map.get(height)
     if not picked:
-        return await q.edit_message_text("Resolution is no longer available")
+        return await q.edit_message_text("Resolution is no longer available.")
+        
     engine=data.get("engine")
     DL_CACHE.pop(dl_id,None)
+    
     log.info(
         "Resolution callback selected | url=%s height=%s format_id=%s has_audio=%s engine=%s picked=%s",
         data.get("url"),height,picked.get("format_id"),picked.get("has_audio"),engine,picked,
     )
+    
     return await _start_dl_task(
         context=context,
         message=q.message,
