@@ -6,7 +6,7 @@ from database.user_settings_db import (
     set_autodl_format,
     set_youtube_resolution,
     set_music_format,
-    set_silent_download, # <--- PASTIKAN INI UDAH LU BIKIN DI DB
+    set_silent_download,
 )
 from database.download_db import is_premium_user
 
@@ -19,7 +19,8 @@ def _fmt_autodl_format(v: str) -> str:
 
 def _fmt_res(v: int) -> str:
     v = int(v or 0)
-    return "720p (Default)" if v == 0 else f"{v}p"
+    # Teks "Ask" dimunculin balik buat di-display UI
+    return "Ask (Default)" if v == 0 else f"{v}p"
 
 def _fmt_music(v: str) -> str:
     mapping = {"flac": "FLAC", "mp3": "MP3"}
@@ -82,7 +83,8 @@ def _youtube_resolution_keyboard(user_id: int, source: str = "direct") -> Inline
     s = get_user_settings(user_id)
     current = int(s.get("youtube_resolution") or 0)
     def label(v: int) -> str:
-        text = "720p (Default)" if v == 0 else f"{v}p"
+        # Tombol Ask dibalikin lagi ke sini
+        text = "Ask (Default)" if v == 0 else f"{v}p"
         if v == 1080: text += " ⭐️"
         return f"• {text}" if current == v else text
     return InlineKeyboardMarkup([

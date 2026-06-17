@@ -192,9 +192,12 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
             }
     
     settings=get_user_settings(data["user"])
-    raw_preferred = settings.get("youtube_resolution")
-    preferred_height = int(raw_preferred) if raw_preferred else 720 # DEFAULT KE 720p
+    preferred_height = int(settings.get("youtube_resolution") or 0)
     
+    silent_mode = bool(settings.get("silent_download", 0))
+    if preferred_height == 0 and silent_mode:
+        preferred_height = 720
+
     if preferred_height > 720 and not is_premium_user(data["user"]):
         preferred_height = 720
 
@@ -222,6 +225,7 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
         return await message.edit_text("<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML")
     else:
         return await context.bot.send_message(chat_id=data["chat_id"], text="<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML", reply_to_message_id=data["reply_to"])
+
 
 async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id:int,status_ready:bool=False):
     url=data["url"]
