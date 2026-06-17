@@ -485,13 +485,42 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
         if is_tiktok(raw_url):
             async with TIKTOK_LOCK:
                 path=await tiktok_download(raw_url,bot,chat_id,status_msg_id,fmt_key,metadata_ready=metadata_ready)
+                
                 if isinstance(path,dict) and path.get("choice_required")=="tiktok_slideshow":
                     data={
                         "url":raw_url,
                         "user":user_id,
                         "reply_to":reply_to,
                         "message_thread_id":message_thread_id,
+                        "chat_id": chat_id,
                     }
+                    
+                    settings = get_user_settings(user_id) if user_id else {}
+                    auto_tt_format = settings.get("tiktok_slideshow", "ask").lower()
+                    
+                    if auto_tt_format != "ask":
+                        log.info(f"Auto-selecting TikTok Slideshow format ({auto_tt_format}) for user {user_id}")
+                        fmt_map={"images":"slideshow_images","video":"slideshow_video","audio":"mp3"}
+                        mapped_fmt = fmt_map.get(auto_tt_format, "slideshow_video")
+                        
+                        if status_msg_id:
+                            from .tiktok.main import _metadata_status
+                            try: await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=_metadata_status(raw_url), parse_mode="HTML")
+                            except Exception: pass
+                            
+                        mock_context = type('MockContext', (object,), {'application': app})()
+                        mock_chat = type('MockChat', (object,), {'id': chat_id})()
+                        mock_msg = type('MockMessage', (object,), {'chat': mock_chat, 'message_id': status_msg_id})() if status_msg_id else None
+                        
+                        return await _start_dl_task(
+                            context=mock_context,
+                            message=mock_msg,
+                            data=data,
+                            fmt_key=mapped_fmt,
+                            format_id=None,
+                            has_audio=False,
+                            status_ready=True,
+                        )
                     await _show_tiktok_slideshow_picker(
                         bot=bot,
                         chat_id=chat_id,
@@ -561,6 +590,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
         log.warning("Download worker failed | chat_id=%s url=%s err=%r",chat_id,raw_url,e)
         public_err=html.escape(err.strip())[:3500] or "Unknown downloader error"
         await _safe_edit_error(bot, chat_id, status_msg_id, f"<b>Download failed</b>\n\n<code>{public_err}</code>")
+
 
 async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):

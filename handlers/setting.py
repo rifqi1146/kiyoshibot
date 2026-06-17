@@ -7,6 +7,7 @@ from database.user_settings_db import (
     set_youtube_resolution,
     set_music_format,
     set_silent_download,
+    set_tiktok_slideshow,
 )
 from database.download_db import is_premium_user
 
@@ -19,12 +20,15 @@ def _fmt_autodl_format(v: str) -> str:
 
 def _fmt_res(v: int) -> str:
     v = int(v or 0)
-    # Teks "Ask" dimunculin balik buat di-display UI
     return "Ask (Default)" if v == 0 else f"{v}p"
 
 def _fmt_music(v: str) -> str:
     mapping = {"flac": "FLAC", "mp3": "MP3"}
     return mapping.get(str(v).lower(), "FLAC")
+
+def _fmt_tt_slideshow(v: str) -> str:
+    mapping = {"ask": "Ask", "images": "Images", "video": "Video", "audio": "Audio Only"}
+    return mapping.get(str(v).lower(), "Ask")
 
 def _cb(user_id: int, source: str, action: str, key: str, value: str | int | None = None) -> str:
     parts = ["setting", str(user_id), source, action, key]
@@ -40,6 +44,7 @@ def _settings_text(user_id: int) -> str:
         f"<b>Default downloader format:</b> <code>{_fmt_autodl_format(s.get('autodl_format', 'ask'))}</code>\n"
         f"<b>YouTube resolution:</b> <code>{_fmt_res(s.get('youtube_resolution', 0))}</code>\n"
         f"<b>Music output format:</b> <code>{_fmt_music(s.get('music_format', 'mp3'))}</code>\n"
+        f"<b>TikTok Slideshow format:</b> <code>{_fmt_tt_slideshow(s.get('tiktok_slideshow', 'ask'))}</code>\n"
         f"<b>Silent Download:</b> <code>{_fmt_bool(s.get('silent_download', 0))}</code>"
     )
 
@@ -60,6 +65,7 @@ def _main_keyboard(user_id: int, source: str = "direct") -> InlineKeyboardMarkup
         [InlineKeyboardButton(f"Downloader Format: {_fmt_autodl_format(s.get('autodl_format', 'ask'))}", callback_data=_cb(user_id, source, "menu", "autodl_format"))],
         [InlineKeyboardButton(f"YouTube Resolution: {_fmt_res(s.get('youtube_resolution', 0))}", callback_data=_cb(user_id, source, "menu", "youtube_resolution"))],
         [InlineKeyboardButton(f"Music Format: {_fmt_music(s.get('music_format', 'mp3'))}", callback_data=_cb(user_id, source, "menu", "music_format"))],
+        [InlineKeyboardButton(f"TikTok Slideshow: {_fmt_tt_slideshow(s.get('tiktok_slideshow', 'ask'))}", callback_data=_cb(user_id, source, "menu", "tiktok_slideshow"))],
         [InlineKeyboardButton(f"Silent Download: {_fmt_bool(s.get('silent_download', 0))}", callback_data=_cb(user_id, source, "toggle", "silent_download"))],
     ]
     rows.extend(_footer_buttons(user_id, source))
@@ -83,7 +89,6 @@ def _youtube_resolution_keyboard(user_id: int, source: str = "direct") -> Inline
     s = get_user_settings(user_id)
     current = int(s.get("youtube_resolution") or 0)
     def label(v: int) -> str:
-        # Tombol Ask dibalikin lagi ke sini
         text = "Ask (Default)" if v == 0 else f"{v}p"
         if v == 1080: text += " ⭐️"
         return f"• {text}" if current == v else text
@@ -109,6 +114,23 @@ def _music_format_keyboard(user_id: int, source: str = "direct") -> InlineKeyboa
         [
             InlineKeyboardButton(label("flac", "FLAC"), callback_data=_cb(user_id, source, "set", "music_format", "flac")),
             InlineKeyboardButton(label("mp3", "MP3"), callback_data=_cb(user_id, source, "set", "music_format", "mp3")),
+        ],
+        [InlineKeyboardButton("Back", callback_data=_cb(user_id, source, "menu", "main"))],
+    ])
+
+def _tiktok_slideshow_keyboard(user_id: int, source: str = "direct") -> InlineKeyboardMarkup:
+    s = get_user_settings(user_id)
+    current = str(s.get("tiktok_slideshow", "ask")).lower()
+    def label(v: str, t: str) -> str:
+        return f"• {t}" if current == v else t
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(label("ask", "Ask"), callback_data=_cb(user_id, source, "set", "tiktok_slideshow", "ask")),
+            InlineKeyboardButton(label("images", "Images"), callback_data=_cb(user_id, source, "set", "tiktok_slideshow", "images")),
+        ],
+        [
+            InlineKeyboardButton(label("video", "Video"), callback_data=_cb(user_id, source, "set", "tiktok_slideshow", "video")),
+            InlineKeyboardButton(label("audio", "Audio Only"), callback_data=_cb(user_id, source, "set", "tiktok_slideshow", "audio")),
         ],
         [InlineKeyboardButton("Back", callback_data=_cb(user_id, source, "menu", "main"))],
     ])
@@ -166,6 +188,8 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_youtube_resolution_keyboard(owner_id, source))
         if key == "music_format":
             return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_music_format_keyboard(owner_id, source))
+        if key == "tiktok_slideshow":
+            return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_tiktok_slideshow_keyboard(owner_id, source))
         return
         
     if action == "set":
@@ -185,6 +209,8 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 set_youtube_resolution(owner_id, 0)
         elif key == "music_format":
             set_music_format(owner_id, value)
+        elif key == "tiktok_slideshow":
+            set_tiktok_slideshow(owner_id, value)
         else:
             return await q.answer("Unknown setting.", show_alert=True)
             
