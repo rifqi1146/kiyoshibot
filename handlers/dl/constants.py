@@ -35,6 +35,7 @@ AUTO_DOWNLOAD_DOMAINS = {
     "vt.tiktok.com",
     "vm.tiktok.com",
     "instagram.com",
+    "capcut.com"
     "instagr.am",
     "facebook.com",
     "fb.watch",
