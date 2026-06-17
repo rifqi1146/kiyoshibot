@@ -125,7 +125,8 @@ def _strip_job_prefix(path:str,prefix:str)->str:
         return path
 
 def _pick_latest_media_file(since_ts:float,prefix:str)->str|None:
-    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv")
+    # +++ FIX UNKNOWN_VIDEO +++
+    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv",".unknown_video")
     try:
         files=[]
         for f in os.listdir(TMP_DIR):
@@ -134,6 +135,16 @@ def _pick_latest_media_file(since_ts:float,prefix:str)->str|None:
             p=os.path.join(TMP_DIR,f)
             if not os.path.isfile(p) or not f.lower().endswith(exts):
                 continue
+                
+            # Kalau nemu anomali unknown_video dari CapCut, langsung ganti ekstensinya jadi mp4
+            if f.lower().endswith(".unknown_video"):
+                new_p = p.replace(".unknown_video", ".mp4")
+                try:
+                    os.rename(p, new_p)
+                    p = new_p
+                except Exception:
+                    pass
+                    
             try:
                 mt=os.path.getmtime(p)
             except Exception as e:
@@ -150,7 +161,8 @@ def _pick_latest_media_file(since_ts:float,prefix:str)->str|None:
         return None
 
 def _collect_media_files_recursive(root_dir:str)->list[str]:
-    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv")
+    # +++ FIX UNKNOWN_VIDEO +++
+    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv",".unknown_video")
     files=[]
     try:
         for root,_,names in os.walk(root_dir):
@@ -159,6 +171,13 @@ def _collect_media_files_recursive(root_dir:str)->list[str]:
                     continue
                 p=os.path.join(root,name)
                 if os.path.isfile(p) and os.path.getsize(p) > 0:
+                    if name.lower().endswith(".unknown_video"):
+                        new_p = p.replace(".unknown_video", ".mp4")
+                        try:
+                            os.rename(p, new_p)
+                            p = new_p
+                        except Exception:
+                            pass
                     files.append(p)
     except Exception as e:
         log.warning("Failed to collect media files recursively | root_dir=%s err=%s",root_dir,e)
@@ -193,7 +212,7 @@ def _build_ytdlp_format(format_id:str|None,has_audio:bool=False)->str:
     return f"{fid}+bestaudio[ext=m4a]/{fid}+bestaudio"
 
 async def _safe_edit_status(bot,chat_id,message_id,text:str):
-    if not message_id:
+    if not message_id: 
         return
     try:
         await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML")
@@ -362,7 +381,7 @@ def _extract_tool_error(stdout_text:str,stderr_text:str,code:int,tool_name:str="
 
 def _media_priority(p:str)->int:
     p=p.lower()
-    if p.endswith(".mp4"):
+    if p.endswith((".mp4", ".unknown_video")):
         return 0
     if p.endswith((".mp3",".flac")):
         return 1
@@ -371,13 +390,24 @@ def _media_priority(p:str)->int:
     return 9
 
 def _list_job_outputs(job_id:str)->list[str]:
-    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv")
+    exts=(".mp4",".mp3",".flac",".jpg",".jpeg",".png",".webp",".gif",".webm",".mkv",".unknown_video")
     try:
-        files=[
-            os.path.join(TMP_DIR,f)
-            for f in os.listdir(TMP_DIR)
-            if f.startswith(job_id+"_") and f.lower().endswith(exts)
-        ]
+        files=[]
+        for f in os.listdir(TMP_DIR):
+            if not f.startswith(job_id+"_"): continue
+            if not f.lower().endswith(exts): continue
+            
+            p = os.path.join(TMP_DIR, f)
+            if f.lower().endswith(".unknown_video"):
+                new_p = p.replace(".unknown_video", ".mp4")
+                try:
+                    os.rename(p, new_p)
+                    p = new_p
+                except Exception as e:
+                    log.warning("Failed to rename unknown_video | path=%s err=%s", p, e)
+            
+            files.append(p)
+            
         return sorted(files,key=lambda p:(_media_priority(p),-os.path.getmtime(p)))
     except Exception as e:
         log.warning("Failed to list yt-dlp outputs | job_id=%s err=%r",job_id,e)
