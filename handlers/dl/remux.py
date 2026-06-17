@@ -81,16 +81,19 @@ def remux_video_for_telegram(src_path:str)->str:
     if before["duration"]<=0:
         raise RuntimeError("Invalid video duration")
     remux_path=f"{TMP_DIR}/{uuid.uuid4().hex}_tg_remux.mp4"
+    safe_duration = str(before["duration"] + 0.5)
     try:
         _run_cmd([
             "ffmpeg","-y",
             "-i",src_path,
+            "-t", safe_duration,
             "-map","0:v?",
             "-map","0:a?",
             "-c","copy",
             "-movflags","faststart",
             remux_path,
         ],timeout=FFMPEG_REMUX_TIMEOUT)
+        
         after=video_meta(remux_path)
         if os.path.exists(remux_path) and os.path.getsize(remux_path)>0 and after["duration"]>0:
             log.info("Video remuxed | src=%s before=%s after=%s",os.path.basename(src_path),before,after)
