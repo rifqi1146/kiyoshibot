@@ -85,10 +85,10 @@ def remux_video_for_telegram(src_path:str)->str:
         _run_cmd([
             "ffmpeg","-y",
             "-i",src_path,
-            "-map","0",
+            "-map","0:v?",
+            "-map","0:a?",
             "-c","copy",
-            "-movflags","+faststart",
-            "-avoid_negative_ts","make_zero",
+            "-movflags","faststart",
             remux_path,
         ],timeout=FFMPEG_REMUX_TIMEOUT)
         after=video_meta(remux_path)
@@ -103,6 +103,7 @@ def remux_video_for_telegram(src_path:str)->str:
         log.warning("Video remux failed, using original | src=%s err=%s",os.path.basename(src_path),e)
         _delete_file(remux_path,"failed remux output")
     return src_path
+
 
 def make_video_thumbnail(src_path:str)->str|None:
     thumb_path=f"{TMP_DIR}/{uuid.uuid4().hex}_thumb.jpg"
