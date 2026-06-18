@@ -31,10 +31,24 @@ _MAX_FLOOD_RETRY=2
 
 DL_LIMIT_CACHE = {}
 
+def _cleanup_dl_cache():
+    now = time.time()
+    expired = [k for k, v in list(DL_CACHE.items()) if now - v.get("ts", 0) > 300]
+    for k in expired:
+        DL_CACHE.pop(k, None)
+
 def _check_and_consume_limit(user_id: int) -> int:
     if is_premium_user(user_id):
         return 0
     now = time.time()
+    
+    # Cleanup expired rate limit caches
+    expired_users = [u for u, hist in list(DL_LIMIT_CACHE.items()) if not [t for t in hist if now - t < 60]]
+    for u in expired_users:
+        DL_LIMIT_CACHE.pop(u, None)
+        
+    _cleanup_dl_cache()
+        
     history = DL_LIMIT_CACHE.get(user_id, [])
     history = [ts for ts in history if now - ts < 60]
     if len(history) >= 3:
@@ -340,7 +354,11 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     }
     
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
+    
+    # +++ FIX SILENT MODE YOUTUBE: Hapus "and not is_yt" +++
     silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    
     if auto_choice in ("video","mp3"):
         if silent_mode:
             try: await msg.set_reaction("😍")
@@ -561,6 +579,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
         "chat_id":msg.chat.id,
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
+        "ts":time.time(),
     }
     settings=get_user_settings(user_id)
     auto_choice=str(settings.get("autodl_format") or "ask").lower()

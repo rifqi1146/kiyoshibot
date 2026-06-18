@@ -14,6 +14,8 @@ from telegram import (
     ChatPermissions,
 )
 from telegram.ext import ContextTypes
+from handlers.moderation.auth import is_admin_or_owner
+from utils.http import get_http_session
 
 from utils.config import OWNER_ID
 from database.welcome_db import (
@@ -45,7 +47,9 @@ PENDING_VERIFY = {}
 PENDING_VERIFY_TASKS = {}
 WELCOME_MESSAGES = {}
 VERIFY_LOCKS = {}
+VERIFY_LOCK_TIMES = {}
 VERIFY_TOKENS = {}
+VERIFY_TOKEN_TIMES = {}
 BOT_INSTANCE = None
 
 VERIFY_TIMEOUT_SECONDS = 5 * 60
@@ -60,6 +64,7 @@ def _get_verify_lock(chat_id: int, user_id: int) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         VERIFY_LOCKS[key] = lock
+    VERIFY_LOCK_TIMES[key] = time.time()
     return lock
 
 def verify_keyboard(user_id: int, chat_id: int, bot_username: str):
@@ -77,8 +82,8 @@ async def _check_cas_ban(user_id: int) -> dict:
     log.info(f"[CAS] Mengecek user_id {user_id} ke Combot API...")
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=5) as resp:
+        session = await get_http_session()
+        async with session.get(url, timeout=5) as resp:
                 log.info(f"[CAS] HTTP Status: {resp.status} untuk user {user_id}")
                 
                 if resp.status != 200:
@@ -406,18 +411,6 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-async def is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user = update.effective_user
-    chat = update.effective_chat
-    if user.id in OWNER_ID:
-        return True
-    if chat.type not in ("group", "supergroup"):
-        return False
-    try:
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        return member.status in ("administrator", "creator")
-    except Exception:
-        return False
 
 async def wlc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global WELCOME_ENABLED_CHATS
@@ -466,7 +459,7 @@ async def start_verify_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        _, chat_id, user_id = arg.split("_")
+        _, chat_id, user_id = arg.split("_", 2)
         chat_id, user_id = int(chat_id), int(user_id)
     except Exception:
         return
@@ -525,6 +518,7 @@ async def verify_method_callback(update: Update, context: ContextTypes.DEFAULT_T
 
         token = str(uuid.uuid4())
         VERIFY_TOKENS[token] = (chat_id, user_id, method)
+        VERIFY_TOKEN_TIMES[token] = time.time()
 
         verify_url = f"{PUBLIC_URL}/verify?token={token}"
 
@@ -770,13 +764,13 @@ async def web_verify_post(request):
         log.warning(f"WEB_DEBUG: Captcha empty ({log_name})")
         return web.Response(text="Captcha validation missing.", status=400)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            verify_url,
-            data={"secret": secret_key, "response": captcha_response}
-        ) as resp:
-            result = await resp.json()
-            log.info(f"WEB_DEBUG: {log_name} result: {result}")
+    session = await get_http_session()
+    async with session.post(
+        verify_url,
+        data={"secret": secret_key, "response": captcha_response}
+    ) as resp:
+        result = await resp.json()
+        log.info(f"WEB_DEBUG: {log_name} result: {result}")
 
     if not result.get("success"):
         log.warning(f"WEB_DEBUG: {log_name} rejected")
@@ -922,10 +916,37 @@ async def web_verify_post(request):
 </html>"""
     return web.Response(text=success_html, content_type='text/html')
 
+async def _cleanup_caches_loop():
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now = time.time()
+            
+            expired_tokens = [t for t, ts in VERIFY_TOKEN_TIMES.items() if now - ts > 300]
+            for t in expired_tokens:
+                VERIFY_TOKENS.pop(t, None)
+                VERIFY_TOKEN_TIMES.pop(t, None)
+                
+            expired_locks = [k for k, ts in VERIFY_LOCK_TIMES.items() if now - ts > 300]
+            for k in expired_locks:
+                VERIFY_LOCKS.pop(k, None)
+                VERIFY_LOCK_TIMES.pop(k, None)
+                
+            if BOT_INSTANCE and getattr(BOT_INSTANCE, "_recent_joins", None):
+                joins = BOT_INSTANCE._recent_joins
+                expired_joins = [k for k, ts in joins.items() if now - ts > 300]
+                for k in expired_joins:
+                    joins.pop(k, None)
+                    
+        except Exception as e:
+            log.warning(f"Cache cleanup loop error: {e}")
+
 async def start_welcome_server(bot):
     """Fungsi ini dipanggil di post_init buat nyalain web server"""
     global BOT_INSTANCE
     BOT_INSTANCE = bot
+    
+    asyncio.create_task(_cleanup_caches_loop())
     
     app = web.Application()
     app.add_routes([

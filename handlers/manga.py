@@ -12,6 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from database import premium
+from database.nsfw_db import is_nsfw_allowed, nsfw_db_init
 from utils.http import get_http_session
 
 try:
@@ -26,58 +27,50 @@ MANGADEX_API = "https://api.mangadex.org"
 UPLOADS_URL = "https://uploads.mangadex.org"
 MAID_URL = "https://www.maid.my.id"
 NH_API_URL = "https://nhentai.net/api/v2"
-NSFW_DB = "data/nsfw.sqlite3"
 _MANGA_MESSAGE_LOCKS = {}
+_MANGA_LOCK_TIMES = {}
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
-def _nsfw_db_init():
-    os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(NSFW_DB)
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS nsfw_groups (
-                chat_id INTEGER PRIMARY KEY,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                updated_at REAL NOT NULL
-            )
-        """)
-        con.commit()
-    finally:
-        con.close()
+import time
 
 def _is_nsfw_enabled(chat_id: int, chat_type: str) -> bool:
-    if chat_type == "private":
-        return True
-    _nsfw_db_init()
-    con = sqlite3.connect(NSFW_DB)
-    try:
-        cur = con.execute("SELECT enabled FROM nsfw_groups WHERE chat_id=?", (int(chat_id),))
-        row = cur.fetchone()
-        return bool(row and int(row[0]) == 1)
-    finally:
-        con.close()
+    return is_nsfw_allowed(chat_id, chat_type)
 
 def _message_lock_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
 
+def _cleanup_expired_locks():
+    now = time.time()
+    expired = [k for k, ts in list(_MANGA_LOCK_TIMES.items()) if now - ts > 300]
+    for k in expired:
+        _MANGA_MESSAGE_LOCKS.pop(k, None)
+        _MANGA_LOCK_TIMES.pop(k, None)
+
 def _set_message_lock(chat_id: int, message_id: int, user_id: int):
     if chat_id is None or message_id is None or user_id is None:
         return
-    _MANGA_MESSAGE_LOCKS[_message_lock_key(chat_id, message_id)] = int(user_id)
+    _cleanup_expired_locks()
+    key = _message_lock_key(chat_id, message_id)
+    _MANGA_MESSAGE_LOCKS[key] = int(user_id)
+    _MANGA_LOCK_TIMES[key] = time.time()
 
 def _clear_message_lock(chat_id: int, message_id: int):
     if chat_id is None or message_id is None:
         return
-    _MANGA_MESSAGE_LOCKS.pop(_message_lock_key(chat_id, message_id), None)
+    key = _message_lock_key(chat_id, message_id)
+    _MANGA_MESSAGE_LOCKS.pop(key, None)
+    _MANGA_LOCK_TIMES.pop(key, None)
 
 def _move_message_lock(old_chat_id: int, old_message_id: int, new_chat_id: int, new_message_id: int, fallback_user_id: int | None = None):
-    owner_id = _MANGA_MESSAGE_LOCKS.pop(_message_lock_key(old_chat_id, old_message_id), None)
+    old_key = _message_lock_key(old_chat_id, old_message_id)
+    owner_id = _MANGA_MESSAGE_LOCKS.pop(old_key, None)
+    _MANGA_LOCK_TIMES.pop(old_key, None)
     if owner_id is None:
         owner_id = fallback_user_id
     if owner_id is not None and new_chat_id is not None and new_message_id is not None:
-        _MANGA_MESSAGE_LOCKS[_message_lock_key(new_chat_id, new_message_id)] = int(owner_id)
+        new_key = _message_lock_key(new_chat_id, new_message_id)
+        _MANGA_MESSAGE_LOCKS[new_key] = int(owner_id)
+        _MANGA_LOCK_TIMES[new_key] = time.time()
 
 async def _ensure_manga_allowed(chat) -> bool:
     if not chat:
@@ -88,10 +81,12 @@ async def _ensure_callback_lock(query) -> bool:
     msg = query.message
     if not msg or not query.from_user:
         return False
+    _cleanup_expired_locks()
     key = _message_lock_key(msg.chat_id, msg.message_id)
     owner_id = _MANGA_MESSAGE_LOCKS.get(key)
     if owner_id is None:
         _MANGA_MESSAGE_LOCKS[key] = int(query.from_user.id)
+        _MANGA_LOCK_TIMES[key] = time.time()
         return True
     if int(owner_id) != int(query.from_user.id):
         await query.answer("Not your button.", show_alert=True)
@@ -832,6 +827,6 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_render_page(query, context, img_bytes, caption_text, keyboard, is_edit, owner_id=query.from_user.id)
 
 try:
-    _nsfw_db_init()
+    nsfw_db_init()
 except Exception as e:
     log.warning(f"Failed to initialize manga NSFW database: {e}")

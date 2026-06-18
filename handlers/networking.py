@@ -13,7 +13,7 @@ from utils.http import get_http_session
 from urllib.parse import urlparse
 
 _NET_CACHE = {}
-_NET_CACHE_TTL = 10 * 60
+_NET_CACHE_TTL = 300
 
 #whois
 def fmt_date(d):
@@ -50,7 +50,7 @@ async def whoisdomain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        w = whois.whois(domain)
+        w = await asyncio.to_thread(whois.whois, domain)
 
         ns = w.name_servers
         if isinstance(ns, list):
@@ -108,7 +108,22 @@ async def ip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
 
-    ip = context.args[0]
+    target = context.args[0].strip()
+    try:
+        ip_obj = ipaddress.ip_address(target)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return await update.message.reply_text("❌ Private/local IP addresses are not allowed.")
+        ip = str(ip_obj)
+    except ValueError:
+        try:
+            resolved_ip_str = await asyncio.to_thread(socket.gethostbyname, target)
+            ip_obj = ipaddress.ip_address(resolved_ip_str)
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                return await update.message.reply_text("❌ Private/local IP addresses are not allowed.")
+            ip = target
+        except Exception:
+            return await update.message.reply_text("❌ Invalid IP address or domain name.")
+
     msg = await update.message.reply_text(
         f"🔄 <b>Analyzing IP {html.escape(ip)}...</b>",
         parse_mode="HTML"
@@ -199,12 +214,12 @@ async def domain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info = {}
 
     try:
-        info["ip"] = socket.gethostbyname(domain)
+        info["ip"] = await asyncio.to_thread(socket.gethostbyname, domain)
     except Exception:
         info["ip"] = "Not found"
 
     try:
-        w = whois.whois(domain)
+        w = await asyncio.to_thread(whois.whois, domain)
         info["registrar"] = w.registrar or "Not available"
         info["created"] = str(w.creation_date) if w.creation_date else "Not available"
         info["expires"] = str(w.expiration_date) if w.expiration_date else "Not available"
@@ -269,7 +284,14 @@ async def domain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await loading.edit_text(text, parse_mode="HTML")
     
+def _cache_cleanup():
+    now = time.time()
+    expired = [k for k, v in list(_NET_CACHE.items()) if now - v[0] > _NET_CACHE_TTL]
+    for k in expired:
+        _NET_CACHE.pop(k, None)
+
 def _cache_get(key: str):
+    _cache_cleanup()
     item = _NET_CACHE.get(key)
     if not item:
         return None
@@ -279,8 +301,8 @@ def _cache_get(key: str):
         return None
     return val
 
-
 def _cache_set(key: str, val):
+    _cache_cleanup()
     _NET_CACHE[key] = (time.time(), val)
 
 
