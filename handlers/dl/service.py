@@ -79,8 +79,7 @@ def set_upload_engine(value:str)->str:
 
 async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None):
     if not status_msg_id:
-        log.info("Silent mode detected, bypassing custom upload engine directly to PTB")
-        return False
+        log.debug("Silent mode detected, using custom upload engine without progress updates")
     engine=get_upload_engine()
     try:
         if engine=="1":
