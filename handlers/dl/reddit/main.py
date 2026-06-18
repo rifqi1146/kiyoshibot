@@ -289,10 +289,8 @@ def _parse_reddit_video(post:dict)->list[dict]:
     media=post.get("media") or {}
     secure=post.get("secure_media") or {}
     rv=(media.get("reddit_video") or secure.get("reddit_video") or {})
-    fallback=_html_unescape_url(rv.get("fallback_url") or "")
-    if fallback: return [{"type":"video","url":fallback}]
-    hls=_html_unescape_url(rv.get("hls_url") or "")
-    if hls: return [{"type":"video","url":hls}]
+    if rv:
+        raise RuntimeError("Reddit DASH video requires yt-dlp for audio merging")
     return []
 
 def _parse_direct_url(post:dict)->list[dict]:
