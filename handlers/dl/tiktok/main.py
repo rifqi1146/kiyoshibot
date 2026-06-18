@@ -1020,7 +1020,7 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
         try:
             _ttdbg("direct video download try | index=%s total=%s url=%s",idx,len(video_urls),video_url[:180])
             await _download_with_best_engine(session,video_url,out_path,bot,chat_id,status_msg_id,"Downloading TikTok video...",headers=base_headers)
-            if is_invalid_video(out_path):
+            if await asyncio.to_thread(is_invalid_video,out_path):
                 _safe_remove_file(out_path,"invalid TikTok video")
                 raise RuntimeError("Invalid video file from TikTok scraping")
             log.info("TikTok direct scraping success | type=video source=%s file=%s url_index=%s",media.get("source"),out_path,idx)

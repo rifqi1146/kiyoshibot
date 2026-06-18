@@ -469,7 +469,7 @@ async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:in
         _inspect_downloaded_file(out_path)
         _inspect_image_dims(out_path)
         try:
-            out_path=_fix_photo_for_telegram(out_path)
+            out_path=await asyncio.to_thread(_fix_photo_for_telegram,out_path)
             _inspect_image_dims(out_path)
         except Exception as e:
             log.warning("Reddit image normalize failed, redownload with aiohttp | path=%s err=%r",out_path,e)
@@ -481,7 +481,7 @@ async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:in
             await _aiohttp_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
             _inspect_downloaded_file(out_path)
             _inspect_image_dims(out_path)
-            out_path=_fix_photo_for_telegram(out_path)
+            out_path=await asyncio.to_thread(_fix_photo_for_telegram,out_path)
             _inspect_image_dims(out_path)
     return {"type":media_type if media_type in {"video","photo"} else "photo","path":out_path,"url":media_url}
 

@@ -340,11 +340,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     }
     
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
-    
-    # +++ FIX SILENT MODE YOUTUBE: Hapus "and not is_yt" +++
     silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
-    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    
     if auto_choice in ("video","mp3"):
         if silent_mode:
             try: await msg.set_reaction("😍")
@@ -371,60 +367,6 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-
-async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update,context):
-        return
-    msg=update.message
-    if not msg or not update.effective_user:
-        return
-    if not context.args:
-        return await msg.reply_text(
-            "Send a video link to download.\n\n"
-            "By using this downloader, you are responsible for the content you download and how you use it."
-        )
-    url=context.args[0]
-    
-    user_id = update.effective_user.id
-    if is_premium_required(url,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
-        return await msg.reply_text("🔞 Download from this website is for premium users only.")
-        
-    wait_time = _check_and_consume_limit(user_id)
-    if wait_time > 0:
-        return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
-    
-    dl_id=uuid.uuid4().hex[:8]
-    DL_CACHE[dl_id]={
-        "url":url,
-        "user":user_id,
-        "chat_id":msg.chat.id,
-        "reply_to":msg.message_id,
-        "message_thread_id":getattr(msg,"message_thread_id",None),
-    }
-    settings=get_user_settings(user_id)
-    auto_choice=str(settings.get("autodl_format") or "ask").lower()
-    silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
-    if auto_choice in ("video","mp3"):
-        if silent_mode:
-            try: await msg.set_reaction("😍")
-            except Exception: pass
-            status_msg = None
-            status_ready = True
-        else:
-            status_msg = await msg.reply_text(_metadata_status(url),parse_mode="HTML")
-            status_ready = True
-            
-        return await _process_choice(
-            context=context,
-            message=status_msg,
-            dl_id=dl_id,
-            data=DL_CACHE[dl_id],
-            choice=auto_choice,
-            user_id=user_id,
-            status_ready=status_ready,
-        )
-        
-    await msg.reply_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
 
 
 async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
@@ -504,7 +446,6 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                         mapped_fmt = fmt_map.get(auto_tt_format, "slideshow_video")
                         
                         if status_msg_id:
-                            from .tiktok.main import _metadata_status
                             try: await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=_metadata_status(raw_url), parse_mode="HTML")
                             except Exception: pass
                             
@@ -535,7 +476,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                 result_kind=str((path or {}).get("kind") or "").lower() if isinstance(path,dict) else ""
                 should_validate_video=fmt_key!="mp3" and result_kind!="audio"
         
-                if should_validate_video and actual_path and is_invalid_video(actual_path):
+                if should_validate_video and actual_path and await asyncio.to_thread(is_invalid_video,actual_path):
                     await _remove_file(actual_path,"invalid TikTok")
                     raise RuntimeError("Static video")
         else:

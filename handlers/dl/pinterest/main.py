@@ -485,7 +485,7 @@ async def _download_one_item(session, item: dict, title: str, bot, chat_id, stat
         await _ffmpeg_hls_download(media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
     else:
         await _download_with_best_engine(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
-    if media_type == "video" and ext != ".gif" and is_invalid_video(out_path):
+    if media_type == "video" and ext != ".gif" and await asyncio.to_thread(is_invalid_video, out_path):
         try:
             os.remove(out_path)
         except Exception:
