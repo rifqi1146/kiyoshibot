@@ -289,8 +289,10 @@ def _parse_reddit_video(post:dict)->list[dict]:
     media=post.get("media") or {}
     secure=post.get("secure_media") or {}
     rv=(media.get("reddit_video") or secure.get("reddit_video") or {})
-    if rv:
-        raise RuntimeError("Reddit DASH video requires yt-dlp for audio merging")
+    hls=_html_unescape_url(rv.get("hls_url") or "")
+    if hls: return [{"type":"video_hls","url":hls}]
+    fallback=_html_unescape_url(rv.get("fallback_url") or "")
+    if fallback: return [{"type":"video","url":fallback}]
     return []
 
 def _parse_direct_url(post:dict)->list[dict]:
@@ -388,7 +390,7 @@ async def _aiohttp_download_with_progress(session,media_url:str,out_path:str,bot
 
 def _guess_ext(media_type:str,url:str)->str:
     low=(url or "").lower()
-    if media_type=="video":
+    if "video" in media_type:
         if ".mp4" in low: return ".mp4"
         if ".webm" in low: return ".webm"
         if ".mov" in low: return ".mov"
@@ -451,18 +453,32 @@ async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:in
     media_url=str(item.get("url") or "").strip()
     if not media_url: raise RuntimeError("media url kosong")
     ext=_guess_ext(media_type,media_url)
-    title="Reddit Video" if media_type=="video" else "Reddit Media"
+    title="Reddit Video" if "video" in media_type else "Reddit Media"
     out_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}_{sanitize_filename(title)}{ext}")
     headers=_build_reddit_media_headers()
-    title_text=f"Downloading {'Reddit Video' if media_type=='video' else 'Reddit Media'}... ({idx}/{total})"
-    try:
-        await _aria2c_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
-    except Exception as e:
-        log.warning("Reddit aria2c failed, fallback aiohttp | idx=%s url=%s err=%r",idx,media_url,e)
-        if os.path.exists(out_path):
-            try: os.remove(out_path)
-            except Exception: pass
-        await _aiohttp_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+    title_text=f"Downloading {'Reddit Video' if 'video' in media_type else 'Reddit Media'}... ({idx}/{total})"
+    
+    if media_type == "video_hls":
+        ua = headers.get("User-Agent", "Mozilla/5.0")
+        cmd = ["ffmpeg", "-y", "-user_agent", ua, "-i", media_url, "-c", "copy", "-bsf:a", "aac_adtstoasc", out_path]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        
+        while proc.returncode is None:
+            await asyncio.sleep(1.5)
+            await _safe_edit_status(bot, chat_id, status_msg_id, f"<b>{title_text}</b>\n\n<code>Stitching HLS Audio & Video streams directly...</code>")
+            
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"FFmpeg HLS fallback failed: {stderr.decode(errors='ignore')}")
+    else:
+        try:
+            await _aria2c_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+        except Exception as e:
+            log.warning("Reddit aria2c failed, fallback aiohttp | idx=%s url=%s err=%r",idx,media_url,e)
+            if os.path.exists(out_path):
+                try: os.remove(out_path)
+                except Exception: pass
+            await _aiohttp_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
     if media_type=="photo":
         _inspect_downloaded_file(out_path)
         _inspect_image_dims(out_path)
