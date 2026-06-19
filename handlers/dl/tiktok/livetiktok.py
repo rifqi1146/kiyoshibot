@@ -58,8 +58,7 @@ async def recordlive_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await msg.reply_text(
         f"**Starting Live Recording**\n\n"
         f"Target: `@{target_username}`\n"
-        f"Duration: {duration_mins} Minutes (Auto Stop)\n\n"
-        f"Please wait, the system is connecting to the live stream...",
+        f"Duration: {duration_mins} Minutes\n\n",
         parse_mode="Markdown"
     )
 
