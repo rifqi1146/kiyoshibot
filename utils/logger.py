@@ -3,7 +3,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.config import LOG_CHAT_ID
-from utils.commands import BOT_COMMANDS
+from handlers.commands import COMMAND_HANDLERS
 from handlers.dl.constants import AUTO_DOWNLOAD_DOMAINS
 
 log = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def log_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_command:
         cmd = text[1:].split()[0].split("@")[0].lower()
-        if cmd not in BOT_COMMANDS:
+        if cmd not in [c[0] for c in COMMAND_HANDLERS]:
             return
         title = "<b>Command Log</b>"
         content = f"<code>{html.escape(text)}</code>"

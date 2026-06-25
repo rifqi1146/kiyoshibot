@@ -46,8 +46,7 @@ GROQ_BASE = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT", "30"))
 COOLDOWN = int(os.getenv("GROQ_COOLDOWN", "2"))
-GROQ_MEMORY = {}
-META_MEMORY = {}
+
 
 # donate
 DONATE_URL = os.getenv("DONATE_URL")

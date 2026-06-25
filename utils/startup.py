@@ -41,7 +41,12 @@ async def _startup_asupan(app):
     log.info("✓ Asupan startup sent")
 
 async def startup_tasks(app):
-    log.info("✓ Running startup tasks...")
+    try:
+        from database.asupan_db import init_asupan_storage
+        init_asupan_storage()
+        log.info("✓ Asupan DB initialized")
+    except Exception:
+        log.exception("Asupan DB init failed")
     try:
         nsfw_db_init()
         log.info("✓ NSFW DB initialized")
