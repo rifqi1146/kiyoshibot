@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 import asyncio
 import sqlite3
@@ -30,8 +31,6 @@ NH_API_URL = "https://nhentai.net/api/v2"
 _MANGA_MESSAGE_LOCKS = {}
 _MANGA_LOCK_TIMES = {}
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
-
-import time
 
 def _is_nsfw_enabled(chat_id: int, chat_type: str) -> bool:
     return is_nsfw_allowed(chat_id, chat_type)
@@ -227,12 +226,12 @@ async def get_chapter_context(chapter_id: str, context: ContextTypes.DEFAULT_TYP
     if cache_key in context.user_data:
         return context.user_data[cache_key]
     ch_data = await fetch_json(f"{MANGADEX_API}/chapter/{chapter_id}?includes[]=manga")
-    if not ch_data:
+    if not ch_data or "data" not in ch_data or "attributes" not in ch_data["data"]:
         return None, None, "Unknown", "??", "??"
-    manga = next((rel for rel in ch_data["data"]["relationships"] if rel["type"] == "manga"), None)
-    title = manga["attributes"]["title"].get("en", manga["attributes"]["title"].get("ja-ro", "Unknown Title")) if manga else "Unknown"
-    ch_num = ch_data["data"]["attributes"]["chapter"] or "Oneshot"
-    lang = ch_data["data"]["attributes"]["translatedLanguage"].upper()
+    manga = next((rel for rel in ch_data["data"].get("relationships", []) if rel.get("type") == "manga"), None)
+    title = manga["attributes"]["title"].get("en", manga["attributes"]["title"].get("ja-ro", "Unknown Title")) if manga and "attributes" in manga and "title" in manga["attributes"] else "Unknown"
+    ch_num = ch_data["data"]["attributes"].get("chapter") or "Oneshot"
+    lang = ch_data["data"]["attributes"].get("translatedLanguage", "??").upper()
     manga_id = manga["id"] if manga else None
     prev_id, next_id = None, None
     if manga_id:
@@ -416,7 +415,7 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif source in ["nh", "nhentai"]:
         if full_query.isdigit():
             data = await fetch_json(f"{NH_API_URL}/galleries/{full_query}", custom_headers=NH_HEADERS)
-            if not data:
+            if not data or "error" in data or "title" not in data:
                 return await status.edit_text("❌ Doujin not found (invalid code).", parse_mode="HTML")
             text, markup = build_nh_detail_ui(data)
             cover_url = get_nh_cover_url(data)
@@ -541,16 +540,17 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Downloading page... ⏳")
         chapter_id = data.split("_")[1]
         server_data = await fetch_json(f"{MANGADEX_API}/at-home/server/{chapter_id}")
-        if not server_data or not server_data["chapter"]["data"]:
+        chapter_data = server_data.get("chapter", {}) if server_data else {}
+        if not server_data or not chapter_data.get("data"):
             return await context.bot.send_message(
                 chat_id=query.message.chat_id,
                 message_thread_id=query.message.message_thread_id,
                 text="❌ Failed to load chapter."
             )
         prev_ch, next_ch, m_title, m_ch, m_lang = await get_chapter_context(chapter_id, context)
-        base_url = server_data["baseUrl"]
-        chapter_hash = server_data["chapter"]["hash"]
-        urls = [f"{base_url}/data/{chapter_hash}/{p}" for p in server_data["chapter"]["data"]]
+        base_url = server_data.get("baseUrl", "")
+        chapter_hash = server_data.get("chapter", {}).get("hash", "")
+        urls = [f"{base_url}/data/{chapter_hash}/{p}" for p in server_data.get("chapter", {}).get("data", [])]
         context.user_data[f"manga_{chapter_id}"] = urls
         keyboard = get_nav_keyboard(chapter_id, 0, len(urls), prev_ch, next_ch)
         caption_text = f"📖 <b>{_escape(m_title)}</b> | Ch:{_escape(m_ch)} | 🌐 {_escape(m_lang)}"

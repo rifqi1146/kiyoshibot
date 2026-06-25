@@ -182,7 +182,7 @@ async def run_backup(bot):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
             zip_path = tmp.name
 
-        _zip_data(zip_path)
+        await asyncio.to_thread(_zip_data, zip_path)
 
         with open(zip_path, "rb") as f:
             await bot.send_document(
@@ -308,7 +308,7 @@ async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await tg_file.download_to_drive(zip_path)
 
-        _safe_extract_zip(zip_path, DATA_DIR)
+        await asyncio.to_thread(_safe_extract_zip, zip_path, DATA_DIR)
 
         await status.edit_text("Restore extracted. Reloading runtime state...")
 

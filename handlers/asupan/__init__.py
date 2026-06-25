@@ -12,7 +12,7 @@ from database.asupan_db import (
     load_autodel_groups,
 )
 
-init_asupan_storage()
+
 
 __all__ = [
     "asupan_cmd",
@@ -20,7 +20,6 @@ __all__ = [
     "asupann_cmd",
     "autodel_cmd",
     "send_asupan_once",
-    "send_asupan_once",
     "load_asupan_groups",
-    "load_autodel_group",
+    "load_autodel_groups",
 ]

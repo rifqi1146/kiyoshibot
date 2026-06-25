@@ -59,22 +59,26 @@ def _load_upload_engine()->str:
 def get_upload_engine()->str:
     return _load_upload_engine()
 
+import threading
+_engine_lock = threading.Lock()
+
 def get_upload_engine_name()->str:
     return _UPLOAD_ENGINE_NAMES.get(get_upload_engine(),"pyrofork")
 
 def set_upload_engine(value:str)->str:
     global _UPLOAD_ENGINE_CACHE
     engine=_normalize_upload_engine(value)
-    _UPLOAD_ENGINE_CACHE=engine
-    try:
-        os.makedirs(os.path.dirname(_UPLOAD_ENGINE_STATE_FILE) or ".",exist_ok=True)
-        tmp=f"{_UPLOAD_ENGINE_STATE_FILE}.tmp"
-        with open(tmp,"w",encoding="utf-8") as f:
-            json.dump({"engine":engine,"name":_UPLOAD_ENGINE_NAMES.get(engine,"pyrofork"),"updated_at":int(time.time())},f)
-        os.replace(tmp,_UPLOAD_ENGINE_STATE_FILE)
-        log.info("Upload engine state saved | engine=%s name=%s",engine,_UPLOAD_ENGINE_NAMES.get(engine,"pyrofork"))
-    except Exception as e:
-        log.warning("Failed to save upload engine state | file=%s err=%r",_UPLOAD_ENGINE_STATE_FILE,e)
+    with _engine_lock:
+        _UPLOAD_ENGINE_CACHE=engine
+        try:
+            os.makedirs(os.path.dirname(_UPLOAD_ENGINE_STATE_FILE) or ".",exist_ok=True)
+            tmp=f"{_UPLOAD_ENGINE_STATE_FILE}.tmp"
+            with open(tmp,"w",encoding="utf-8") as f:
+                json.dump({"engine":engine,"name":_UPLOAD_ENGINE_NAMES.get(engine,"pyrofork"),"updated_at":int(time.time())},f)
+            os.replace(tmp,_UPLOAD_ENGINE_STATE_FILE)
+            log.info("Upload engine state saved | engine=%s name=%s",engine,_UPLOAD_ENGINE_NAMES.get(engine,"pyrofork"))
+        except Exception as e:
+            log.warning("Failed to save upload engine state | file=%s err=%r",_UPLOAD_ENGINE_STATE_FILE,e)
     return engine
 
 async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None):
@@ -150,7 +154,7 @@ async def _ensure_photo_size(file_path: str):
     await asyncio.to_thread(_run)
     
     if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-        os.replace(tmp_path, file_path)
+        await asyncio.to_thread(os.replace, tmp_path, file_path)
 
 def _clean_caption_from_path(path:str)->str:
     raw_name=os.path.splitext(os.path.basename(path))[0]

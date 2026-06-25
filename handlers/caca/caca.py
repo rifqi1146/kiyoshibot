@@ -1,6 +1,5 @@
 import re,os,uuid,base64,shutil,asyncio,random,html,logging,mimetypes,subprocess,aiohttp
 from typing import Optional
-from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
@@ -18,17 +17,9 @@ CLOUDFLARE_TIMEOUT=int(os.getenv("CLOUDFLARE_TIMEOUT","60"))
 TMP_DIR=os.getenv("TMP_DIR","downloads")
 CACA_IMAGE_MAX_SIZE=int(os.getenv("CACA_IMAGE_MAX_SIZE",str(5*1024*1024)))
 _EMOS=["🌸","💖","🧸","🎀","🌟","💫"]
-_URL_RE=re.compile(r"(https?://[^\s'\"<>]+)",re.I)
 
 def _emo():
     return random.choice(_EMOS)
-
-def _parse_html(html_text:str)->Optional[str]:
-    soup=BeautifulSoup(html_text,"html.parser")
-    for t in soup(["script","style","iframe","noscript"]):
-        t.decompose()
-    ps=[p.get_text(" ",strip=True) for p in soup.find_all("p") if len(p.text)>30]
-    return ("\n\n".join(ps))[:12000] or None
 
 def _cleanup_memory():
     try:

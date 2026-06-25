@@ -87,20 +87,24 @@ def is_fasttelethon_enabled()->bool:
         _FAST_UPLOAD_ENABLED=_load_fast_upload_enabled()
     return bool(_FAST_UPLOAD_ENABLED)
 
+import threading
+_fast_lock = threading.Lock()
+
 def is_fasttelethon_available()->bool:
     return fast_upload_file is not None
 
 def set_fasttelethon_enabled(enabled:bool)->bool:
     global _FAST_UPLOAD_ENABLED
-    _FAST_UPLOAD_ENABLED=bool(enabled)
-    try:
-        os.makedirs(os.path.dirname(_FAST_STATE_FILE) or ".",exist_ok=True)
-        tmp=f"{_FAST_STATE_FILE}.tmp"
-        with open(tmp,"w",encoding="utf-8") as f:
-            json.dump({"enabled":bool(enabled),"updated_at":int(time.time())},f)
-        os.replace(tmp,_FAST_STATE_FILE)
-    except Exception as e:
-        log.warning("Failed to save FastTelethon state | file=%s err=%r",_FAST_STATE_FILE,e)
+    with _fast_lock:
+        _FAST_UPLOAD_ENABLED=bool(enabled)
+        try:
+            os.makedirs(os.path.dirname(_FAST_STATE_FILE) or ".",exist_ok=True)
+            tmp=f"{_FAST_STATE_FILE}.tmp"
+            with open(tmp,"w",encoding="utf-8") as f:
+                json.dump({"enabled":bool(enabled),"updated_at":int(time.time())},f)
+            os.replace(tmp,_FAST_STATE_FILE)
+        except Exception as e:
+            log.warning("Failed to save FastTelethon state | file=%s err=%r",_FAST_STATE_FILE,e)
     return _FAST_UPLOAD_ENABLED
 
 async def _disconnect_client(client,label:str):

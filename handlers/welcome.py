@@ -765,12 +765,17 @@ async def web_verify_post(request):
         return web.Response(text="Captcha validation missing.", status=400)
 
     session = await get_http_session()
-    async with session.post(
-        verify_url,
-        data={"secret": secret_key, "response": captcha_response}
-    ) as resp:
-        result = await resp.json()
-        log.info(f"WEB_DEBUG: {log_name} result: {result}")
+    try:
+        async with session.post(
+            verify_url,
+            data={"secret": secret_key, "response": captcha_response},
+            timeout=10
+        ) as resp:
+            result = await resp.json()
+            log.info(f"WEB_DEBUG: {log_name} result: {result}")
+    except Exception as e:
+        log.error(f"WEB_DEBUG: {log_name} request failed: {e}")
+        return web.Response(text="Verification service unavailable. Please try again later.", status=503)
 
     if not result.get("success"):
         log.warning(f"WEB_DEBUG: {log_name} rejected")

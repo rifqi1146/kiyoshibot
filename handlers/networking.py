@@ -306,10 +306,6 @@ def _cache_set(key: str, val):
     _NET_CACHE[key] = (time.time(), val)
 
 
-def _fmt_date(d):
-    if isinstance(d, list):
-        return str(d[0]) if d else "Not available"
-    return str(d) if d else "Not available"
 
 
 def _split_tg(text: str, limit: int = 4096):
@@ -674,9 +670,9 @@ async def net_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("<b>📋 WHOIS</b>")
         lines.append(f"<b>Registrar:</b> {html.escape(str(getattr(w, 'registrar', None) or 'N/A'))}")
         lines.append(f"<b>WHOIS Server:</b> {html.escape(str(getattr(w, 'whois_server', None) or 'N/A'))}")
-        lines.append(f"<b>Created:</b> {_fmt_date(getattr(w, 'creation_date', None))}")
-        lines.append(f"<b>Updated:</b> {_fmt_date(getattr(w, 'updated_date', None))}")
-        lines.append(f"<b>Expires:</b> {_fmt_date(getattr(w, 'expiration_date', None))}")
+        lines.append(f"<b>Created:</b> {fmt_date(getattr(w, 'creation_date', None))}")
+        lines.append(f"<b>Updated:</b> {fmt_date(getattr(w, 'updated_date', None))}")
+        lines.append(f"<b>Expires:</b> {fmt_date(getattr(w, 'expiration_date', None))}")
         lines.append(f"<b>Registrant:</b> {html.escape(str(getattr(w, 'name', None) or 'N/A'))}")
         lines.append(f"<b>Org:</b> {html.escape(str(getattr(w, 'org', None) or 'N/A'))}")
         lines.append(f"<b>Email:</b> {html.escape(str(email_val or 'N/A'))}")

@@ -105,7 +105,11 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
     log.info("yt-dlp probe start | url=%s cookies=%s", url, "yes" if "--cookies" in cmd else "no")
     log.info("yt-dlp probe command | %s", " ".join(cmd))
 
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired as e:
+        log.warning("yt-dlp probe timed out | url=%s err=%s", url, e)
+        return []
 
     if p.returncode != 0:
         err = (p.stderr or p.stdout or "").strip()

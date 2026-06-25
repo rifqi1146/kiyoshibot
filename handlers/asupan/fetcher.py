@@ -19,12 +19,18 @@ async def fetch_asupan_tikwm(keyword: str | None = None):
     session = await get_http_session()
     
     for attempt in range(3):
-        async with session.post(
-            api_url,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as r:
-            data = await r.json()
+        try:
+            async with session.post(
+                api_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as r:
+                data = await r.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            if attempt < 2:
+                await asyncio.sleep(1.5)
+                continue
+            raise RuntimeError(f"TikWM API network error: {e}")
 
         if data.get("code") != 0:
             err_msg = data.get('msg', '')
