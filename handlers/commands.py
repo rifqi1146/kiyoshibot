@@ -47,6 +47,7 @@ from handlers.weather import weather_cmd
 from handlers.welcome import wlc_cmd, start_verify_pm
 from handlers.aiimagedetector import aiimagedetector_cmd
 from handlers.uploadengine import uploadengine_cmd
+from handlers.share import share_cmd
 
 from handlers.asupan import (
     asupan_cmd,
@@ -79,8 +80,10 @@ from handlers.moderation import (
 COMMAND_HANDLERS = [
     ("addsudo", addsudo_cmd, False),
     ("aitext", aitext_cmd, False),
+    ("share", share_cmd, False),
     ("anime", anime_cmd, False),
     ("aidetect", aiimagedetector_cmd, False),
+    ("wlc", wlc_cmd, False),
     ("ask", ai_cmd, False),
     ("asupan", asupan_cmd, False),
     ("asupann", asupann_cmd, False),

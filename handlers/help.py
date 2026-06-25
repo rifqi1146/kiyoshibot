@@ -92,6 +92,7 @@ HELP_TEXT = {
         "• <code>/reminder</code> — Schedule a reminder\n"
         "• <code>/resi</code> — Track packages, Indonesia expedition only\n"
         "• <code>/ship</code> — Choose a couple\n"
+        "• <code>/share</code> — Share media anonymous\n"        
         "• <code>/susunkata</code> — Play word arrangement game\n"
         "• <code>/tr</code> — Translate text between languages\n"
         "• <code>/trlist</code> — List supported languages\n"
