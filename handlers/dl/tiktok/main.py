@@ -1143,13 +1143,46 @@ def _ffprobe_duration(path:str)->float:
         log.warning("Failed to probe slideshow audio duration | file=%s err=%r",path,e)
     return 0.0
 
-def _render_slideshow_video(image_paths:list[str],audio_path:str|None,out_path:str):
+def _render_slideshow_video(image_paths:list[str], audio_path:str|None, out_path:str):
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg not found")
     if not image_paths:
         raise RuntimeError("No slideshow images to render")
 
-    audio_duration=_ffprobe_duration(audio_path) if audio_path else 0.0
+    audio_duration = _ffprobe_duration(audio_path) if audio_path else 0.0
+
+    if len(image_paths) == 1:
+        cmd = [
+            "ffmpeg", "-y", 
+            "-loop", "1", "-framerate", str(TIKTOK_SLIDESHOW_FPS), 
+            "-i", image_paths[0]
+        ]
+        if audio_path:
+            cmd.extend(["-i", audio_path])
+
+        filter_str = (
+            f"scale={TIKTOK_SLIDESHOW_WIDTH}:{TIKTOK_SLIDESHOW_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={TIKTOK_SLIDESHOW_WIDTH}:{TIKTOK_SLIDESHOW_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+            f"format=yuv420p,setsar=1"
+        )
+
+        cmd.extend([
+            "-vf", filter_str,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart"
+        ])
+
+        if audio_path:
+            cmd.extend(["-c:a", "aac", "-b:a", "128k", "-shortest"])
+        else:
+            cmd.extend(["-t", "5"])
+
+        cmd.append(out_path)
+
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg single image render failed: {result.stderr}")
+        return
+
     base_duration=max(float(TIKTOK_SLIDESHOW_IMAGE_DURATION),0.3)
     transition_name=(TIKTOK_SLIDESHOW_TRANSITION or "slideleft").strip()
 
@@ -1244,6 +1277,7 @@ def _render_slideshow_video(image_paths:list[str],audio_path:str|None,out_path:s
     if not os.path.exists(out_path) or os.path.getsize(out_path)<=0:
         raise RuntimeError("Slideshow render output is empty")
 
+
 async def _download_direct_slideshow_video(media:dict,bot,chat_id,status_msg_id)->dict:
     session=await get_http_session()
     title=(media.get("title") or "TikTok Slideshow").strip()
@@ -1287,23 +1321,33 @@ async def _download_direct_slideshow_video(media:dict,bot,chat_id,status_msg_id)
             _safe_remove_file(path,"slideshow image")
         _safe_remove_file(audio_path,"slideshow audio")
         
-async def _download_tiktok_media(media:dict,bot,chat_id,status_msg_id,fmt_key="mp4"):
-    kind=media.get("kind")
-    if kind=="album" and fmt_key in ("video","mp4"):
-        return {"choice_required":"tiktok_slideshow","media":media}
-    if fmt_key=="mp3":
-        if kind=="album":
-            return await _download_slideshow_audio(media,bot,chat_id,status_msg_id)
-        if kind!="video":
+async def _download_tiktok_media(media:dict, bot, chat_id, status_msg_id, fmt_key="mp4"):
+    kind = media.get("kind")
+    images = media.get("images") or []
+
+    if fmt_key == "mp3":
+        if kind == "album":
+            return await _download_slideshow_audio(media, bot, chat_id, status_msg_id)
+        if kind != "video":
             raise RuntimeError("TikTok media does not contain audio")
-        return await _download_direct_video(media,bot,chat_id,status_msg_id)
-    if kind=="video":
-        return await _download_direct_video(media,bot,chat_id,status_msg_id)
-    if kind=="album":
-        if fmt_key=="slideshow_video":
-            return await _download_direct_slideshow_video(media,bot,chat_id,status_msg_id)
-        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Downloading TikTok slideshow...</b>",min_interval=0)
-        return await _download_direct_album(media,bot,chat_id,status_msg_id)
+        return await _download_direct_video(media, bot, chat_id, status_msg_id)
+
+    if kind == "video":
+        return await _download_direct_video(media, bot, chat_id, status_msg_id)
+
+    if kind == "album":
+        if len(images) <= 1 and fmt_key in ("video", "mp4", "slideshow_video"):
+            return await _download_direct_slideshow_video(media, bot, chat_id, status_msg_id)
+  
+        if fmt_key in ("video", "mp4"):
+            return {"choice_required": "tiktok_slideshow", "media": media}
+
+        if fmt_key == "slideshow_video":
+            return await _download_direct_slideshow_video(media, bot, chat_id, status_msg_id)
+
+        await _safe_edit_status(bot, chat_id, status_msg_id, "<b>Downloading TikTok slideshow...</b>", min_interval=0)
+        return await _download_direct_album(media, bot, chat_id, status_msg_id)
+
     raise RuntimeError("Unsupported TikTok media type")
 
 async def tiktok_scrape_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
