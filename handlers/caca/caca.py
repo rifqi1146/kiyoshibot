@@ -361,7 +361,7 @@ async def _cloudflare_chat(messages:list[dict]):
         token=cred["token"]
         try:
             async with session.post(
-                f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{CLOUDFLARE_MODEL}",
+                f"https://api.cloudflare.com/client/v4/accounts/{account_id}/v1/chat/completions/{CLOUDFLARE_MODEL}",
                 headers={"Authorization":f"Bearer {token}"},
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=CLOUDFLARE_TIMEOUT),
