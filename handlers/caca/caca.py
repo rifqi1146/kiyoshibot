@@ -351,18 +351,24 @@ async def _cloudflare_chat(messages:list[dict]):
     errors=[]
     last_quota_error=None
     payload={
+        "model": CLOUDFLARE_MODEL,
         "messages":messages,
         "temperature":0.9,
         "max_completion_tokens":1024,
         "chat_template_kwargs":{"thinking":False,"enable_thinking":False,"clear_thinking":True},
     }
+    
     for idx,cred in enumerate(creds,start=1):
         account_id=cred["account_id"]
         token=cred["token"]
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions"        
         try:
             async with session.post(
-                f"https://api.cloudflare.com/client/v4/accounts/{account_id}/v1/chat/completions/{CLOUDFLARE_MODEL}",
-                headers={"Authorization":f"Bearer {token}"},
+                url,
+                headers={
+                    "Authorization":f"Bearer {token}",
+                    "Content-Type":"application/json"
+                },
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=CLOUDFLARE_TIMEOUT),
             ) as r:
@@ -388,6 +394,7 @@ async def _cloudflare_chat(messages:list[dict]):
     if last_quota_error and all(_is_cf_quota_error(x.split(": ",1)[-1]) for x in errors):
         raise RuntimeError("Semua API key Cloudflare terkena limit harian.")
     raise RuntimeError("Cloudflare failed: "+" | ".join(errors[-3:]))
+
 
 async def meta_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
