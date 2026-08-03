@@ -57,7 +57,7 @@ FONT_DIR = os.getenv("FONT_DIR")
 #Cloudflare
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_AUTH_TOKEN = os.getenv("CLOUDFLARE_AUTH_TOKEN", "").strip()
-CLOUDFLARE_MODEL = "moonshotai/kimi-k3"
+CLOUDFLARE_MODEL = "@cf/nvidia/nemotron-3-120b-a12b"
 
 #Neoxr api
 NEOXR_API_KEY = os.getenv("NEOXR_API_KEY")
