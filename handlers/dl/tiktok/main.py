@@ -365,7 +365,8 @@ async def _dump_tiktok_debug(bot,label:str,request_url:str,final_url:str,status:
     _ttdbg("dump saved | label=%s status=%s final=%s markers=%s",label,status,final_url,markers)
 
 def is_tiktok(url:str)->bool:
-    return any(x in (url or "") for x in ("tiktok.com","vt.tiktok.com","vm.tiktok.com"))
+    return any(x in (url or "") for x in ("tiktok.com","vt.tiktok.com","vm.tiktok.com","douyin.com","v.douyin.com","iesdouyin.com"))
+
 
 def _is_short_tiktok_url(url:str)->bool:
     return bool(SHORT_TIKTOK_RE.search(url or ""))
@@ -1362,6 +1363,8 @@ async def douyin_download(url,bot,chat_id,status_msg_id):
     return result
 
 async def tiktok_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
+    if any(x in (url or "") for x in ("douyin.com", "v.douyin.com", "iesdouyin.com")):
+        return await douyin_download(url, bot, chat_id, status_msg_id, fmt_key=fmt_key)
     try:
         log.info("TikTok primary start | source=scraping url=%s fmt=%s metadata_ready=%s fast=%s engine=%s progress=%s",url,fmt_key,metadata_ready,USE_GOVD_FAST,TIKTOK_DOWNLOAD_ENGINE,TIKTOK_PROGRESS)
         result=await tiktok_scrape_download(url=url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,fmt_key=fmt_key,metadata_ready=metadata_ready)
