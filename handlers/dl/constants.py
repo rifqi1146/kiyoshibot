@@ -32,6 +32,7 @@ PREMIUM_ONLY_DOMAINS = {
 AUTO_DOWNLOAD_DOMAINS = {
     "music.youtube.com",
     "v.douyin.com"
+    "douyin.com
     "tiktok.com",
     "vt.tiktok.com",
     "vm.tiktok.com",
