@@ -17,7 +17,10 @@ from handlers.dl.utils import sanitize_filename,progress_bar
 from handlers.dl.ytdlp import ytdlp_download
 
 log=logging.getLogger(__name__)
-THREADS_URL_RE=re.compile(r"https?://(?:www\.)?threads\.(?:com|net)/(?:@[^/?#]+/)?(?:p|post)/([A-Za-z0-9_-]+)",re.I)
+
+THREADS_DOMAIN_RE=re.compile(r"https?://(?:www\.)?threads\.(?:com|net)",re.I)
+THREADS_POST_RE=re.compile(r"/(?:p|post)/([A-Za-z0-9_-]+)",re.I)
+
 DEBUG_THREADS=os.getenv("THREADS_DEBUG","0").lower() in ("1","true","on","yes")
 THREADS_PROGRESS_INTERVAL=float(os.getenv("THREADS_PROGRESS_INTERVAL","3"))
 THREADS_HEADERS={
@@ -46,10 +49,12 @@ def _clip(text:str,limit:int=300)->str:
     return text if len(text)<=limit else text[:limit]+"...<cut>"
 
 def is_threads_url(url:str)->bool:
-    return bool(THREADS_URL_RE.search((url or "").strip()))
+    # Cuma butuh memastikan ini beneran link domain Threads (termasuk /share/)
+    return bool(THREADS_DOMAIN_RE.search((url or "").strip()))
 
 def _extract_threads_post_id(url:str)->str:
-    m=THREADS_URL_RE.search((url or "").strip())
+    # Khusus buat nge-ekstrak ID postingan dari URL final
+    m=THREADS_POST_RE.search((url or "").strip())
     return (m.group(1) or "").strip() if m else ""
 
 def _normalize_media_url(src:str)->str:
@@ -352,10 +357,24 @@ async def threads_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg
     del format_id,has_audio
     if not metadata_ready:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Threads post...</b>")
-    post_id=_extract_threads_post_id(raw_url)
+        
+    post_id = _extract_threads_post_id(raw_url)
+    
+    # +++ FIX RESOLVER: Kalau post_id kosong (contohnya link /share/), kita get redirection nya dulu +++
+    if not post_id:
+        try:
+            session = await get_http_session()
+            async with session.get(raw_url, headers=THREADS_HEADERS, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                resolved_url = str(resp.url)
+                post_id = _extract_threads_post_id(resolved_url)
+        except Exception as e:
+            log.warning("Failed to resolve threads share URL | url=%s err=%r", raw_url, e)
+    # -------------------------------------------------------------------------------------------------
+
     _dbg("threads scrape start | url=%s post_id=%s",raw_url,post_id)
     if not post_id:
         raise RuntimeError("failed to extract threads post id")
+        
     body=await _fetch_threads_embed_html(post_id)
     parsed=_parse_threads_embed_media(body)
     _dbg("threads parsed | items=%s caption=%s",len(parsed.get("items") or []),bool(parsed.get("caption")))
