@@ -49,11 +49,9 @@ def _clip(text:str,limit:int=300)->str:
     return text if len(text)<=limit else text[:limit]+"...<cut>"
 
 def is_threads_url(url:str)->bool:
-    # Cuma butuh memastikan ini beneran link domain Threads (termasuk /share/)
     return bool(THREADS_DOMAIN_RE.search((url or "").strip()))
 
 def _extract_threads_post_id(url:str)->str:
-    # Khusus buat nge-ekstrak ID postingan dari URL final
     m=THREADS_POST_RE.search((url or "").strip())
     return (m.group(1) or "").strip() if m else ""
 
@@ -360,7 +358,6 @@ async def threads_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg
         
     post_id = _extract_threads_post_id(raw_url)
     
-    # +++ FIX RESOLVER: Kalau post_id kosong (contohnya link /share/), kita get redirection nya dulu +++
     if not post_id:
         try:
             session = await get_http_session()
@@ -369,7 +366,6 @@ async def threads_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg
                 post_id = _extract_threads_post_id(resolved_url)
         except Exception as e:
             log.warning("Failed to resolve threads share URL | url=%s err=%r", raw_url, e)
-    # -------------------------------------------------------------------------------------------------
 
     _dbg("threads scrape start | url=%s post_id=%s",raw_url,post_id)
     if not post_id:
