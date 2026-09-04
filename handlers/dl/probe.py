@@ -88,16 +88,20 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
         return []
 
     cmd = [yt_dlp_bin]
+    
     try:
         if COOKIES_PATH:
             cmd += ["--cookies", COOKIES_PATH]
     except NameError:
         pass
-        
+
     host = _host(url)
-    if "youtube.com" in host or "youtu.be" in host:
+    is_yt = "youtube.com" in host or "youtu.be" in host
+
+    if is_yt:
         cmd += [
-            "--extractor-args", "youtube:player_client=ios,tv,web;client=ios,tv,web"
+            "--extractor-args", 
+            "youtube:player_client=default,web_embedded;player_skip=tv,tv_downgraded"
         ]
 
     cmd += ["--no-playlist", "-J", url]

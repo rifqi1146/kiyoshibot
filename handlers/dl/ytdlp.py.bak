@@ -505,6 +505,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         cmd = [YT_DLP]
         _append_cookies_args(cmd)
         
+        # +++ FIX MP3: Gunakan extractor yang sama jika target adalah YouTube +++
         if is_yt:
             cmd += YT_SAFE_EXTRACTOR_ARGS
 
