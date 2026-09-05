@@ -83,6 +83,7 @@ HELP_TEXT = {
         "• <code>/dl</code> — Download videos from supported platforms\n"
         "• <code>/gsearch</code> — Search on Google\n"
         "• <code>/getsticker</code> — Get sticker as PNG or WEBM file\n"
+        "• <code>/igstalk</code> — Stalking Instagram account\n"        
         "• <code>/kang</code> — Add sticker to your pack\n"
         "• <code>/kurs</code> — Currency conversion\n"
         "• <code>/music</code> — Search music\n"
