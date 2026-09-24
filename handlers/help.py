@@ -2,6 +2,50 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import ContextTypes
 
 from handlers.setting import render_settings_message
+from utils.rich_stream import send_rich_message, edit_rich_message, is_rich_message
+from utils.text import sanitize_ai_output
+
+
+def _is_dm(chat) -> bool:
+    return getattr(chat, "type", None) == "private" or getattr(chat, "id", 0) > 0
+
+
+async def _send_help(bot, chat, text_md: str, keyboard, reply_to=None):
+    """Kirim help: DM pakai rich message, grup fallback ke sendMessage HTML."""
+    if _is_dm(chat):
+        try:
+            return await send_rich_message(
+                bot, chat.id, text_md, reply_markup=keyboard,
+                reply_to_message_id=getattr(reply_to, "message_id", None),
+            )
+        except Exception:
+            pass
+    kwargs = {"chat_id": chat.id, "text": sanitize_ai_output(text_md), "reply_markup": keyboard}
+    if reply_to is not None:
+        kwargs["reply_to_message_id"] = reply_to.message_id
+    return await bot.send_message(parse_mode="HTML", **kwargs)
+
+
+async def _edit_help(q, text_md: str, keyboard):
+    """Update menu: pertahankan rich message di DM, fallback HTML di grup."""
+    msg = q.message
+    if _is_dm(msg.chat) and is_rich_message(msg):
+        try:
+            return await edit_rich_message(
+                q.get_bot(), msg.chat_id, msg.message_id, text_md,
+                reply_markup=keyboard,
+            )
+        except Exception:
+            pass
+    try:
+        return await q.edit_message_text(
+            sanitize_ai_output(text_md), reply_markup=keyboard, parse_mode="HTML"
+        )
+    except Exception:
+        try:
+            return await q.edit_message_text(sanitize_ai_output(text_md), reply_markup=keyboard)
+        except Exception:
+            return None
 
 
 def _help_cb(user_id: int, action: str) -> str:
@@ -70,163 +114,187 @@ def help_settings_back_keyboard(user_id: int):
 
 HELP_TEXT = {
     "menu": (
-        "📖 <b>Help Menu</b>\n"
-        "Select a category to see available commands."
+        "### 📖 Help Menu\n"
+        "\n"
+        "Pilih kategori lewat tombol di bawah 👇\n"
     ),
 
     "features": (
-        "<b>Main Features</b>\n\n"
-        "• <code>/anime</code> — Search anime\n"
-        "• <code>/asahotak</code> — Random question\n"
-        "• <code>/aidetect</code> — Detect AI-generated images\n"
-        "• <code>/aitext</code> — Detect AI-generated text\n"
-        "• <code>/asupan</code> — Random TikTok content\n"
-        "• <code>/dl</code> — Download videos from supported platforms\n"
-        "• <code>/gsearch</code> — Search on Google\n"
-        "• <code>/getsticker</code> — Get sticker as PNG or WEBM file\n"
-        "• <code>/igstalk</code> — Stalking Instagram account\n"
-        "• <code>/igstory</code> — Download story Instagram via username\n"        
-        "• <code>/kang</code> — Add sticker to your pack\n"
-        "• <code>/kurs</code> — Currency conversion\n"
-        "• <code>/music</code> — Search music\n"
-        "• <code>/nobg</code> — Remove image background\n"
-        "• <code>/q</code> — Create quote sticker\n"
-        "• <code>/quoteanime</code> — Random anime quotes\n"
-        "• <code>/reminder</code> — Schedule a reminder\n"
-        "• <code>/resi</code> — Track packages, Indonesia expedition only\n"
-        "• <code>/ship</code> — Choose a couple\n"
-        "• <code>/share</code> — Share media anonymous\n"        
-        "• <code>/susunkata</code> — Play word arrangement game\n"
-        "• <code>/tr</code> — Translate text between languages\n"
-        "• <code>/trlist</code> — List supported languages\n"
-        "• <code>/upscale</code> — Upscale images\n"
-        "• <code>/waifu</code> — Get a waifu\n"
-        "• <code>/weather</code> — Get weather information\n"
+        "### 🤩 Main Features\n"
+        "\n"
+        "- `/anime` — Search anime\n"
+        "- `/asahotak` — Random question\n"
+        "- `/aidetect` — Detect AI-generated images\n"
+        "- `/aitext` — Detect AI-generated text\n"
+        "- `/asupan` — Random TikTok content\n"
+        "- `/dl` — Download videos from supported platforms\n"
+        "- `/gsearch` — Search on Google\n"
+        "- `/getsticker` — Get sticker as PNG or WEBM file\n"
+        "- `/igstalk` — Stalking Instagram account\n"
+        "- `/igstory` — Download story Instagram via username\n"
+        "- `/kang` — Add sticker to your pack\n"
+        "- `/kurs` — Currency conversion\n"
+        "- `/music` — Search music\n"
+        "- `/nobg` — Remove image background\n"
+        "- `/q` — Create quote sticker\n"
+        "- `/quoteanime` — Random anime quotes\n"
+        "- `/reminder` — Schedule a reminder\n"
+        "- `/resi` — Track packages, Indonesia expedition only\n"
+        "- `/ship` — Choose a couple\n"
+        "- `/share` — Share media anonymous\n"
+        "- `/susunkata` — Play word arrangement game\n"
+        "- `/tr` — Translate text between languages\n"
+        "- `/trlist` — List supported languages\n"
+        "- `/upscale` — Upscale images\n"
+        "- `/waifu` — Get a waifu\n"
+        "- `/weather` — Get weather information\n"
+        "\n"
+        "> Tip: ketik command-nya aja langsung, tanpa perlu argumen tambahan 😉"
     ),
 
     "ai": (
-        "<b>AI Chat</b>\n\n"
-        "• <code>/ask</code> — Chat with Gemini\n"
-        "• <code>/groq</code> — Chat with Groq\n"
-        "• <code>/caca</code> — Caca Chat Bot\n"
+        "### 🤖 AI Chat\n"
+        "\n"
+        "- `/ask` — Chat with Gemini\n"
+        "- `/groq` — Chat with Groq\n"
+        "- `/caca` — Caca Chat Bot\n"
+        "\n"
+        "> Balas pesan bot dengan pertanyaan buat lanjutin obrolan."
     ),
 
     "utils": (
-        "<b>Utilities</b>\n\n"
-        "• <code>/ping</code> — Check bot response time\n"
-        "• <code>/stats</code> — Bot & system statistics\n"
-        "• <code>/ip</code> — IP address lookup\n"
-        "• <code>/net</code> — all in one network information\n"
-        "• <code>/domain</code> — Domain information\n"
-        "• <code>/whoisdomain</code> — Detailed domain lookup\n"
+        "### 🧰 Utilities\n"
+        "\n"
+        "- `/ping` — Check bot response time\n"
+        "- `/stats` — Bot & system statistics\n"
+        "- `/ip` — IP address lookup\n"
+        "- `/net` — all in one network information\n"
+        "- `/domain` — Domain information\n"
+        "- `/whoisdomain` — Detailed domain lookup"
     ),
 
     "privacy": (
-        "<b>User Privacy</b>\n\n"
-        "By using this bot, users understand and agree that:\n\n"
-        "• The bot owner may view and store the command history used by users\n"
-        "• The recorded data may include:\n"
+        "### 🔒 User Privacy\n"
+        "\n"
+        "By using this bot, users understand and agree that:\n"
+        "\n"
+        "- The bot owner may view and store the command history used by users\n"
+        "- The recorded data may include:\n"
         "  - Telegram user ID\n"
         "  - Username (if available)\n"
         "  - Commands used\n"
-        "  - Usage time (timestamp)\n\n"
+        "  - Usage time (timestamp)\n"
+        "\n"
         "This data is used only for:\n"
-        "• Development\n"
-        "• Maintenance\n"
-        "• Service improvement\n\n"
-        "<b>❗ Do not send passwords, identification numbers, or other sensitive data.</b>\n\n"
+        "- Development\n"
+        "- Maintenance\n"
+        "- Service improvement\n"
+        "\n"
+        "> **❗ Do not send passwords, identification numbers, or other sensitive data.**\n"
+        "\n"
         "By continuing to use this bot, users are considered to have agreed to this policy."
     ),
 
     "terms": (
-        "<b>Terms of Use</b>\n"
-        "By using this bot, you agree to these terms and conditions:\n\n"
-
-        "<b>1. User Responsibility</b>\n"
-        "You’re responsible for everything you do on this site. Every command you run, every link you click, every file you download with this bot.\n\n"
-
-        "<b>2. Downloader Usage</b>\n"
-        "The downloader is just a tool. You are on your own to ensure that you have the right or permission to download, save, share, or reuse anything from other platforms.\n\n"
-
-        "This bot is not intended to grab or share any content that is: "
-        "• Copyrighted and you don’t have permission to use; "
-        "• Private or restricted access; "
-        "• Paid stuff you haven’t been granted permission to get; "
-        "• Illegal, harmful, abusive, or in violation of someone else’s rights.\n\n"
-
-        "<b>3. Third-Party Platforms</b>\n"
-        "This bot is not affiliated with, endorsed, or sponsored by Instagram, TikTok, YouTube, Facebook, X, or any other platform. You must respect their respective terms of service when downloading their content.\n\n"
-        
-        "<b>4. No Ownership Claim</b>\n"
-        "Everything you download through this bot will stay the property of its creator. The bot doesn’t claim any rights to it.\n\n"
-
-        "<b>5. No Guarantee</b>\n"
-        "You get the bot as-is. Features can break, change, disappear, or be limited at any time due to technical stuff, platform updates, rate limits, or maintenance.\n\n"
-
-        "<b>6. Abuse and Restrictions</b>\n"
-        "If you abuse the bot, spam commands, overburden it, or use it for malicious stuff, the bot owner may block, limit, or disable your access to it.\n\n"
-
+        "### 📜 Terms of Use\n"
+        "\n"
+        "By using this bot, you agree to these terms and conditions:\n"
+        "\n"
+        "**1. User Responsibility**\n"
+        "You’re responsible for everything you do on this site. Every command you run, every link you click, every file you download with this bot.\n"
+        "\n"
+        "**2. Downloader Usage**\n"
+        "The downloader is just a tool. You are on your own to ensure that you have the right or permission to download, save, share, or reuse anything from other platforms.\n"
+        "\n"
+        "This bot is not intended to grab or share any content that is:\n"
+        "- Copyrighted and you don’t have permission to use;\n"
+        "- Private or restricted access;\n"
+        "- Paid stuff you haven’t been granted permission to get;\n"
+        "- Illegal, harmful, abusive, or in violation of someone else’s rights.\n"
+        "\n"
+        "**3. Third-Party Platforms**\n"
+        "This bot is not affiliated with, endorsed, or sponsored by Instagram, TikTok, YouTube, Facebook, X, or any other platform. You must respect their respective terms of service when downloading their content.\n"
+        "\n"
+        "**4. No Ownership Claim**\n"
+        "Everything you download through this bot will stay the property of its creator. The bot doesn’t claim any rights to it.\n"
+        "\n"
+        "**5. No Guarantee**\n"
+        "You get the bot as-is. Features can break, change, disappear, or be limited at any time due to technical stuff, platform updates, rate limits, or maintenance.\n"
+        "\n"
+        "**6. Abuse and Restrictions**\n"
+        "If you abuse the bot, spam commands, overburden it, or use it for malicious stuff, the bot owner may block, limit, or disable your access to it.\n"
+        "\n"
         "As long as you continue to use the bot, you agree to this."
     ),
-    
+
     "settings": (
-        "<b>Bot Settings</b>\n\n"
+        "### ⚙️ Bot Settings\n"
+        "\n"
         "Select a menu below to see detailed options for each feature."
     ),
 
     "asupan": (
-        "<b>Asupan Settings</b>\n\n"
-        "• <code>/asupann enable</code> — Enable asupan in the group\n"
-        "• <code>/asupann disable</code> — Disable asupan in the group\n"
-        "• <code>/asupann status</code> — Check asupan status\n\n"
+        "### 📺 Asupan Settings\n"
+        "\n"
+        "- `/asupann enable` — Enable asupan in the group\n"
+        "- `/asupann disable` — Disable asupan in the group\n"
+        "- `/asupann status` — Check asupan status"
     ),
 
     "autodel": (
-        "<b>Auto Delete Asupan</b>\n\n"
-        "• <code>/autodel enable</code> — Enable auto-delete for asupan\n"
-        "• <code>/autodel disable</code> — Disable auto-delete for asupan\n"
-        "• <code>/autodel status</code> — Check auto-delete status\n\n"
+        "### ⏱ Auto Delete Asupan\n"
+        "\n"
+        "- `/autodel enable` — Enable auto-delete for asupan\n"
+        "- `/autodel disable` — Disable auto-delete for asupan\n"
+        "- `/autodel status` — Check auto-delete status"
     ),
 
     "autodl": (
-        "<b>Auto Download Link</b>\n\n"
-        "• <code>/autodl enable</code> — Enable automatic link detection\n"
-        "• <code>/autodl disable</code> — Disable automatic link detection\n"
-        "• <code>/autodl status</code> — Check auto-detect status\n\n"
+        "### 🔗 Auto Download Link\n"
+        "\n"
+        "- `/autodl enable` — Enable automatic link detection\n"
+        "- `/autodl disable` — Disable automatic link detection\n"
+        "- `/autodl status` — Check auto-detect status"
     ),
 
     "cacaa": (
-        "<b>Caca Settings</b>\n\n"
-        "• <code>/mode</code> — Change Caca persona (Premium Only)\n"
-        "• <code>/cacaa enable</code> — Enable Caca in the group\n"
-        "• <code>/cacaa disable</code> — Disable Caca in the group\n"
-        "• <code>/cacaa status</code> — Check Caca status\n\n"
+        "### 💬 Caca Settings\n"
+        "\n"
+        "- `/mode` — Change Caca persona (Premium Only)\n"
+        "- `/cacaa enable` — Enable Caca in the group\n"
+        "- `/cacaa disable` — Disable Caca in the group\n"
+        "- `/cacaa status` — Check Caca status"
     ),
 
     "nsfw": (
-        "<b>NSFW Settings</b>\n\n"
-        "• <code>/nsfw enable</code> — Enable NSFW in the group\n"
-        "• <code>/nsfw disable</code> — Disable NSFW in the group\n"
-        "• <code>/nsfw status</code> — Check NSFW status\n\n"
+        "### 🔞 NSFW Settings\n"
+        "\n"
+        "- `/nsfw enable` — Enable NSFW in the group\n"
+        "- `/nsfw disable` — Disable NSFW in the group\n"
+        "- `/nsfw status` — Check NSFW status"
     ),
 
     "wlc": (
-        "<b>Welcome Settings</b>\n\n"
-        "• <code>/wlc enable</code> — Enable welcome messages\n"
-        "• <code>/wlc disable</code> — Disable welcome messages\n\n"
+        "### 👋 Welcome Settings\n"
+        "\n"
+        "- `/wlc enable` — Enable welcome messages\n"
+        "- `/wlc disable` — Disable welcome messages"
     ),
 }
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not update.message or not user:
+    msg = update.effective_message
+    if not msg or not user:
         return
 
-    await update.message.reply_text(
+    await _send_help(
+        context.bot,
+        msg.chat,
         HELP_TEXT["menu"],
-        reply_markup=help_main_keyboard(user.id),
-        parse_mode="HTML"
+        help_main_keyboard(user.id),
+        reply_to=msg,
     )
 
 
@@ -273,19 +341,11 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == "menu":
-        await q.edit_message_text(
-            HELP_TEXT["menu"],
-            reply_markup=help_main_keyboard(owner_id),
-            parse_mode="HTML"
-        )
+        await _edit_help(q, HELP_TEXT["menu"], help_main_keyboard(owner_id))
         return
 
     if action == "settings":
-        await q.edit_message_text(
-            HELP_TEXT["settings"],
-            reply_markup=help_settings_keyboard(owner_id),
-            parse_mode="HTML"
-        )
+        await _edit_help(q, HELP_TEXT["settings"], help_settings_keyboard(owner_id))
         return
 
     if action == "user_setting":
@@ -298,9 +358,5 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             kb = help_back_keyboard(owner_id)
 
-        await q.edit_message_text(
-            text,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
+        await _edit_help(q, text, kb)
 

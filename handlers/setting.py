@@ -10,6 +10,49 @@ from database.user_settings_db import (
     set_tiktok_slideshow,
 )
 from database.download_db import is_premium_user
+from utils.rich_stream import send_rich_message, edit_rich_message, is_rich_message
+from utils.text import sanitize_ai_output
+
+
+def _is_dm(chat) -> bool:
+    return getattr(chat, "type", None) == "private" or getattr(chat, "id", 0) > 0
+
+
+async def _send_settings(message, text_md: str, keyboard):
+    """Kirim settings: DM pakai rich message, grup fallback HTML."""
+    if _is_dm(message.chat):
+        try:
+            return await send_rich_message(
+                message.get_bot(), message.chat_id, text_md,
+                message_thread_id=getattr(message, "message_thread_id", None),
+                reply_markup=keyboard,
+            )
+        except Exception:
+            pass
+    return await message.reply_text(
+        sanitize_ai_output(text_md), parse_mode="HTML", reply_markup=keyboard
+    )
+
+
+async def _edit_settings(message, text_md: str, keyboard):
+    """Edit settings: pertahankan rich message di DM, fallback HTML."""
+    if _is_dm(message.chat) and is_rich_message(message):
+        try:
+            return await edit_rich_message(
+                message.get_bot(), message.chat_id, message.message_id,
+                text_md, reply_markup=keyboard,
+            )
+        except Exception:
+            pass
+    try:
+        return await message.edit_text(
+            sanitize_ai_output(text_md), parse_mode="HTML", reply_markup=keyboard
+        )
+    except Exception:
+        try:
+            return await message.edit_text(sanitize_ai_output(text_md), reply_markup=keyboard)
+        except Exception:
+            return None
 
 def _fmt_bool(v: int) -> str:
     return "ON" if int(v) else "OFF"
@@ -39,13 +82,15 @@ def _cb(user_id: int, source: str, action: str, key: str, value: str | int | Non
 def _settings_text(user_id: int) -> str:
     s = get_user_settings(user_id)
     return (
-        "<b>User Settings</b>\n\n"
-        f"<b>AutoDL in all groups:</b> <code>{_fmt_bool(s.get('force_autodl', 0))}</code>\n"
-        f"<b>Default downloader format:</b> <code>{_fmt_autodl_format(s.get('autodl_format', 'ask'))}</code>\n"
-        f"<b>YouTube resolution:</b> <code>{_fmt_res(s.get('youtube_resolution', 0))}</code>\n"
-        f"<b>Music output format:</b> <code>{_fmt_music(s.get('music_format', 'mp3'))}</code>\n"
-        f"<b>TikTok Slideshow format:</b> <code>{_fmt_tt_slideshow(s.get('tiktok_slideshow', 'ask'))}</code>\n"
-        f"<b>Silent Download:</b> <code>{_fmt_bool(s.get('silent_download', 0))}</code>"
+        "### ⚙️ User Settings\n"
+        "\n"
+        f"- **AutoDL in all groups:** `{_fmt_bool(s.get('force_autodl', 0))}`\n"
+        f"- **Default downloader format:** `{_fmt_autodl_format(s.get('autodl_format', 'ask'))}`\n"
+        f"- **YouTube resolution:** `{_fmt_res(s.get('youtube_resolution', 0))}`\n"
+        f"- **Music output format:** `{_fmt_music(s.get('music_format', 'mp3'))}`\n"
+        f"- **TikTok Slideshow format:** `{_fmt_tt_slideshow(s.get('tiktok_slideshow', 'ask'))}`\n"
+        f"- **Silent Download:** `{_fmt_bool(s.get('silent_download', 0))}`\n"
+
     )
 
 def _footer_buttons(user_id: int, source: str):
@@ -136,14 +181,16 @@ def _tiktok_slideshow_keyboard(user_id: int, source: str = "direct") -> InlineKe
     ])
 
 async def render_settings_message(message, user_id: int, source: str = "direct"):
-    return await message.edit_text(_settings_text(user_id), parse_mode="HTML", reply_markup=_main_keyboard(user_id, source))
+    return await _edit_settings(
+        message, _settings_text(user_id), _main_keyboard(user_id, source)
+    )
 
 async def setting_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = update.effective_message
     if not user or not msg:
         return
-    await msg.reply_text(_settings_text(user.id), parse_mode="HTML", reply_markup=_main_keyboard(user.id, "direct"))
+    await _send_settings(msg, _settings_text(user.id), _main_keyboard(user.id, "direct"))
 
 async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -176,20 +223,23 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             set_silent_download(owner_id, not bool(current.get("silent_download", 0)))
             
         await q.answer("Setting updated.")
-        return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_main_keyboard(owner_id, source))
+        return await _edit_settings(
+            q.message, _settings_text(owner_id), _main_keyboard(owner_id, source)
+        )
         
     if action == "menu":
         await q.answer()
+        text = _settings_text(owner_id)
         if key == "main":
-            return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_main_keyboard(owner_id, source))
+            return await _edit_settings(q.message, text, _main_keyboard(owner_id, source))
         if key == "autodl_format":
-            return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_autodl_format_keyboard(owner_id, source))
+            return await _edit_settings(q.message, text, _autodl_format_keyboard(owner_id, source))
         if key == "youtube_resolution":
-            return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_youtube_resolution_keyboard(owner_id, source))
+            return await _edit_settings(q.message, text, _youtube_resolution_keyboard(owner_id, source))
         if key == "music_format":
-            return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_music_format_keyboard(owner_id, source))
+            return await _edit_settings(q.message, text, _music_format_keyboard(owner_id, source))
         if key == "tiktok_slideshow":
-            return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_tiktok_slideshow_keyboard(owner_id, source))
+            return await _edit_settings(q.message, text, _tiktok_slideshow_keyboard(owner_id, source))
         return
         
     if action == "set":
@@ -215,4 +265,6 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await q.answer("Unknown setting.", show_alert=True)
             
         await q.answer("Setting updated.")
-        return await q.message.edit_text(_settings_text(owner_id), parse_mode="HTML", reply_markup=_main_keyboard(owner_id, source))
+        return await _edit_settings(
+            q.message, _settings_text(owner_id), _main_keyboard(owner_id, source)
+        )

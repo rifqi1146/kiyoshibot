@@ -110,6 +110,17 @@ async def stream_to_draft(
     return acc
 
 
+def _markup_to_dict(reply_markup):
+    """InlineKeyboardMarkup/dict -> dict format Bot API (None tetap None)."""
+    if reply_markup is None:
+        return None
+    if hasattr(reply_markup, "to_dict"):
+        return reply_markup.to_dict()
+    if isinstance(reply_markup, dict):
+        return reply_markup
+    return None
+
+
 async def send_rich_message(
     bot: Bot,
     chat_id: int,
@@ -117,6 +128,7 @@ async def send_rich_message(
     message_thread_id: int | None = None,
     reply_to_message_id: int | None = None,
     is_rtl: bool = False,
+    reply_markup=None,
 ):
     rich_message: dict = {"markdown": rich_markdown}
     if is_rtl:
@@ -126,4 +138,41 @@ async def send_rich_message(
         payload["message_thread_id"] = message_thread_id
     if reply_to_message_id:
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
+    markup = _markup_to_dict(reply_markup)
+    if markup:
+        payload["reply_markup"] = markup
     return await bot.do_api_request("sendRichMessage", payload)
+
+
+async def edit_rich_message(
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    rich_markdown: str,
+    is_rtl: bool = False,
+    reply_markup=None,
+):
+    """Edit pesan jadi rich message.
+
+    Server API tidak punya endpoint edit khusus rich message, tapi
+    editMessageText menerima field `rich_message` dan mempertahankan
+    tampilan rich (terverifikasi via tes API).
+    """
+    rich_message: dict = {"markdown": rich_markdown}
+    if is_rtl:
+        rich_message["is_rtl"] = True
+    payload: dict = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "rich_message": rich_message,
+    }
+    markup = _markup_to_dict(reply_markup)
+    if markup:
+        payload["reply_markup"] = markup
+    return await bot.do_api_request("editMessageText", payload)
+
+
+def is_rich_message(message) -> bool:
+    """True jika pesan hasil sendRichMessage (field rich_message di api_kwargs)."""
+    api_kwargs = getattr(message, "api_kwargs", None) or {}
+    return "rich_message" in api_kwargs
