@@ -1,4 +1,3 @@
-import html
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.config import OWNER_ID

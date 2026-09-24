@@ -1,6 +1,6 @@
-import os
 import time
-import sqlite3
+import asyncio
+from database.db import db_session
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -8,11 +8,7 @@ BROADCAST_DB = "data/broadcast.sqlite3"
 
 
 def _db_init():
-    os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(BROADCAST_DB)
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
+    with db_session(BROADCAST_DB) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS broadcast_users (
                 chat_id INTEGER PRIMARY KEY,
@@ -35,73 +31,56 @@ def _db_init():
             )
         """)
         con.commit()
-    finally:
-        con.close()
 
 
-def _db():
+def _collect_sync(chat_id: int, chat_type: str, usernames: list[tuple[int, str]]) -> None:
+    """Persist chat membership + username cache in a single transaction.
+
+    Runs the whole unit of work (open/execute/commit/close) inside one
+    thread so the SQLite connection never crosses thread boundaries.
+    """
     _db_init()
-    return sqlite3.connect(BROADCAST_DB)
+    now = float(time.time())
+    with db_session(BROADCAST_DB) as con:
+        if chat_type == "private":
+            con.execute(
+                """
+                INSERT INTO broadcast_users (chat_id, enabled, updated_at)
+                VALUES (?, 1, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                  enabled=1,
+                  updated_at=excluded.updated_at
+                """,
+                (int(chat_id), now),
+            )
+        else:
+            con.execute(
+                """
+                INSERT INTO broadcast_groups (chat_id, enabled, updated_at)
+                VALUES (?, 1, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                  enabled=1,
+                  updated_at=excluded.updated_at
+                """,
+                (int(chat_id), now),
+            )
 
-
-def _add_user(chat_id: int):
-    con = _db()
-    try:
-        now = time.time()
-        con.execute("""
-            INSERT INTO broadcast_users (chat_id, enabled, updated_at)
-            VALUES (?, 1, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-              enabled=1,
-              updated_at=excluded.updated_at
-        """, (int(chat_id), float(now)))
+        if usernames:
+            con.executemany(
+                """
+                INSERT INTO broadcast_user_cache (username, user_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                  user_id=excluded.user_id,
+                  updated_at=excluded.updated_at
+                """,
+                [(u, int(uid), now) for uid, u in usernames],
+            )
         con.commit()
-    finally:
-        con.close()
 
 
-def _add_group(chat_id: int):
-    con = _db()
-    try:
-        now = time.time()
-        con.execute("""
-            INSERT INTO broadcast_groups (chat_id, enabled, updated_at)
-            VALUES (?, 1, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-              enabled=1,
-              updated_at=excluded.updated_at
-        """, (int(chat_id), float(now)))
-        con.commit()
-    finally:
-        con.close()
-
-
-def cache_username(user_id: int, username: str | None):
-    u = (username or "").strip().lstrip("@").lower()
-    if not u:
-        return
-    con = _db()
-    try:
-        now = float(time.time())
-        con.execute("BEGIN")
-        con.execute(
-            """
-            INSERT INTO broadcast_user_cache (username, user_id, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(username) DO UPDATE SET
-              user_id=excluded.user_id,
-              updated_at=excluded.updated_at
-            """,
-            (u, int(user_id), now),
-        )
-        con.execute("COMMIT")
-    except Exception:
-        try:
-            con.execute("ROLLBACK")
-        except Exception:
-            pass
-    finally:
-        con.close()
+def _normalize_username(username: str | None) -> str:
+    return (username or "").strip().lstrip("@").lower()
 
 
 async def collect_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,19 +88,17 @@ async def collect_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chat:
         return
 
-    if chat.type == "private":
-        _add_user(chat.id)
-    else:
-        _add_group(chat.id)
+    usernames: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for source in (update.effective_user, getattr(update.message, "reply_to_message", None) and update.message.reply_to_message.from_user):
+        if not source or not getattr(source, "id", None):
+            continue
+        u = _normalize_username(getattr(source, "username", None))
+        if u and u not in seen:
+            seen.add(u)
+            usernames.append((int(source.id), u))
 
-    u = update.effective_user
-    if u and getattr(u, "id", None):
-        cache_username(int(u.id), getattr(u, "username", None))
-
-    msg = update.message
-    if msg and msg.reply_to_message and msg.reply_to_message.from_user:
-        ru = msg.reply_to_message.from_user
-        cache_username(int(ru.id), getattr(ru, "username", None))
+    await asyncio.to_thread(_collect_sync, int(chat.id), chat.type, usernames)
 
 
 try:

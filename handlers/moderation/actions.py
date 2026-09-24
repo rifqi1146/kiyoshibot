@@ -237,7 +237,8 @@ async def promote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg,
             "<b>Promoted</b>\n"
             f"<b>User:</b> {who}\n"
-            f"<b>Title:</b> <code>{html.escape(title)}</code>\n",
+            f"<b>Title:</b> <code>{html.escape(title)}</code>"
+            f"{title_note}\n",
             parse_mode="HTML",
             disable_web_page_preview=True,
         )

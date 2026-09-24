@@ -11,13 +11,13 @@ from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from utils.config import OWNER_ID
 from database.premium import init_premium_db
-from .constants import TMP_DIR,DL_FORMATS,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOMAINS
+from .constants import TMP_DIR,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOMAINS
 from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
 from .utils import normalize_url,is_invalid_video
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
 from .probe import get_resolutions,supports_resolution_picker,supports_ytdlp_resolution
-from .tiktok.main import is_tiktok,douyin_download,tiktok_download
+from .tiktok.main import is_tiktok,tiktok_download
 from .service import download_non_tiktok,send_downloaded_media
 from database.user_settings_db import get_user_settings
 from .remux import prepare_download_result_for_send

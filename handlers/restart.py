@@ -1,6 +1,5 @@
 import os
 import sys
-import html
 
 from telegram import Update
 from telegram.ext import ContextTypes

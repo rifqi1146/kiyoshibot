@@ -1,6 +1,6 @@
 import html
 import time
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update, InputMediaVideo
+from telegram import Update, InputMediaVideo
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from utils.config import OWNER_ID, LOG_CHAT_ID

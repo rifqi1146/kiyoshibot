@@ -1,24 +1,19 @@
-import os
 import time
 import uuid
-import sqlite3
 import asyncio
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telegram.error import RetryAfter
 from utils.config import OWNER_ID
+from database.db import db_session
 
 BROADCAST_DB = "data/broadcast.sqlite3"
 BROADCAST_PENDING = {}
 
 
 def _db_init():
-    os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(BROADCAST_DB)
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
+    with db_session(BROADCAST_DB) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS broadcast_users (
                 chat_id INTEGER PRIMARY KEY,
@@ -34,40 +29,29 @@ def _db_init():
             )
         """)
         con.commit()
-    finally:
-        con.close()
 
 
-def _get_user_targets() -> list[int]:
-    _db_init()
-    con = sqlite3.connect(BROADCAST_DB)
-    try:
+def _get_targets_sync(mode: str) -> list[int]:
+    with db_session(BROADCAST_DB) as con:
+        if mode == "users":
+            rows = con.execute(
+                "SELECT chat_id FROM broadcast_users WHERE enabled=1"
+            ).fetchall()
+            return [int(r[0]) for r in rows if r and r[0] is not None]
+        if mode == "groups":
+            rows = con.execute(
+                "SELECT chat_id FROM broadcast_groups WHERE enabled=1"
+            ).fetchall()
+            return [int(r[0]) for r in rows if r and r[0] is not None]
         rows = con.execute(
-            "SELECT chat_id FROM broadcast_users WHERE enabled=1"
+            "SELECT chat_id FROM broadcast_users WHERE enabled=1 "
+            "UNION SELECT chat_id FROM broadcast_groups WHERE enabled=1"
         ).fetchall()
         return [int(r[0]) for r in rows if r and r[0] is not None]
-    finally:
-        con.close()
 
 
-def _get_group_targets() -> list[int]:
-    _db_init()
-    con = sqlite3.connect(BROADCAST_DB)
-    try:
-        rows = con.execute(
-            "SELECT chat_id FROM broadcast_groups WHERE enabled=1"
-        ).fetchall()
-        return [int(r[0]) for r in rows if r and r[0] is not None]
-    finally:
-        con.close()
-
-
-def _get_targets(mode: str) -> list[int]:
-    if mode == "users":
-        return _get_user_targets()
-    if mode == "groups":
-        return _get_group_targets()
-    return _get_user_targets() + _get_group_targets()
+async def _get_targets(mode: str) -> list[int]:
+    return await asyncio.to_thread(_get_targets_sync, mode)
 
 
 def _broadcast_keyboard(bid: str):
@@ -327,7 +311,7 @@ async def broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await q.answer("This is not your broadcast.", show_alert=True)
 
     payload = data["payload"]
-    targets = _get_targets(mode)
+    targets = await _get_targets(mode)
 
     if not targets:
         BROADCAST_PENDING.pop(bid, None)

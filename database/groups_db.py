@@ -1,15 +1,13 @@
-import os
-import time
-import sqlite3
+from database.db import db_session
 
 BROADCAST_DB = "data/broadcast.sqlite3"
+_INIT_DONE = False
 
 def _db_init():
-    os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(BROADCAST_DB)
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
+    global _INIT_DONE
+    if _INIT_DONE:
+        return
+    with db_session(BROADCAST_DB) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS broadcast_users (
                 chat_id INTEGER PRIMARY KEY,
@@ -25,17 +23,13 @@ def _db_init():
             )
         """)
         con.commit()
-    finally:
-        con.close()
+    _INIT_DONE = True
 
 
 def _load_groups() -> list[int]:
     _db_init()
-    con = sqlite3.connect(BROADCAST_DB)
-    try:
+    with db_session(BROADCAST_DB) as con:
         rows = con.execute(
             "SELECT chat_id FROM broadcast_groups WHERE enabled=1"
         ).fetchall()
         return [int(r[0]) for r in rows if r and r[0] is not None]
-    finally:
-        con.close()

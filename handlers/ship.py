@@ -1,6 +1,4 @@
-import os
 import random
-import sqlite3
 import time
 
 from telegram import Update
@@ -10,9 +8,7 @@ from database.ship_db import (
     get_users_pool,
     set_ship_last_time,
     get_ship_last_time,
-    _ship_state_has_updated_at,
     add_user,
-    _db,
     _ship_db_init,
 )
 

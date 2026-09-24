@@ -228,18 +228,37 @@ def _parse_gql_media(media:dict)->dict:
             return
         dims=dims or {}
         items.append({"type":kind,"url":url,"thumbnail":str(thumb or "").strip(),"width":int(dims.get("width") or 0),"height":int(dims.get("height") or 0)})
+    def node_kind(node:dict)->str:
+        node_type=str(node.get("__typename") or node.get("typename") or "").strip()
+        if node_type in ("GraphVideo","XDTGraphVideo"):
+            return "video"
+        if node_type in ("GraphImage","XDTGraphImage"):
+            return "photo"
+        # Embed responses drop __typename; fall back to the is_video flag / video_url presence.
+        if node.get("is_video") or node.get("video_url"):
+            return "video"
+        if node.get("display_url"):
+            return "photo"
+        return ""
+    def add_node(node:dict,dims:dict|None=None):
+        kind=node_kind(node or {})
+        if kind=="video":
+            add_item("video",node.get("video_url") or node.get("display_url"),node.get("display_url"),node.get("dimensions") or dims)
+        elif kind=="photo":
+            add_item("photo",node.get("display_url"),"",node.get("dimensions") or dims)
     if typename in ("GraphVideo","XDTGraphVideo"):
         add_item("video",media.get("video_url"),media.get("display_url"),media.get("dimensions"))
     elif typename in ("GraphImage","XDTGraphImage"):
         add_item("photo",media.get("display_url"),"",media.get("dimensions"))
     elif typename in ("GraphSidecar","XDTGraphSidecar"):
         for edge in (((media.get("edge_sidecar_to_children") or {}).get("edges")) or []):
-            node=(edge or {}).get("node") or {}
-            node_type=str(node.get("__typename") or node.get("typename") or "").strip()
-            if node_type in ("GraphVideo","XDTGraphVideo"):
-                add_item("video",node.get("video_url"),node.get("display_url"),node.get("dimensions"))
-            elif node_type in ("GraphImage","XDTGraphImage"):
-                add_item("photo",node.get("display_url"),"",node.get("dimensions"))
+            add_node((edge or {}).get("node") or {})
+    else:
+        # No typename at all: derive from flags, or treat sidecar children as a last resort.
+        add_node(media)
+        if not items:
+            for edge in (((media.get("edge_sidecar_to_children") or {}).get("edges")) or []):
+                add_node((edge or {}).get("node") or {})
     return {"caption":caption,"username":username,"nickname":nickname,"items":items}
 
 def _rand_alpha(n:int)->str:
@@ -438,10 +457,36 @@ def _safe_title(media_type:str,count:int)->str:
         return "Instagram Media"
     return "Instagram Video" if media_type=="video" else "Instagram Post"
 
+_STRIP_QUERY_HOSTS=("cdninstagram.com","fbcdn.net")
+
+def _rapidcdn_token_text(raw_url:str)->str:
+    try:
+        parsed=urlparse(raw_url or "")
+        token=(parse_qs(parsed.query).get("token") or [""])[0]
+        if not token or "." not in token:
+            return ""
+        payload=token.split(".")[1]
+        payload+="="*(-len(payload)%4)
+        return base64.urlsafe_b64decode(payload.encode()).decode("utf-8","replace")
+    except Exception as e:
+        log.debug("Failed to decode rapidcdn token | url=%s err=%r",raw_url,e)
+        return ""
+
+def _rapidcdn_identity(raw_url:str)->str:
+    text=_rapidcdn_token_text(raw_url)
+    if not text:
+        return ""
+    try:
+        data=json.loads(text)
+        if isinstance(data,dict):
+            return str(data.get("filename") or data.get("url") or "").strip()
+    except Exception:
+        pass
+    return text
+
 def _uniq_media_urls(items:list[str])->list[str]:
     out=[]
     seen=set()
-    strip_query_hosts=("cdninstagram.com","fbcdn.net","d.rapidcdn.app")
     for item in items:
         raw=(item or "").strip()
         if not raw:
@@ -450,8 +495,11 @@ def _uniq_media_urls(items:list[str])->list[str]:
             parsed=urlparse(raw)
             host=(parsed.hostname or "").lower()
             path=parsed.path or ""
-            if any(host==h or host.endswith("."+h) for h in strip_query_hosts):
+            if any(host==h or host.endswith("."+h) for h in _STRIP_QUERY_HOSTS):
                 normalized=f"{parsed.scheme}://{host}{path}"
+            elif "rapidcdn.app" in host:
+                identity=_rapidcdn_identity(raw)
+                normalized=f"rapidcdn:{identity}" if identity else raw
             else:
                 normalized=parsed._replace(fragment="").geturl()
         except Exception as e:
@@ -638,14 +686,46 @@ async def igdl_scrape(url:str)->dict:
         log.info("Instagram scraper source selected | source=Snapsave urls=%s",len(snapsave.get("urls") or []))
         return snapsave
         
-    raise RuntimeError(snapsave.get("message") or indown.get("message") or cobalt.get("message") or "No media found")
+    raise RuntimeError(snapsave.get("message") or indown.get("message") or "No media found")
 
+
+_VIDEO_EXTS=(".mp4",".mov",".m4v",".webm")
+_PHOTO_EXTS=(".jpg",".jpeg",".png",".webp")
+
+def detect_media_signature(header:bytes)->tuple[str,str]:
+    """Deteksi tipe media dari magic bytes; return ("", "") jika tidak dikenali."""
+    if not header:
+        return "",""
+    if header[:3]==b"\xff\xd8\xff":
+        return "photo",".jpg"
+    if header[:8]==b"\x89PNG\r\n\x1a\n":
+        return "photo",".png"
+    if header[:4]==b"RIFF" and header[8:12]==b"WEBP":
+        return "photo",".webp"
+    if header[4:8] in (b"ftyp",b"moov",b"mdat"):
+        return "video",".mp4"
+    if header[:4]==b"\x1aE\xdf\xa3":
+        return "video",".webm"
+    return "",""
 
 def _guess_media_type_from_url(url:str)->str:
     parsed=urlparse(url or "")
     host=(parsed.hostname or "").lower()
     path=(parsed.path or "").lower()
-    if path.endswith((".mp4",".mov",".m4v",".webm")) or "rapidcdn.app" in host:
+    if path.endswith(_VIDEO_EXTS):
+        return "video"
+    if path.endswith(_PHOTO_EXTS):
+        return "photo"
+    if "rapidcdn.app" in host:
+        identity=_rapidcdn_identity(url).lower()
+        if identity.endswith(_VIDEO_EXTS):
+            return "video"
+        if identity.endswith(_PHOTO_EXTS):
+            return "photo"
+        if any(ext in identity for ext in _VIDEO_EXTS):
+            return "video"
+        if any(ext in identity for ext in _PHOTO_EXTS):
+            return "photo"
         return "video"
     return "photo"
 
@@ -677,6 +757,11 @@ def _filter_urls_for_media(urls:list[str],fmt_key:str="video",meta_items:list[di
     photos=[u for u in urls if _guess_media_type_from_url(u)!="video"]
     if fmt_key=="mp3":
         return videos[:1] if videos else []
+    if fmt_key in ("video","mp4"):
+        if videos:
+            log.info("Instagram format requested video-only | raw=%s videos=%s selected=%s",len(urls),len(videos),len(videos))
+            return videos
+        log.info("Instagram has no video, falling back to photos | raw=%s photos=%s",len(urls),len(photos))
     wanted=_media_types_from_meta(meta_items or [])
     if wanted:
         selected=[]
@@ -858,10 +943,15 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                     final_url=str(resp.url)
                     media_type=_guess_media_type_from_url(final_url)
 
-                    if content_type.lower().startswith("video/"):
+                    ctype_lower=content_type.lower()
+                    if ctype_lower.startswith("video/"):
                         media_type="video"
-                    elif content_type.lower().startswith("image/"):
+                    elif ctype_lower.startswith("image/"):
                         media_type="photo"
+
+                    sniff_done=bool(ctype_lower.startswith(("video/","image/")))
+                    peek=bytearray()
+                    sig_type,sig_ext="",""
 
                     ext=_guess_ext(final_url,content_type,media_type)
                     out_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}{ext}")
@@ -880,6 +970,12 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
 
                             written+=len(chunk)
                             await f.write(chunk)
+
+                            if not sniff_done:
+                                peek.extend(chunk[:32])
+                                sig_type,sig_ext=detect_media_signature(bytes(peek))
+                                if sig_type or len(peek)>=12:
+                                    sniff_done=True
 
                             if not IG_PROGRESS or not bot or not chat_id or not status_msg_id:
                                 continue
@@ -906,6 +1002,22 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
 
                     if written<=0:
                         raise RuntimeError("Downloaded media is empty")
+
+                    if sig_type and sig_type!=media_type:
+                        log.info(
+                            "Instagram media type corrected by magic bytes | sniffed=%s guessed=%s file=%s",
+                            sig_type,
+                            media_type,
+                            os.path.basename(out_path),
+                        )
+                        media_type=sig_type
+                        ext=sig_ext or _guess_ext(final_url,content_type,media_type)
+                        new_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}{ext}")
+                        try:
+                            os.replace(out_path,new_path)
+                            out_path=new_path
+                        except Exception as e:
+                            log.warning("Failed to rename Instagram media after sniff | err=%r",e)
 
                     log.info(
                         "Instagram media saved | source=%s file=%s type=%s size=%s",

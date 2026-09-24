@@ -1,19 +1,12 @@
-import os, io, time, html, urllib.parse
-import aiohttp
+import html
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from utils.http import get_http_session
 from utils.config import OWNER_ID
-from utils.text import bold, code
-from database.db import db_session
-
-from handlers.groq import _emo, _can
-from utils.nsfw import _extract_prompt_from_update
 
 from database.nsfw_db import (
-    nsfw_db_init,
+    nsfw_db_init as nsfw_db_init,
     is_nsfw_allowed,
     set_nsfw,
     get_all_enabled,

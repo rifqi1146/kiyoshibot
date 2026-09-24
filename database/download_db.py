@@ -1,16 +1,14 @@
 import os
 import time
-import sqlite3
 from utils.config import OWNER_ID
 from database.premium import is_premium
+from database.db import get_connection
 from handlers.dl.constants import AUTO_DL_DB
 
 def _auto_dl_db_init():
     os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(AUTO_DL_DB)
+    con = get_connection(AUTO_DL_DB)
     try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS auto_dl_groups (
@@ -26,7 +24,7 @@ def _auto_dl_db_init():
 
 def _auto_dl_db():
     _auto_dl_db_init()
-    return sqlite3.connect(AUTO_DL_DB)
+    return get_connection(AUTO_DL_DB)
 
 def load_auto_dl() -> set[int]:
     con = _auto_dl_db()

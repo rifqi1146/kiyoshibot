@@ -1,4 +1,4 @@
-import os,re,html,uuid,json,shutil,inspect,mimetypes,asyncio,logging,subprocess,aiohttp
+import os,re,html,uuid,json,shutil,inspect,mimetypes,asyncio,logging,subprocess,aiohttp,aiofiles
 from telegram import Update
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
@@ -6,7 +6,7 @@ from utils.http import get_http_session
 
 log=logging.getLogger(__name__)
 TMP_DIR=os.getenv("TMP_DIR","downloads")
-NEOXR_NOBG_API=os.getenv("NEOXR_NOBG_API","https://api.neoxr.eu/api/nobg").strip()
+GENCIPTA_API=os.getenv("GENCIPTA_API","https://gateway.gencipta.com/api/tools/removebg").strip()
 TMPFILES_UPLOAD_API=os.getenv("TMPFILES_UPLOAD_API","https://tmpfiles.org/api/v1/upload").strip()
 NOBG_MAX_SIZE=int(os.getenv("NOBG_MAX_SIZE",str(10*1024*1024)))
 NOBG_TIMEOUT=int(os.getenv("NOBG_TIMEOUT","240"))
@@ -138,60 +138,63 @@ async def _upload_to_tmpfiles(path:str)->str:
     log.info("Tmpfiles upload success | url=%s direct=%s",raw_url,direct_url)
     return direct_url
 
-async def _call_neoxr_nobg(image_url:str)->dict:
-    api_key=os.getenv("NEOXR_API_KEY","").strip()
-    if not api_key:
-        raise RuntimeError("NEOXR_API_KEY is not set.")
+def _get_gencipta_auth_header()->str:
+    key=(os.getenv("GENCIPTA_API_KEY") or os.getenv("GENCIPTA_KEY") or os.getenv("GENCIPTA_TOKEN") or "").strip()
+    if not key:
+        raise RuntimeError("Gencipta API Key is not set in environment.")
+    return key if key.lower().startswith("bearer ") else f"Bearer {key}"
+
+async def _call_gencipta_nobg(image_url:str,out_path:str):
+    auth_header=_get_gencipta_auth_header()
     session=await _shared_http_session()
-    params={"image":image_url,"apikey":api_key}
-    async with session.get(NEOXR_NOBG_API,params=params,timeout=aiohttp.ClientTimeout(total=NOBG_TIMEOUT)) as resp:
-        text=await resp.text()
+    headers={
+        "Accept":"application/json, image/*, audio/*, video/*, application/pdf, application/zip, text/html, */*",
+        "Authorization":auth_header,
+    }
+    params={"url":image_url}
+    log.info("Gencipta nobg start | url=%s",image_url)
+    async with session.get(GENCIPTA_API,params=params,headers=headers,timeout=aiohttp.ClientTimeout(total=NOBG_TIMEOUT)) as resp:
+        content_type=str(resp.headers.get("Content-Type","")).lower()
         if resp.status!=200:
-            raise RuntimeError(f"Neoxr API error {resp.status}: {text[:500]}")
-        try:
-            data=await resp.json(content_type=None)
-        except Exception:
-            raise RuntimeError(f"Invalid Neoxr JSON: {text[:500]}")
-    if not isinstance(data,dict):
-        raise RuntimeError("Invalid Neoxr response.")
-    if not data.get("status"):
-        raise RuntimeError(data.get("message") or data.get("msg") or "Remove background failed.")
-    result=data.get("data") or {}
-    if isinstance(result,str):
-        result={"no_background":result}
-    if not isinstance(result,dict):
-        raise RuntimeError("Invalid nobg result.")
-    return result
+            text=(await resp.text())[:500]
+            raise RuntimeError(f"Gencipta API error {resp.status}: {text}")
+            
+        if any(t in content_type for t in ("image","octet-stream")):
+            async with aiofiles.open(out_path,"wb") as f:
+                async for chunk in resp.content.iter_chunked(64*1024):
+                    if chunk:
+                        await f.write(chunk)
+            if not os.path.exists(out_path) or os.path.getsize(out_path)<=0:
+                raise RuntimeError("Gencipta returned empty image binary.")
+            log.info("Gencipta nobg binary saved | out=%s size=%s",out_path,os.path.getsize(out_path))
+            return
 
-def _pick_result_url(result:dict)->str:
-    for key in ("no_background","nobg","downloadUrl","download_url","url","image","result","output"):
-        value=str(result.get(key) or "").strip()
-        if value.startswith(("http://","https://")):
-            return value
-    raise RuntimeError("API result has no background URL.")
-
-async def _download_with_aria2c(url:str,out_path:str):
-    aria2c=shutil.which("aria2c")
-    if not aria2c:
-        raise RuntimeError("aria2c is not installed or not found in PATH.")
-    cmd=[aria2c,"--allow-overwrite=true","--auto-file-renaming=false","--summary-interval=0","--console-log-level=warn","-x","8","-s","8","-k","1M","-o",os.path.basename(out_path),"-d",os.path.dirname(out_path),url]
-    log.info("Nobg aria2c download start | out=%s",out_path)
-    proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
-    try:
-        stdout,stderr=await asyncio.wait_for(proc.communicate(),timeout=NOBG_TIMEOUT)
-    except asyncio.TimeoutError:
+        text=await resp.text()
         try:
-            proc.kill()
+            data=json.loads(text)
         except Exception:
-            pass
-        raise RuntimeError(f"aria2c timeout after {NOBG_TIMEOUT}s")
-    stdout_text=stdout.decode(errors="ignore") if stdout else ""
-    stderr_text=stderr.decode(errors="ignore") if stderr else ""
-    if proc.returncode!=0:
-        err=(stderr_text or stdout_text or f"aria2c exited with code {proc.returncode}").strip()
-        raise RuntimeError(err[-1000:])
-    if not os.path.exists(out_path) or os.path.getsize(out_path)<=0:
-        raise RuntimeError("Failed to download result file.")
+            raise RuntimeError(f"Unexpected response: {text[:400]}")
+            
+        # Fallback jika API mengembalikan respons JSON berisi URL
+        dl_url=""
+        if isinstance(data,dict):
+            for k in ("url","result","download_url","image","data"):
+                val=data.get(k)
+                if isinstance(val,str) and val.startswith(("http://","https://")):
+                    dl_url=val
+                    break
+        if dl_url:
+            async with session.get(dl_url,timeout=aiohttp.ClientTimeout(total=NOBG_TIMEOUT)) as dl_resp:
+                if dl_resp.status!=200:
+                    raise RuntimeError(f"Failed to download image URL: HTTP {dl_resp.status}")
+                async with aiofiles.open(out_path,"wb") as f:
+                    async for chunk in dl_resp.content.iter_chunked(64*1024):
+                        if chunk:
+                            await f.write(chunk)
+            return
+
+        err_msg=data.get("message") or data.get("msg") or data.get("error") or text[:400]
+        raise RuntimeError(f"Gencipta API failed: {err_msg}")
 
 async def nobg_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
@@ -208,12 +211,10 @@ async def nobg_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     try:
         status=await msg.reply_text("<b>Removing background...</b>\n\nPlease wait.",reply_to_message_id=msg.message_id,parse_mode="HTML")
         input_path,filename=await _download_replied_media(context.bot,msg)
-        converted_path=_convert_image_to_jpg(input_path)
+        converted_path=await asyncio.to_thread(_convert_image_to_jpg,input_path)
         image_url=await _upload_to_tmpfiles(converted_path)
-        result=await _call_neoxr_nobg(image_url)
-        download_url=_pick_result_url(result)
         output_path=os.path.join(TMP_DIR,f"nobg_{uuid.uuid4().hex}.png")
-        await _download_with_aria2c(download_url,output_path)
+        await _call_gencipta_nobg(image_url,output_path)
         with open(output_path,"rb") as f:
             await msg.reply_document(document=f,filename="nobg.png",caption="<b>Remove background result</b>",parse_mode="HTML",reply_to_message_id=msg.reply_to_message.message_id)
         try:

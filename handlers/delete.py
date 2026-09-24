@@ -1,6 +1,5 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.ext import MessageHandler, filters
 from utils.config import OWNER_ID
 
 

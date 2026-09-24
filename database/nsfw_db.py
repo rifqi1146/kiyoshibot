@@ -1,6 +1,4 @@
-import os
 import time
-import sqlite3
 
 from database.db import db_session
 

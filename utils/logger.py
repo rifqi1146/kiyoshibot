@@ -8,6 +8,14 @@ from handlers.dl.constants import AUTO_DOWNLOAD_DOMAINS
 
 log = logging.getLogger(__name__)
 
+_COMMAND_NAMES: set[str] | None = None
+
+def _command_names() -> set[str]:
+    global _COMMAND_NAMES
+    if _COMMAND_NAMES is None:
+        _COMMAND_NAMES = {c[0] for c in COMMAND_HANDLERS}
+    return _COMMAND_NAMES
+
 def _is_image_document(msg) -> bool:
     doc = getattr(msg, "document", None)
     return bool(doc and str(doc.mime_type or "").lower().startswith("image/"))
@@ -72,7 +80,7 @@ async def log_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_command:
         cmd = text[1:].split()[0].split("@")[0].lower()
-        if cmd not in [c[0] for c in COMMAND_HANDLERS]:
+        if cmd not in _command_names():
             return
         title = "<b>Command Log</b>"
         content = f"<code>{html.escape(text)}</code>"

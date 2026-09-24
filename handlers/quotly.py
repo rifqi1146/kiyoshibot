@@ -268,8 +268,6 @@ async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with aiohttp.ClientSession() as session:
-            total = len(valid_messages)
-
             for idx, (item, text, entities) in enumerate(valid_messages, start=1):
                 sender = _get_sender_obj(item)
                 from_payload = _build_from_payload(sender)

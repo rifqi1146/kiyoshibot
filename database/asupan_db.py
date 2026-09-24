@@ -2,8 +2,8 @@ import time
 import logging
 
 from database.db import db_session
-from handlers.asupan.constants import ASUPAN_DB_PATH
-from handlers.asupan import state
+
+ASUPAN_DB_PATH = "data/asupan.sqlite3"
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ def _db_set_enabled(table: str, values: set[int]):
 
 
 def load_asupan_groups():
+    from handlers.asupan import state
     try:
         _asupan_db_init()
         loaded = _db_load_enabled("asupan_groups")
@@ -118,6 +119,7 @@ def load_asupan_groups():
 
 
 def save_asupan_groups():
+    from handlers.asupan import state
     try:
         _asupan_db_init()
         _db_set_enabled("asupan_groups", state.ASUPAN_ENABLED_CHATS)
@@ -131,10 +133,12 @@ def save_asupan_groups():
 
 
 def is_asupan_enabled(chat_id: int) -> bool:
+    from handlers.asupan import state
     return chat_id in state.ASUPAN_ENABLED_CHATS
 
 
 def load_autodel_groups():
+    from handlers.asupan import state
     try:
         _asupan_db_init()
         loaded = _db_load_enabled("asupan_autodel")
@@ -149,6 +153,7 @@ def load_autodel_groups():
 
 
 def save_autodel_groups():
+    from handlers.asupan import state
     try:
         _asupan_db_init()
         _db_set_enabled("asupan_autodel", state.AUTODEL_ENABLED_CHATS)
@@ -162,6 +167,7 @@ def save_autodel_groups():
 
 
 def is_autodel_enabled(chat_id: int) -> bool:
+    from handlers.asupan import state
     return chat_id in state.AUTODEL_ENABLED_CHATS
 
 

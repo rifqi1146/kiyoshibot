@@ -1,4 +1,3 @@
-import os
 import time
 from database.db import db_session
 

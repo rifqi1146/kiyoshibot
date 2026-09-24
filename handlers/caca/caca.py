@@ -6,7 +6,7 @@ import html
 import logging
 import inspect
 import aiohttp
-from typing import Optional
+
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes

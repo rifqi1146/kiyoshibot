@@ -1,5 +1,3 @@
-from telegram import Update
-from telegram.ext import ContextTypes
 
 def _extract_prompt_from_update(update, context) -> str:
     """

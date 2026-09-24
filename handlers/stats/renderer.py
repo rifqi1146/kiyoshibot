@@ -83,7 +83,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
 
     y0 = S(120)
     top_h = S(260)
-    bottom_h = height - y0 - top_h - S(24)
     card_radius = S(24)
 
     cpu_card = (left_x, y0, left_x + col_w, y0 + top_h)

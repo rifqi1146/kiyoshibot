@@ -2,8 +2,6 @@ import os
 import time
 import logging
 import asyncio
-import sqlite3
-import re
 import hashlib
 import urllib.parse
 import html as html_lib

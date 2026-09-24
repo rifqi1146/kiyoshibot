@@ -232,7 +232,7 @@ async def upscale_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     try:
         status=await msg.reply_text(f"<b>{html.escape(title)} image...</b>\n\nPlease wait.",reply_to_message_id=msg.message_id,parse_mode="HTML")
         input_path,filename=await _download_replied_media(context.bot,msg)
-        converted_path=_convert_image_to_jpg(input_path)
+        converted_path=await asyncio.to_thread(_convert_image_to_jpg,input_path)
         image_url=await _upload_to_tmpfiles(converted_path)
         result=await _call_neoxr_image_api(image_url,mode)
         download_url=_pick_result_url(result)

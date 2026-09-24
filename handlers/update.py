@@ -27,7 +27,7 @@ async def update_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
         check=await asyncio.to_thread(_run,["git","status","-uno"])
         if "behind" not in check.stdout:
             return await status.edit_text("<b>The bot is already up to date.</b>",parse_mode="HTML")
-        changelog=get_changelog()
+        changelog=await asyncio.to_thread(get_changelog)
         await status.edit_text("<b>Updating bot...</b>",parse_mode="HTML")
         pull=await asyncio.to_thread(_run,["git","pull"])
         if pull.returncode!=0:

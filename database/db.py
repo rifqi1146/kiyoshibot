@@ -15,10 +15,11 @@ def get_connection(db_path: str) -> sqlite3.Connection:
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
 
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, timeout=30.0)
     try:
         con.execute("PRAGMA journal_mode=WAL;")
         con.execute("PRAGMA synchronous=NORMAL;")
+        con.execute("PRAGMA busy_timeout=30000;")
     except sqlite3.Error as e:
         log.warning(f"Failed to set PRAGMA for {db_path}: {e}")
     return con

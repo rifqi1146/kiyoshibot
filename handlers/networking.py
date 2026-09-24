@@ -554,11 +554,11 @@ async def net_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"<b>Port:</b> <code>{port}</code>")
 
     if target_is_ip:
-        lines.append(f"<b>Type:</b> <code>IP</code>")
+        lines.append("<b>Type:</b> <code>IP</code>")
         if ptr:
             lines.append(f"<b>PTR:</b> <code>{html.escape(ptr)}</code>")
     else:
-        lines.append(f"<b>Type:</b> <code>Domain</code>")
+        lines.append("<b>Type:</b> <code>Domain</code>")
         if ips_v4:
             lines.append(f"<b>A:</b> <code>{html.escape(', '.join(ips_v4[:6]))}</code>")
         else:

@@ -3,7 +3,6 @@ import time
 import uuid
 import logging
 import asyncio
-import aiohttp
 from aiohttp import web
 import html as html_lib
 
@@ -17,7 +16,6 @@ from telegram.ext import ContextTypes
 from handlers.moderation.auth import is_admin_or_owner
 from utils.http import get_http_session
 
-from utils.config import OWNER_ID
 from database.welcome_db import (
     init_welcome_db,
     load_welcome_chats,
@@ -403,7 +401,7 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
-                log.info(f"[CAS] Pesan notifikasi BAN terkirim.")
+                log.info("[CAS] Pesan notifikasi BAN terkirim.")
             except Exception as e:
                 log.error(f"[CAS] GAGAL mengirim notifikasi BAN: {e}")
 

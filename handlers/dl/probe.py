@@ -249,8 +249,6 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
 
     log.info("yt-dlp probe raw heights | %s", unique_raw)
     log.info("yt-dlp probe final picker heights | %s", final_heights)
-    print("yt-dlp probe raw heights:", unique_raw)
-    print("yt-dlp probe final picker heights:", final_heights)
 
     return out
 

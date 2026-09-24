@@ -9,7 +9,6 @@ import asyncio
 import aiohttp
 import aiofiles
 import logging
-import subprocess
 from urllib.parse import urlparse, urlencode
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR

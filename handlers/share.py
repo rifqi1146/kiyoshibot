@@ -1,7 +1,7 @@
 import uuid
 from telegram import Update
 from telegram.ext import ContextTypes
-from database.share_db import save_share, get_share
+from database.share_db import save_share
 
 async def share_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message

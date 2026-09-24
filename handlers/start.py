@@ -22,7 +22,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         from_chat_id=target_chat_id,
                         message_id=target_message_id
                     )
-                except Exception as e:
+                except Exception:
                     await msg.reply_text("Oops, this media has been deleted or is no longer accessible.")
             else:
                 await msg.reply_text("This share link is invalid or has expired.")

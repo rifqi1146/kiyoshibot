@@ -1,15 +1,17 @@
-import os
 import time
-import sqlite3
+from database.db import db_session
 
 SHIP_DB = "data/ship.sqlite3"
+_INIT_DONE = False
+_RECENT_UPDATES: dict[tuple[int, int], tuple[str, float]] = {}
+_MAX_RECENT_CACHE = 5000
+
 
 def _ship_db_init():
-    os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(SHIP_DB)
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
+    global _INIT_DONE
+    if _INIT_DONE:
+        return
+    with db_session(SHIP_DB) as con:
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -30,21 +32,25 @@ def _ship_db_init():
             """
         )
         con.commit()
-    finally:
-        con.close()
+    _INIT_DONE = True
 
-
-def _db():
-    _ship_db_init()
-    return sqlite3.connect(SHIP_DB)
 
 def add_user(chat_id: int, user):
-    if not user or user.is_bot:
+    if not user or getattr(user, "is_bot", False):
         return
 
-    con = _db()
-    try:
-        now = time.time()
+    uid = int(user.id)
+    cid = int(chat_id)
+    name = str(getattr(user, "first_name", "") or "")
+    now = time.time()
+
+    # Throttle frequent updates for same user in same chat if name unchanged
+    cached = _RECENT_UPDATES.get((cid, uid))
+    if cached and cached[0] == name and (now - cached[1]) < 1800:
+        return
+
+    _ship_db_init()
+    with db_session(SHIP_DB) as con:
         con.execute(
             """
             INSERT INTO users (chat_id, user_id, name, updated_at)
@@ -53,11 +59,13 @@ def add_user(chat_id: int, user):
               name=excluded.name,
               updated_at=excluded.updated_at
             """,
-            (int(chat_id), int(user.id), str(user.first_name or ""), float(now)),
+            (cid, uid, name, float(now)),
         )
         con.commit()
-    finally:
-        con.close()
+
+    if len(_RECENT_UPDATES) > _MAX_RECENT_CACHE:
+        _RECENT_UPDATES.clear()
+    _RECENT_UPDATES[(cid, uid)] = (name, now)
 
 
 def _ship_state_has_updated_at(con) -> bool:
@@ -70,21 +78,19 @@ def _ship_state_has_updated_at(con) -> bool:
 
 
 def get_ship_last_time(chat_id: int) -> int:
-    con = _db()
-    try:
+    _ship_db_init()
+    with db_session(SHIP_DB) as con:
         cur = con.execute(
             "SELECT last_time FROM ship_state WHERE chat_id=?",
             (int(chat_id),),
         )
         row = cur.fetchone()
         return int(row[0]) if row and row[0] is not None else 0
-    finally:
-        con.close()
 
 
 def set_ship_last_time(chat_id: int, last_time: int):
-    con = _db()
-    try:
+    _ship_db_init()
+    with db_session(SHIP_DB) as con:
         now_ts = time.time()
         has_updated_at = _ship_state_has_updated_at(con)
 
@@ -111,19 +117,14 @@ def set_ship_last_time(chat_id: int, last_time: int):
             )
 
         con.commit()
-    finally:
-        con.close()
 
 
 def get_users_pool(chat_id: int) -> list[dict]:
-    con = _db()
-    try:
+    _ship_db_init()
+    with db_session(SHIP_DB) as con:
         cur = con.execute(
             "SELECT user_id, name FROM users WHERE chat_id=?",
             (int(chat_id),),
         )
         rows = cur.fetchall()
         return [{"id": int(uid), "name": str(name)} for (uid, name) in rows if uid is not None]
-    finally:
-        con.close()
-        

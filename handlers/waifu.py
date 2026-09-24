@@ -2,12 +2,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import ContextTypes
 import aiohttp
 import time
-import os
-import sqlite3
 from handlers.join import require_join_or_block
 from utils.http import get_http_session
+from database.nsfw_db import is_nsfw_allowed as _nsfw_allowed, nsfw_db_init as _nsfw_db_init
 
-NSFW_DB = "data/nsfw.sqlite3"
+_nsfw_db_init()
 
 _WAIFU_LAST_TAG = {}
 _WAIFU_HISTORY = {}
@@ -15,34 +14,10 @@ _WAIFU_TS = {}
 
 EXPIRE_SEC = 30 * 60
 
-def _nsfw_db_init():
-    os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(NSFW_DB)
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS nsfw_groups (
-                chat_id INTEGER PRIMARY KEY,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                updated_at REAL NOT NULL
-            )
-        """)
-        con.commit()
-    finally:
-        con.close()
-
 def _is_nsfw_enabled(chat_id: int, chat_type: str) -> bool:
     if chat_type == "private":
         return True
-    _nsfw_db_init()
-    con = sqlite3.connect(NSFW_DB)
-    try:
-        cur = con.execute("SELECT enabled FROM nsfw_groups WHERE chat_id=?", (int(chat_id),))
-        row = cur.fetchone()
-        return bool(row and int(row[0]) == 1)
-    finally:
-        con.close()
+    return _nsfw_allowed(chat_id, chat_type)
 
 def _state_key(chat_id: int, user_id: int):
     return f"{int(chat_id)}:{int(user_id)}"

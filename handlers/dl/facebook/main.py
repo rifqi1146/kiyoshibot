@@ -8,6 +8,7 @@ import aiohttp
 import aiofiles
 import logging
 from urllib.parse import urlparse, parse_qs
+from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR
 try:
