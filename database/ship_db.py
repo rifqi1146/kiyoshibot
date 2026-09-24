@@ -31,6 +31,9 @@ def _ship_db_init():
             )
             """
         )
+        # Bersihkan sisa data DM (id positif) yang pernah masuk pool ship
+        con.execute("DELETE FROM users WHERE chat_id > 0")
+        con.execute("DELETE FROM ship_state WHERE chat_id > 0")
         con.commit()
     _INIT_DONE = True
 
@@ -39,8 +42,12 @@ def add_user(chat_id: int, user):
     if not user or getattr(user, "is_bot", False):
         return
 
-    uid = int(user.id)
     cid = int(chat_id)
+    if cid > 0:
+        # Private chat (DM) bukan anggota grup, jangan masuk pool ship
+        return
+
+    uid = int(user.id)
     name = str(getattr(user, "first_name", "") or "")
     now = time.time()
 
@@ -119,12 +126,38 @@ def set_ship_last_time(chat_id: int, last_time: int):
         con.commit()
 
 
-def get_users_pool(chat_id: int) -> list[dict]:
+def get_users_pool(chat_id: int, limit: int = 150) -> list[dict]:
+    """Ambil kandidat ship, diurutkan dari member yang paling baru aktif."""
     _ship_db_init()
+    limit = max(10, int(limit))
     with db_session(SHIP_DB) as con:
         cur = con.execute(
-            "SELECT user_id, name FROM users WHERE chat_id=?",
-            (int(chat_id),),
+            """
+            SELECT user_id, name
+            FROM users
+            WHERE chat_id=?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (int(chat_id), limit),
         )
         rows = cur.fetchall()
-        return [{"id": int(uid), "name": str(name)} for (uid, name) in rows if uid is not None]
+        return [
+            {"id": int(uid), "name": str(name) or "Unknown"}
+            for (uid, name) in rows
+            if uid is not None
+        ]
+
+
+def touch_user(chat_id: int, user_id: int) -> None:
+    """Perbarui updated_at tanpa mengubah nama (nandai user aktif)."""
+    cid = int(chat_id)
+    if cid > 0:
+        return
+    _ship_db_init()
+    with db_session(SHIP_DB) as con:
+        con.execute(
+            "UPDATE users SET updated_at=? WHERE chat_id=? AND user_id=?",
+            (float(time.time()), cid, int(user_id)),
+        )
+        con.commit()
