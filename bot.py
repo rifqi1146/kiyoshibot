@@ -218,6 +218,18 @@ def _build_application():
             log.info("✓ Local Telegram Bot API disabled, using official Telegram Bot API")
     return builder.build()
 
+def _allowed_updates():
+    """Update.ALL_TYPES + update baru yang belum dikenali PTB 22.8."""
+    extra = ("stopped_message_generation",)
+    names = []
+    for ut in Update.ALL_TYPES:
+        names.append(getattr(ut, "value", str(ut)))
+    for name in extra:
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def main():
     setup_logger()
     log.info("Initializing bot")
@@ -237,7 +249,7 @@ def main():
     log.info("Handlers registered")
     log.info("Polling started")
     app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
+        allowed_updates=_allowed_updates(),
         drop_pending_updates=True,
     )
 

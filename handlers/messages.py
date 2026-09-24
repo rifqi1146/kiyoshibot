@@ -1,4 +1,5 @@
-from telegram.ext import MessageHandler, ChatMemberHandler, filters
+from telegram import Update
+from telegram.ext import MessageHandler, ChatMemberHandler, TypeHandler, filters
 
 from handlers.blacklist import blacklist_message_gate
 from handlers.caca import meta_query
@@ -11,6 +12,7 @@ from handlers.welcome import welcome_handler, welcome_chat_member_handler
 from utils.caca_memory import get_last_message_id as meta_db_get_last_message_id
 from utils.caca_memory import has_last_message_id as meta_db_has_last_message_id
 from utils.logger import log_commands
+from utils.stop_draft import stopped_generation_handler
 from utils.user_collector import user_collector
 from handlers.gemini import ai_cmd
 from utils.gemini_memory import get_last_message_id as ai_db_get_last_message_id
@@ -124,4 +126,8 @@ def register_messages(app):
     app.add_handler(
         MessageHandler(filters.ALL, log_commands, block=False),
         group=100,
+    )
+    app.add_handler(
+        TypeHandler(Update, stopped_generation_handler),
+        group=101,
     )
