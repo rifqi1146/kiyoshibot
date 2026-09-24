@@ -156,6 +156,20 @@ async def _remove_file(path:str|None,label:str):
     except Exception as e:
         log.warning("Failed to delete %s temp file | path=%s err=%r",label,path,e)
 
+async def _cleanup_download_result(result):
+    try:
+        if isinstance(result,dict):
+            items=result.get("items")
+            if isinstance(items,list):
+                for item in items or []:
+                    if isinstance(item,dict):
+                        await _remove_file(item.get("path"),"failed download item")
+            await _remove_file(result.get("path"),"failed download")
+        elif isinstance(result,str):
+            await _remove_file(result,"failed download")
+    except Exception as e:
+        log.warning("Failed to cleanup download result | err=%r",e)
+
 async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=False,label=None,engine:str|None=None,status_ready:bool=False):
     log.info(
         "Start download task | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s label=%s status_ready=%s",
@@ -530,6 +544,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
             m=re.search(r"Retry in (\d+)",err)
             wait_time=int(m.group(1)) if m else 5
             log.warning("Download worker flood retry | chat_id=%s wait=%s retry=%s url=%s",chat_id,wait_time,_flood_retry+1,raw_url)
+            await _cleanup_download_result(path)
             await asyncio.sleep(wait_time)
             return await _dl_worker(
                 app=app,
@@ -547,6 +562,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                 _flood_retry=_flood_retry+1,
             )
         log.warning("Download worker failed | chat_id=%s url=%s err=%r",chat_id,raw_url,e)
+        await _cleanup_download_result(path)
         public_err=html.escape(err.strip())[:3500] or "Unknown downloader error"
         await _safe_edit_error(bot, chat_id, status_msg_id, f"<b>Download failed</b>\n\n<code>{public_err}</code>")
 

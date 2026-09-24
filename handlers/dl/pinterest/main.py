@@ -11,8 +11,8 @@ import aiofiles
 import logging
 from urllib.parse import urlparse, urlencode
 from utils.http import get_http_session
-from handlers.dl.constants import TMP_DIR
-from handlers.dl.utils import sanitize_filename, is_invalid_video
+from handlers.dl.constants import TMP_DIR,MAX_TG_SIZE
+from handlers.dl.utils import sanitize_filename, is_invalid_video, check_media_size_limit, FileSizeLimitExceeded
 from handlers.dl.ytdlp import ytdlp_download
 
 try:
@@ -353,12 +353,14 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
     total = await _probe_total_bytes(session, media_url, headers=headers)
+    if total:
+        check_media_size_limit(total, "Pinterest media")
     out_dir = os.path.dirname(out_path) or "."
     out_name = os.path.basename(out_path)
     cmd = [
         aria2, "--dir", out_dir, "--out", out_name, "--file-allocation=none", "--allow-overwrite=true",
         "--auto-file-renaming=false", "--continue=true", "--max-connection-per-server=8", "--split=8",
-        "--min-split-size=1M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"
+        "--min-split-size=1M", f"--max-file-size={MAX_TG_SIZE//(1024*1024)}M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"
     ]
     for k, v in (headers or {}).items():
         if v:
@@ -379,6 +381,12 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
             continue
         if downloaded <= 0:
             continue
+        if downloaded > MAX_TG_SIZE:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            raise FileSizeLimitExceeded("Pinterest media exceeds 2GB limit. Download canceled.")
         now = time.time()
         elapsed = max(now - last_sample_ts, 0.001)
         speed_bps = max(downloaded - last_sample_size, 0) / elapsed
@@ -399,6 +407,8 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
         if r.status >= 400:
             raise RuntimeError(f"Download failed: HTTP {r.status}")
         total = int(r.headers.get("Content-Length", 0) or 0)
+        if total:
+            check_media_size_limit(total, "Pinterest media")
         downloaded = 0
         last_edit = -10.0
         last_sample_size = 0
@@ -409,6 +419,8 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
                     continue
                 await f.write(chunk)
                 downloaded += len(chunk)
+                if downloaded > MAX_TG_SIZE:
+                    raise FileSizeLimitExceeded("Pinterest media exceeds 2GB limit. Download canceled.")
                 now = time.time()
                 elapsed = max(now - last_sample_ts, 0.001)
                 speed_bps = max(downloaded - last_sample_size, 0) / elapsed
@@ -423,6 +435,13 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
 async def _download_with_best_engine(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
     try:
         await _aria2c_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
+    except FileSizeLimitExceeded:
+        if os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except Exception:
+                pass
+        raise
     except Exception as e:
         log.warning("Pinterest aria2c failed, fallback aiohttp | err=%r", e)
         if os.path.exists(out_path):
@@ -535,6 +554,8 @@ async def pinterest_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,f
             metadata_ready=metadata_ready,
         )
     except Exception as e:
+        if isinstance(e, FileSizeLimitExceeded):
+            raise
         log.exception("Pinterest scraping failed, fallback to yt-dlp | url=%s err=%r",raw_url,e)
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Pinterest scraping failed</b>\n\n<i>Fallback to yt-dlp...</i>")
         return await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio)

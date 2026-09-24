@@ -12,9 +12,20 @@ def progress_bar(percent: float, length: int = 10) -> str:
     empty = length - filled
     return f"[{'■' * filled}{'□' * empty}] {p:.1f}%"
 
+def fix_surrogates(name: str) -> str:
+    name = str(name or "")
+    name = re.sub(
+        "([\ud800-\udbff])([\udc00-\udfff])",
+        lambda m: chr(0x10000 + ((ord(m.group(1)) - 0xD800) << 10) + (ord(m.group(2)) - 0xDC00)),
+        name,
+    )
+    return re.sub("[\ud800-\udfff]", "", name)
+
 def sanitize_filename(name: str, max_bytes: int = 120) -> str:
     name = str(name or "media")
+    name = fix_surrogates(name)
     name = unicodedata.normalize("NFKC", name)
+    name = fix_surrogates(name)
     name = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", name)
     name = re.sub(r"\s+", " ", name).strip(" .")
     if not name:
@@ -69,3 +80,16 @@ def is_invalid_video(path: str) -> bool:
         return duration < 1.5 or width == 0 or height == 0
     except Exception:
         return True
+
+class FileSizeLimitExceeded(RuntimeError):
+    pass
+
+def check_media_size_limit(size_bytes: int | float, label: str = "File") -> None:
+    from .constants import MAX_TG_SIZE
+    try:
+        size = int(size_bytes or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size > MAX_TG_SIZE:
+        gb = size / (1024 * 1024 * 1024)
+        raise FileSizeLimitExceeded(f"{label} exceeds 2GB limit ({gb:.2f} GB). Download canceled.")

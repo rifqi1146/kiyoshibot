@@ -13,6 +13,7 @@ from handlers.nsfw import nsfw_db_init
 from handlers.backup import start_auto_backup
 from database import premium
 from handlers import caca
+from handlers.dl.sweeper import start_downloads_sweeper
 
 log=logging.getLogger(__name__)
 
@@ -112,4 +113,5 @@ async def startup_tasks(app):
     except Exception:
         log.exception("Auto backup init failed")
     _create_background_task(app,_startup_asupan(app),"Startup asupan")
+    _create_background_task(app,start_downloads_sweeper(),"Downloads sweeper")
     log.info("✓ Startup background tasks scheduled")

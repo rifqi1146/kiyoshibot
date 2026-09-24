@@ -9,8 +9,8 @@ import subprocess
 from urllib.parse import urlparse
 from telegram.error import RetryAfter
 from .instagram.main import is_instagram_url
-from .constants import COOKIES_PATH, TMP_DIR
-from .utils import progress_bar
+from .constants import COOKIES_PATH, TMP_DIR, MAX_TG_SIZE
+from .utils import progress_bar, check_media_size_limit
 
 _SIZE_100MB = 100 * 1024 * 1024
 YTDLP_TIMEOUT = int(os.getenv("YTDLP_TIMEOUT", "1800"))
@@ -364,6 +364,8 @@ def _extract_tool_error(stdout_text: str, stderr_text: str, code: int, tool_name
         if not line:
             continue
         lower = line.lower()
+        if "larger than max-filesize" in lower or "file is larger than" in lower:
+            return "File exceeds 2GB limit. Download canceled."
         if lower.startswith(skip_starts):
             continue
         if "error:" in lower:
@@ -512,6 +514,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
             "--js-runtimes", YTDLP_DENO_PATH,
             "--concurrent-fragments", "8",
             "--no-playlist",
+            "--max-filesize", f"{MAX_TG_SIZE // (1024 * 1024)}M",
             "-f", "bestaudio/best",
             "--extract-audio",
             "--audio-format", "flac",
@@ -532,6 +535,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         fmt = _build_ytdlp_format(format_id, has_audio)
         log.info("yt-dlp selected format | url=%s format_id=%s has_audio=%s fmt=%s", url, format_id, has_audio, fmt)
         est_size = await asyncio.to_thread(_probe_total_size_sync, url, fmt)
+        check_media_size_limit(est_size, "Requested video")
         update_interval = 7 if (not est_size and format_id) or est_size >= _SIZE_100MB else 5
         
         cmd = [YT_DLP]
@@ -547,6 +551,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
             "--js-runtimes", YTDLP_DENO_PATH,
             "--concurrent-fragments", "8",
             "--no-playlist",
+            "--max-filesize", f"{MAX_TG_SIZE // (1024 * 1024)}M",
             "-f", fmt,
             "--merge-output-format", "mp4",
             "--newline",
@@ -561,7 +566,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
                 picked = _pick_latest_media_file(start_ts, job_id)
                 if picked:
                     return {"path": picked, "title": _extract_title_from_path(picked, job_id)}
-            if not is_yt:
+            if not is_yt and "exceeds 2GB" not in yt_error:
                 log.warning("yt-dlp video download failed, trying gallery-dl fallback | url=%s job_id=%s err=%s", url, job_id, yt_error)
                 fallback = await gallerydl_fallback(url=url, job_id=job_id, bot=bot, chat_id=chat_id, status_msg_id=status_msg_id)
                 if fallback:

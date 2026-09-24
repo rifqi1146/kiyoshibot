@@ -14,8 +14,8 @@ import logging
 import subprocess
 from telegram.error import RetryAfter
 from utils.http import get_http_session
-from handlers.dl.constants import TMP_DIR
-from handlers.dl.utils import sanitize_filename,is_invalid_video,progress_bar
+from handlers.dl.constants import TMP_DIR,MAX_TG_SIZE
+from handlers.dl.utils import sanitize_filename,is_invalid_video,progress_bar,check_media_size_limit,FileSizeLimitExceeded
 from utils.config import LOG_CHAT_ID
 from .fallback import _tikwm_result
 
@@ -478,12 +478,15 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
     total=await _probe_total_bytes(session,media_url,headers=headers) if TIKTOK_PROGRESS else 0
+    if total:
+        check_media_size_limit(total, "TikTok media")
     out_dir=os.path.dirname(out_path) or "."
     out_name=os.path.basename(out_path)
     
     cmd=[
         aria2,"--dir",out_dir,"--out",out_name,"--file-allocation=none","--allow-overwrite=true",
         "--auto-file-renaming=false","--continue=true",
+        "--max-file-size=2000M",
         "--summary-interval=0","--download-result=hide","--console-log-level=warn",
     ]
     for k,v in (headers or {}).items():
@@ -517,6 +520,9 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
             continue
         if downloaded<=0:
             continue
+        if downloaded>MAX_TG_SIZE:
+            await _kill_process(proc,"aria2c")
+            raise FileSizeLimitExceeded("TikTok media exceeds 2GB limit. Download canceled.")
         now=time.time()
         elapsed=max(now-last_sample_ts,0.001)
         speed_bps=max(downloaded-last_sample_size,0)/elapsed
@@ -536,6 +542,8 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
         if r.status>=400:
             raise RuntimeError(f"Download failed: HTTP {r.status}")
         total=int(r.headers.get("Content-Length",0) or 0)
+        if total:
+            check_media_size_limit(total, "TikTok media")
         downloaded=0
         last_edit,last_sample_size,last_sample_ts=-10.0,0,time.time()
         chunk_size=max(64*1024,int(TIKTOK_AIOHTTP_CHUNK_SIZE or 256*1024))
@@ -545,6 +553,8 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
                     continue
                 await f.write(chunk)
                 downloaded+=len(chunk)
+                if downloaded>MAX_TG_SIZE:
+                    raise FileSizeLimitExceeded("TikTok media exceeds 2GB limit. Download canceled.")
                 if not TIKTOK_PROGRESS:
                     continue
                 now=time.time()
@@ -563,6 +573,9 @@ async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat
             log.info("TikTok download engine | engine=aria2c path=%s progress=%s",aria2_path,TIKTOK_PROGRESS)
             await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
             return
+        except FileSizeLimitExceeded:
+            _safe_remove_file(out_path,"too large")
+            raise
         except Exception as e:
             log.warning("TikTok aria2c failed, fallback aiohttp | err=%r",e)
             _safe_remove_file(out_path,"aria2c partial")
@@ -576,6 +589,9 @@ async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,ch
         log.info("TikTok download engine | engine=aiohttp progress=%s chunk=%s",TIKTOK_PROGRESS,TIKTOK_AIOHTTP_CHUNK_SIZE)
         await aiohttp_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
         return
+    except FileSizeLimitExceeded:
+        _safe_remove_file(out_path,"too large")
+        raise
     except Exception as e:
         log.warning("TikTok aiohttp failed, fallback aria2c | err=%r",e)
         _safe_remove_file(out_path,"aiohttp partial")
@@ -714,6 +730,8 @@ def _parse_direct_media(item:dict)->dict:
             "width":width,
             "height":height,
         }
+    if item.get("isAd") or item.get("is_ad"):
+        raise RuntimeError("TikTok ad/sponsored video: direct media URL omitted by TikTok (triggering fallback)")
     raise RuntimeError("TikTok direct media URL not found")
 
 def _parse_universal_data(html_text:str)->dict:
@@ -1034,6 +1052,9 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
                 "width":media.get("width") or 0,
                 "height":media.get("height") or 0,
             }
+        except FileSizeLimitExceeded:
+            _safe_remove_file(out_path,"too large")
+            raise
         except Exception as e:
             last_err=e
             log.warning("TikTok direct URL failed | index=%s total=%s err=%r",idx,len(video_urls),e)
@@ -1372,6 +1393,9 @@ async def tiktok_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_r
                 log.info("TikTok primary success | source=%s items=%s",result.get("source"),len(result.get("items") or []))
         return result
     except Exception as e:
+        if isinstance(e, FileSizeLimitExceeded):
+            log.warning("TikTok media exceeds limit, not falling back | url=%s err=%r", url, e)
+            raise
         log.warning("TikTok scraping failed, fallback to tikwm | url=%s fmt=%s err=%r",url,fmt_key,e)
         try:
             err_path=_write_debug_file("tiktok_scrape_exception",repr(e),"txt")

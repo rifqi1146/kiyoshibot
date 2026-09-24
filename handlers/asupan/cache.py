@@ -1,8 +1,21 @@
+import os
 import asyncio
 from utils.config import LOG_CHAT_ID
 from .constants import ASUPAN_PREFETCH_SIZE, log
 from .fetcher import fetch_asupan_tikwm
 from . import state
+
+
+def _remove_tmp_media(path) -> None:
+    if not path:
+        return
+    try:
+        p = str(path)
+        if os.path.exists(p):
+            os.remove(p)
+            log.debug("Removed asupan temp file | file=%s", os.path.basename(p))
+    except Exception as e:
+        log.warning("Failed to remove asupan temp file | path=%s err=%r", path, e)
 
 
 async def warm_keyword_asupan_cache(bot, keyword: str):
@@ -21,6 +34,7 @@ async def warm_keyword_asupan_cache(bot, keyword: str):
     state.ASUPAN_KEYWORD_FETCHING.add(kw)
     try:
         while len(cache) < ASUPAN_PREFETCH_SIZE:
+            url = None
             try:
                 url = await fetch_asupan_tikwm(kw)
                 msg = await bot.send_video(
@@ -34,6 +48,8 @@ async def warm_keyword_asupan_cache(bot, keyword: str):
             except Exception as e:
                 log.warning(f"[ASUPAN KEYWORD PREFETCH] {kw}: {e}")
                 break  # Kalo limit/error, break loop biar gak spamming API
+            finally:
+                _remove_tmp_media(url)
     finally:
         state.ASUPAN_KEYWORD_FETCHING.discard(kw)
 
@@ -43,6 +59,7 @@ async def warm_asupan_cache(bot):
     state.ASUPAN_FETCHING = True
     try:
         while len(state.ASUPAN_CACHE) < ASUPAN_PREFETCH_SIZE:
+            url = None
             try:
                 url = await fetch_asupan_tikwm(None)
 
@@ -57,6 +74,8 @@ async def warm_asupan_cache(bot):
             except Exception as e:
                 log.warning(f"[ASUPAN PREFETCH] {e}")
                 break
+            finally:
+                _remove_tmp_media(url)
     finally:
         state.ASUPAN_FETCHING = False
 
@@ -64,7 +83,28 @@ async def get_asupan_fast(bot, keyword: str | None = None):
     if keyword is None:
         if state.ASUPAN_CACHE:
             return state.ASUPAN_CACHE.pop(0)
-        url = await fetch_asupan_tikwm(None)
+        url = None
+        try:
+            url = await fetch_asupan_tikwm(None)
+            msg = await bot.send_video(
+                chat_id=LOG_CHAT_ID,
+                video=url,
+                disable_notification=True,
+            )
+            file_id = msg.video.file_id
+            await msg.delete()
+            return {"file_id": file_id}
+        finally:
+            _remove_tmp_media(url)
+
+    kw = keyword.lower().strip()
+    cache = state.ASUPAN_KEYWORD_CACHE.get(kw)
+    if cache:
+        return cache.pop(0)
+
+    url = None
+    try:
+        url = await fetch_asupan_tikwm(kw)
         msg = await bot.send_video(
             chat_id=LOG_CHAT_ID,
             video=url,
@@ -73,18 +113,5 @@ async def get_asupan_fast(bot, keyword: str | None = None):
         file_id = msg.video.file_id
         await msg.delete()
         return {"file_id": file_id}
-        
-    kw = keyword.lower().strip()
-    cache = state.ASUPAN_KEYWORD_CACHE.get(kw)
-    if cache:
-        return cache.pop(0)
-        
-    url = await fetch_asupan_tikwm(kw)
-    msg = await bot.send_video(
-        chat_id=LOG_CHAT_ID,
-        video=url,
-        disable_notification=True,
-    )
-    file_id = msg.video.file_id
-    await msg.delete()
-    return {"file_id": file_id}
+    finally:
+        _remove_tmp_media(url)

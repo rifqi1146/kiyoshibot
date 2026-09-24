@@ -10,7 +10,7 @@ import asyncio
 from telegram import InputMediaPhoto,InputMediaVideo
 from telegram.error import RetryAfter
 from .constants import TMP_DIR,MAX_TG_SIZE
-from .utils import detect_media_type
+from .utils import detect_media_type,FileSizeLimitExceeded
 from .ytdlp import ytdlp_download
 from .instagram.main import is_instagram_url,instagram_api_download
 from .youtube.main import is_youtube_url
@@ -537,6 +537,8 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
     if is_instagram_url(raw_url):
         try:
             return await instagram_api_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
+        except FileSizeLimitExceeded:
+            raise
         except Exception as e:
             log.warning("Instagram API download failed, falling back to yt-dlp | url=%s err=%r",raw_url,e)
     if is_pinterest_url(raw_url):

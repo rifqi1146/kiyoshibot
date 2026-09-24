@@ -10,12 +10,12 @@ import logging
 from urllib.parse import urlparse, parse_qs
 from telegram.error import RetryAfter
 from utils.http import get_http_session
-from handlers.dl.constants import TMP_DIR
+from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
+from handlers.dl.utils import check_media_size_limit, FileSizeLimitExceeded
 try:
     from handlers.dl.constants import BASE_DIR
 except Exception:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from handlers.dl.utils import sanitize_filename
 from handlers.dl.ytdlp import ytdlp_download
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ WEB_HEADERS = {
 }
 
 SHARE_RE = re.compile(r"https?://(?:(?:www|m)\.)?facebook\.com/share/(?:r|v|p)/([a-zA-Z0-9]+)", re.I)
-CONTENT_RE = re.compile(r"https?://(?:(?:www|m|mbasic)\.)?facebook\.com/" r"(?:watch/?\?(?:[^&]*&)*v=|(?:reel|videos?|posts?)/|[^/]+/(?:videos|posts|reels?)/)" r"([a-zA-Z0-9]+)", re.I)
+CONTENT_RE = re.compile(r"https?://(?:(?:www|m|mbasic)\.)?facebook\.com/" r"(?:watch/?\?(?:[^&]*&)*v=|share/(?:[rvp]/)?|(?:reel|videos?|posts?|permalink)/|groups/[^/]+/(?:posts|permalink)/|[^/]+/(?:videos|posts|reels?|permalink)/)" r"([a-zA-Z0-9]+)", re.I)
 HD_URL_PATTERN = re.compile(r'"progressive_url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*,\s*"failure_reason"\s*:\s*[^,]+\s*,\s*"metadata"\s*:\s*\{\s*"quality"\s*:\s*"HD"\s*\}', re.S)
 SD_URL_PATTERN = re.compile(r'"progressive_url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*,\s*"failure_reason"\s*:\s*[^,]+\s*,\s*"metadata"\s*:\s*\{\s*"quality"\s*:\s*"SD"\s*\}', re.S)
 BROWSER_NATIVE_HD_URL_PATTERN = re.compile(r'"browser_native_hd_url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', re.S)
@@ -247,7 +247,8 @@ def _unescape_unicode(text: str) -> str:
                 pass
         out.append(text[i])
         i += 1
-    return "".join(out)
+    from handlers.dl.utils import fix_surrogates
+    return fix_surrogates("".join(out))
 
 def _unescape_facebook_url(text: str) -> str:
     return _unescape_unicode((text or "").replace(r"\/", "/"))
@@ -293,8 +294,7 @@ def _extract_title_from_html(body: bytes, fallback: str = "Facebook Video") -> s
         if not m:
             continue
         val = m.group(1)
-        val = val.replace(r"\/", "/")
-        val = re.sub(r'\\u([0-9a-fA-F]{4})', lambda x: chr(int(x.group(1), 16)), val)
+        val = _unescape_facebook_url(val)
         val = _clean_fb_title(val, "")
         if val and not _is_bad_fb_title(val):
             return val
@@ -307,6 +307,12 @@ def _find_video_section(body: bytes, video_id: str) -> bytes | None:
         return None
     anchor = f"dash_mpd_debug.mpd?v={video_id}".encode()
     start = body.find(anchor)
+    if start == -1:
+        m = re.search(rb"dash_mpd_debug\.mpd\?v=(\d+)", body)
+        if m:
+            video_id = m.group(1).decode()
+            anchor = f"dash_mpd_debug.mpd?v={video_id}".encode()
+            start = body.find(anchor)
     if start == -1:
         _dbg("anchor not found | video_id=%s anchor=%s", video_id, anchor.decode(errors="ignore"))
         return None
@@ -474,8 +480,10 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
     total = await _probe_total_bytes(session, media_url, headers=headers)
+    if total:
+        check_media_size_limit(total, "Facebook video")
     out_dir, out_name = os.path.dirname(out_path) or ".", os.path.basename(out_path)
-    cmd = [aria2, "--dir", out_dir, "--out", out_name, "--file-allocation=none", "--allow-overwrite=true", "--auto-file-renaming=false", "--continue=true", "--max-connection-per-server=8", "--split=8", "--min-split-size=1M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"]
+    cmd = [aria2, "--dir", out_dir, "--out", out_name, "--file-allocation=none", "--allow-overwrite=true", "--auto-file-renaming=false", "--continue=true", "--max-file-size=2000M", "--max-connection-per-server=8", "--split=8", "--min-split-size=1M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"]
     for k, v in (headers or {}).items():
         if v:
             cmd.extend(["--header", f"{k}: {v}"])
@@ -495,6 +503,12 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
             continue
         if downloaded <= 0:
             continue
+        if downloaded > MAX_TG_SIZE:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            raise FileSizeLimitExceeded("Facebook video exceeds 2GB limit. Download canceled.")
         now = time.time()
         elapsed = max(now - last_sample_ts, 0.001)
         speed_bps = max(downloaded - last_sample_size, 0) / elapsed
@@ -519,6 +533,8 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
         if r.status >= 400:
             raise RuntimeError(f"Download failed: HTTP {r.status}")
         total = int(r.headers.get("Content-Length", 0) or 0)
+        if total:
+            check_media_size_limit(total, "Facebook video")
         downloaded = 0
         last_edit = -10.0
         last_sample_size = 0
@@ -529,6 +545,8 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
                     continue
                 await f.write(chunk)
                 downloaded += len(chunk)
+                if downloaded > MAX_TG_SIZE:
+                    raise FileSizeLimitExceeded("Facebook video exceeds 2GB limit. Download canceled.")
                 now = time.time()
                 elapsed = max(now - last_sample_ts, 0.001)
                 speed_bps = max(downloaded - last_sample_size, 0) / elapsed
@@ -544,6 +562,13 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
 async def _download_with_best_engine(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
     try:
         await _aria2c_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
+    except FileSizeLimitExceeded:
+        if os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except Exception:
+                pass
+        raise
     except Exception as e:
         log.warning("Facebook aria2c failed, fallback aiohttp | err=%r", e)
         if os.path.exists(out_path):
@@ -582,8 +607,7 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
         content_url=await _follow_share_redirect(content_url)
     content_id=_extract_content_id(content_url)
     if not content_id:
-        _dbg("scrape failed before fetch | reason=no content id | content_url=%s",content_url)
-        raise RuntimeError("failed to extract facebook content id")
+        _dbg("no content_id extracted from url, proceeding to fetch page directly | url=%s", content_url)
     _dbg("before _get_video_data | content_url=%s content_id=%s",content_url,content_id)
     video_data=await _get_video_data(content_url,content_id)
     _dbg("after _get_video_data | video_data=%r",video_data)
@@ -596,7 +620,7 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     title=(video_data.get("title") or "Facebook Video").strip() or "Facebook Video"
     _dbg("fb title selected | title=%s",_clip(title,200))
     os.makedirs(TMP_DIR,exist_ok=True)
-    out_path=f"{TMP_DIR}/{uuid.uuid4().hex}_{sanitize_filename(title)}.mp4"
+    out_path=f"{TMP_DIR}/{uuid.uuid4().hex}.mp4"
     session=await get_http_session()
     headers=_build_headers(_normalize_content_url(content_url,content_id))
     _dbg("download chosen url | url=%s out=%s",_clip(video_url,200),out_path)
@@ -619,6 +643,8 @@ async def facebook_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,fo
             metadata_ready=metadata_ready,
         )
     except Exception as e:
+        if isinstance(e, FileSizeLimitExceeded):
+            raise
         log.exception("Facebook scraping failed, fallback to yt-dlp | url=%s err=%r",raw_url,e)
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Facebook scraping failed</b>\n\n<i>Fallback to yt-dlp...</i>")
         return await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio)

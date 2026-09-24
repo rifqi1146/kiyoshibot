@@ -15,9 +15,9 @@ import aiofiles
 from urllib.parse import urlparse,parse_qs,unquote
 from telegram.error import RetryAfter
 from utils.http import get_http_session
-from handlers.dl.constants import TMP_DIR
+from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from curl_cffi.requests import AsyncSession
-from handlers.dl.utils import progress_bar
+from handlers.dl.utils import progress_bar, check_media_size_limit, FileSizeLimitExceeded
 
 log=logging.getLogger(__name__)
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
@@ -957,6 +957,8 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                     out_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}{ext}")
 
                     total=int(resp.headers.get("Content-Length",0) or 0)
+                    if total:
+                        check_media_size_limit(total,"Instagram media")
                     written=0
                     last_edit=-10.0
                     last_sample_size=0
@@ -970,6 +972,8 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
 
                             written+=len(chunk)
                             await f.write(chunk)
+                            if written>MAX_TG_SIZE:
+                                raise FileSizeLimitExceeded("Instagram media exceeds 2GB limit. Download canceled.")
 
                             if not sniff_done:
                                 peek.extend(chunk[:32])
