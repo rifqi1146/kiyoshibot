@@ -178,16 +178,31 @@ def is_rich_message(message) -> bool:
     return "rich_message" in api_kwargs
 
 
-def _caption_block(caption: str, expandable: bool) -> dict:
+DEFAULT_CAPTION_SUMMARY = "Show Caption"
+
+
+def _caption_block(caption: str, summary: str | None = None, collapsible: bool = True) -> dict:
     """Blok caption di bawah slideshow.
 
-    expandable=True -> `expandable_blockquote` (Bot API >= 10.3, collapsible).
-    expandable=False -> `blockquote` biasa (Bot API >= 10.1).
+    collapsible=True  -> `details` (Bot API >= 10.3): blok dengan toggle
+                         buka-tutup berjudul `summary` (default "Show Caption").
+                         Selalu bisa di-expand, tidak bergantung panjang teks.
+    collapsible=False -> `blockquote` biasa (Bot API >= 10.1), tampil penuh.
+
+    Catatan field (sesuai telegram-bot-api Client.cpp):
+      details  : {type, summary, blocks, is_open}
+      blockquote: {type, blocks, credit}
+
     Credit TIDAK dimasukkan ke sini; dikirim sebagai block `footer` terpisah
-    di bawah quote agar tidak ikut terlipat di dalamnya.
+    di bawah caption agar tidak ikut terlipat di dalamnya.
     """
-    if expandable:
-        return {"type": "expandable_blockquote", "text": caption}
+    if collapsible:
+        return {
+            "type": "details",
+            "summary": (summary or DEFAULT_CAPTION_SUMMARY),
+            "blocks": [{"type": "paragraph", "text": caption}],
+            "is_open": False,
+        }
     return {
         "type": "blockquote",
         "blocks": [{"type": "paragraph", "text": caption}],
@@ -201,6 +216,7 @@ async def send_rich_slideshow(
     caption: str | None = None,
     credit: str | None = None,
     heading: str | None = None,
+    summary: str | None = None,
     message_thread_id: int | None = None,
     reply_to_message_id: int | None = None,
     reply_markup=None,
@@ -211,9 +227,9 @@ async def send_rich_slideshow(
     File lokal diupload via multipart form (attach://field) ke server Bot API;
     file_id dikirim langsung sebagai string.
 
-    Caption dibungkus blockquote (expandable kalau server >= Bot API 10.3,
-    fallback blockquote biasa untuk server lama) supaya caption panjang
-    tidak berantakan dan credit tetap tampil.
+    Caption dibungkus block `details` bertulisan `summary` (default "Show Caption")
+    sehingga selalu punya tombol toggle buka-tutup yang konsisten.
+    Credit dikirim via block `footer` terpisah di bawahnya.
 
     Raise RuntimeError jika API menolak.
     """
@@ -232,13 +248,13 @@ async def send_rich_slideshow(
         else:
             slides.append({"type": "photo", "photo": {"type": "photo", "media": item}})
 
-    def build_blocks(expandable: bool) -> list[dict]:
+    def build_blocks(collapsible: bool) -> list[dict]:
         blocks: list[dict] = []
         if heading:
             blocks.append({"type": "heading", "text": heading, "size": 3})
         blocks.append({"type": "slideshow", "blocks": slides})
         if caption:
-            blocks.append(_caption_block(caption, expandable))
+            blocks.append(_caption_block(caption, summary=summary, collapsible=collapsible))
         if credit:
             blocks.append({"type": "footer", "text": credit})
         return blocks
@@ -281,12 +297,12 @@ async def send_rich_slideshow(
             raise RuntimeError(data.get("description") or "sendRichMessage gagal")
         return data.get("result")
 
-    # Coba expandable dulu (Bot API >= 10.3); kalau server lama menolak
-    # formatnya, ulangi sekali dengan blockquote biasa (Bot API >= 10.1).
+    # Coba details block dulu (Bot API >= 10.3); kalau server lama menolak,
+    # ulangi sekali dengan blockquote biasa (Bot API >= 10.1).
     try:
-        return await post(build_payload(build_blocks(expandable=bool(caption))))
+        return await post(build_payload(build_blocks(collapsible=bool(caption))))
     except Exception as e:
         err = str(e).lower()
         if caption and ("unsupported" in err or "can't parse" in err):
-            return await post(build_payload(build_blocks(expandable=False)))
+            return await post(build_payload(build_blocks(collapsible=False)))
         raise

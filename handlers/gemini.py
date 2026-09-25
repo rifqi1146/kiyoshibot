@@ -287,15 +287,15 @@ async def ai_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
                 raw=await ask_groq_text(prompt=prompt,history=groq_history,use_search=False)
             else:
                 raise RuntimeError(raw)
-        clean=sanitize_ai_output(raw)
-        chunks=split_message(clean,4000)
+        # Grup tidak mendukung draft streaming, tapi output tetap dikirim
+        # sebagai Rich Message (fallback otomatis ke HTML kalau ditolak).
+        clean_md=sanitize_markdown(raw) or "Model tidak memberikan jawaban."
+        chunks=split_message(clean_md,4000)
         await _stop_typing_task(stop,typing)
-        last_sent=None
-        for chunk in chunks:
-            last_sent=await _reply_thread(context.bot,msg,chunk,parse_mode="HTML")
-        if last_sent:
-            history.append({"user":prompt,"ai":clean})
-            await gemini_memory.set_history(user_id,history,last_sent.message_id)
+        last_sent_id=await _send_chunks(context.bot,msg,chunks)
+        if last_sent_id:
+            history.append({"user":prompt,"ai":clean_md})
+            await gemini_memory.set_history(user_id,history,last_sent_id)
     except Exception as e:
         await _stop_typing_task(stop,typing)
         log.warning("Gemini request failed | user_id=%s err=%r",user_id,e)
@@ -382,15 +382,11 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, final_p
                         raw2 = await ask_groq_text(prompt=prompt, history=groq_history, use_search=False)
                     else:
                         raise RuntimeError(raw2)
-                clean = sanitize_ai_output(raw2)
-                chunks = split_message(clean, 4000)
+                clean_md = sanitize_markdown(raw2) or "Model tidak memberikan jawaban."
+                chunks = split_message(clean_md, 4000)
                 await _stop_typing_task(stop, typing)
-                last_id = None
-                for chunk in chunks:
-                    sent = await _reply_thread(bot, msg, chunk, parse_mode="HTML")
-                    if sent:
-                        last_id = sent.message_id
-                history.append({"user": prompt, "ai": clean})
+                last_id = await _send_chunks(bot, msg, chunks)
+                history.append({"user": prompt, "ai": clean_md})
                 await gemini_memory.set_history(user_id, history, last_id)
             finally:
                 await _stop_typing_task(stop, typing)
