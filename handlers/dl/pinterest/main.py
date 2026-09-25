@@ -360,7 +360,7 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
     cmd = [
         aria2, "--dir", out_dir, "--out", out_name, "--file-allocation=none", "--allow-overwrite=true",
         "--auto-file-renaming=false", "--continue=true", "--max-connection-per-server=8", "--split=8",
-        "--min-split-size=1M", f"--max-file-size={MAX_TG_SIZE//(1024*1024)}M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"
+        "--min-split-size=1M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"
     ]
     for k, v in (headers or {}).items():
         if v:

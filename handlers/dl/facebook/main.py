@@ -483,7 +483,7 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
     if total:
         check_media_size_limit(total, "Facebook video")
     out_dir, out_name = os.path.dirname(out_path) or ".", os.path.basename(out_path)
-    cmd = [aria2, "--dir", out_dir, "--out", out_name, "--file-allocation=none", "--allow-overwrite=true", "--auto-file-renaming=false", "--continue=true", "--max-file-size=2000M", "--max-connection-per-server=8", "--split=8", "--min-split-size=1M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"]
+    cmd = [aria2, "--dir", out_dir, "--out", out_name, "--file-allocation=none", "--allow-overwrite=true", "--auto-file-renaming=false", "--continue=true", "--max-connection-per-server=8", "--split=8", "--min-split-size=1M", "--summary-interval=0", "--download-result=hide", "--console-log-level=warn"]
     for k, v in (headers or {}).items():
         if v:
             cmd.extend(["--header", f"{k}: {v}"])
