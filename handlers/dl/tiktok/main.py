@@ -644,20 +644,36 @@ def _pick_first_url(value)->str:
                 return x.strip()
     return ""
 
+def _looks_like_http_url(value:str)->bool:
+    return str(value or "").strip().lower().startswith(("http://","https://"))
+
 def _collect_url_list(value)->list[str]:
     out=[]
     if isinstance(value,str) and value.strip():
-        out.append(value.strip())
+        val=value.strip()
+        if _looks_like_http_url(val):
+            out.append(val)
     elif isinstance(value,list):
         for x in value:
             if isinstance(x,str) and x.strip():
-                out.append(x.strip())
+                val=x.strip()
+                if _looks_like_http_url(val):
+                    out.append(val)
     return out
 
 def _add_unique_urls(dst:list[str],value):
     for u in _collect_url_list(value):
         if u and u not in dst:
             dst.append(u)
+
+def _prioritize_video_urls(urls:list[str])->list[str]:
+    """Urutkan URL video: play/CDN biasanya bisa diakses; CDN `webapp-prime`
+    sering menolak (403) ketika cookie sesi TikTok ikut terkirim."""
+    play=[u for u in urls if "aweme/v1/play" in u]
+    cdn_ok=[u for u in urls if "aweme/v1/play" not in u and "tiktokcdn.com" in u]
+    others=[u for u in urls if u not in play and u not in cdn_ok and "webapp-prime" not in u]
+    prime=[u for u in urls if "webapp-prime" in u]
+    return play+cdn_ok+others+prime
 
 def _extract_music_urls(item:dict)->list[str]:
     music=item.get("music") or item.get("musicInfo") or {}
@@ -720,6 +736,7 @@ def _parse_direct_media(item:dict)->dict:
         elif isinstance(candidate,str):
             _add_unique_urls(video_urls,candidate)
     if video_urls:
+        video_urls=_prioritize_video_urls(video_urls)
         return {
             "kind":"video",
             "title":title,
@@ -1013,13 +1030,35 @@ async def _fetch_tiktok_metadata(url:str,bot=None,chat_id=None,status_msg_id=Non
     log.info("TikTok metadata success | source=full-scraping url=%s kind=%s elapsed=%.2fs target=%s fast_err=%r",url,media.get("kind"),time.monotonic()-started,media.get("target_url"),fast_err)
     return media
 
+def _purge_tiktok_session_cookies(session):
+    """Hapus cookie TikTok dari cookie jar sesi bersama.
+
+    Cookie sesi (tt_chain_token, msToken, dll) membuat TikTok mengarahkan
+    permintaan media ke CDN `webapp-prime` yang menolak dengan HTTP 403.
+    Unduhan video/audio harus memakai jar bersih agar diarahkan ke CDN
+    `web-newkey` yang dapat diakses.
+    """
+    try:
+        jar=getattr(session,"cookie_jar",None)
+        if jar is None:
+            return
+        for domain in ("tiktok.com","www.tiktok.com",".tiktok.com","tiktokv.com",".tiktokv.com"):
+            try:
+                jar.clear_domain(domain)
+            except Exception:
+                pass
+    except Exception as e:
+        _ttdbg("purge tiktok cookies failed | err=%r",e)
+
 async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
+    os.makedirs(TMP_DIR,exist_ok=True)
     session=await get_http_session()
+    _purge_tiktok_session_cookies(session)
     title=(media.get("title") or "TikTok Video").strip()
-    cookie_header=_cookie_header(media.get("cookies"))
     video_urls=media.get("video_urls") or []
     if media.get("video_url") and media.get("video_url") not in video_urls:
         video_urls.insert(0,media.get("video_url"))
+        video_urls=_prioritize_video_urls(video_urls)
     if not video_urls:
         raise RuntimeError("TikTok direct video URLs empty")
     base_headers={
@@ -1030,8 +1069,6 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
         "Accept-Language":"en-US,en;q=0.9",
         "Connection":"keep-alive",
     }
-    if cookie_header:
-        base_headers["Cookie"]=cookie_header
     last_err=None
     for idx,video_url in enumerate(video_urls,start=1):
         out_path=f"{TMP_DIR}/{uuid.uuid4().hex}_{sanitize_filename(title)}.mp4"
@@ -1090,7 +1127,9 @@ async def _download_album_images(session,image_urls:list[str],title:str,bot,chat
     return [x for x in results if x]
 
 async def _download_direct_album(media:dict,bot,chat_id,status_msg_id)->dict:
+    os.makedirs(TMP_DIR,exist_ok=True)
     session=await get_http_session()
+    _purge_tiktok_session_cookies(session)
     title=(media.get("title") or "TikTok Slideshow").strip()
     image_urls=[u for u in (media.get("images") or []) if u]
     if not image_urls:
@@ -1106,7 +1145,9 @@ async def _download_direct_album(media:dict,bot,chat_id,status_msg_id)->dict:
     return {"items":items,"title":title,"desc":media.get("desc") or "","source":media.get("source") or "scraping","kind":"album"}
 
 async def _download_slideshow_audio(media:dict,bot,chat_id,status_msg_id)->dict:
+    os.makedirs(TMP_DIR,exist_ok=True)
     session=await get_http_session()
+    _purge_tiktok_session_cookies(session)
     title=(media.get("title") or "TikTok Slideshow Audio").strip()
     urls=[u for u in (media.get("music_urls") or []) if u]
     if media.get("music_url") and media.get("music_url") not in urls:
@@ -1300,7 +1341,9 @@ def _render_slideshow_video(image_paths:list[str], audio_path:str|None, out_path
 
 
 async def _download_direct_slideshow_video(media:dict,bot,chat_id,status_msg_id)->dict:
+    os.makedirs(TMP_DIR,exist_ok=True)
     session=await get_http_session()
+    _purge_tiktok_session_cookies(session)
     title=(media.get("title") or "TikTok Slideshow").strip()
     image_urls=[u for u in (media.get("images") or []) if u]
     if not image_urls:
