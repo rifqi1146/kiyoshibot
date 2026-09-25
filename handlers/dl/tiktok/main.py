@@ -486,7 +486,6 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
     cmd=[
         aria2,"--dir",out_dir,"--out",out_name,"--file-allocation=none","--allow-overwrite=true",
         "--auto-file-renaming=false","--continue=true",
-        "--max-file-size=2000M",
         "--summary-interval=0","--download-result=hide","--console-log-level=warn",
     ]
     for k,v in (headers or {}).items():
