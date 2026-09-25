@@ -7,8 +7,8 @@ from handlers.join import require_join_or_block
 from rag.retriever import retrieve_context
 from rag.loader import load_local_contexts
 from utils import groq_memory
-from utils.text import split_message,sanitize_ai_output
-from utils.config import COOLDOWN,GROQ_TIMEOUT,GROQ_MODEL,GROQ_BASE,GROQ_KEY
+from utils.text import split_message, sanitize_ai_output, sanitize_markdown, strip_tags_plain
+from utils.config import COOLDOWN, GROQ_TIMEOUT, GROQ_MODEL, GROQ_BASE, GROQ_KEY
 from utils.http import get_http_session
 
 log=logging.getLogger(__name__)
@@ -92,9 +92,58 @@ async def _reply_thread(bot,msg,text,parse_mode=None):
     try:
         return await bot.send_message(**kwargs)
     except Exception as e:
+        # Tag HTML tak seimbang / entity tak valid -> Telegram balas 400.
+        # Kirim ulang sebagai teks polos agar pesan tetap sampai.
+        if parse_mode and "parse" in str(e).lower():
+            log.warning("Telegram parse rejected, resend plain | chat_id=%s err=%r",msg.chat_id,e)
+            kwargs["text"]=strip_tags_plain(text)
+            kwargs["parse_mode"]=None
+            try:
+                return await bot.send_message(**kwargs)
+            except Exception as e2:
+                log.warning("Plain resend failed | chat_id=%s err=%r",msg.chat_id,e2)
+                return None
         log.warning("Groq threaded reply failed, retry without reply target | chat_id=%s thread_id=%s err=%r",msg.chat_id,thread_id,e)
         kwargs.pop("reply_to_message_id",None)
         return await bot.send_message(**kwargs)
+
+def _clean_groq_output(raw:str)->str:
+    """Bersihkan markdown mentah Groq dari sitasi browser_search & sampah unicode.
+
+    Hasilnya markdown (bukan HTML) supaya bisa dikirim sebagai Rich Message;
+    fallback HTML-nya dikerjakan di `_send_chunks` via sanitize_ai_output.
+    """
+    raw=raw or ""
+    raw=re.sub(r"【\d+†L\d+-L\d+】","",raw)
+    raw=re.sub(r"\[\d+†L\d+-L\d+\]","",raw)
+    raw=re.sub(r"[ꦀ-꧿]+","",raw)
+    return sanitize_markdown(raw)
+
+async def _send_chunks(bot,msg,chunks:list[str])->Optional[int]:
+    """Kirim hasil markdown sebagai Rich Message, fallback ke HTML sendMessage."""
+    from utils.rich_stream import send_rich_message
+    if not chunks:
+        return None
+    last_id=None
+    thread_id=getattr(msg,"message_thread_id",None)
+    for idx,chunk in enumerate(chunks):
+        try:
+            res=await send_rich_message(
+                bot,msg.chat_id,chunk,
+                message_thread_id=thread_id,
+                reply_to_message_id=msg.message_id if idx==0 else None,
+            )
+            mid=(res or {}).get("message_id") if isinstance(res,dict) else getattr(res,"message_id",None)
+            if mid:
+                last_id=mid
+                continue
+        except Exception as e:
+            log.warning("send_rich_message failed, falling back to sendMessage HTML | err=%r",e)
+        clean_html=sanitize_ai_output(chunk)
+        sent=await _reply_thread(bot,msg,clean_html,parse_mode="HTML")
+        if sent:
+            last_id=sent.message_id
+    return last_id
 
 async def build_groq_rag_prompt(user_prompt:str)->str:
     try:
@@ -107,7 +156,7 @@ async def build_groq_rag_prompt(user_prompt:str)->str:
         return f"{ctx}\n\n{user_prompt}"
     return user_prompt
 
-async def ask_groq_text(prompt:str,history:Optional[list]=None,use_search:bool=False)->str:
+async def _groq_payload(prompt:str,history:Optional[list],use_search:bool)->dict:
     rag_prompt=await build_groq_rag_prompt(prompt)
     messages=[{"role":"system","content":SYSTEM_PROMPT}]
     if history:
@@ -126,6 +175,10 @@ async def ask_groq_text(prompt:str,history:Optional[list]=None,use_search:bool=F
     if use_search:
         payload["tools"]=[{"type":"browser_search"}]
         payload["reasoning_effort"]="medium"
+    return payload
+
+async def ask_groq_text(prompt:str,history:Optional[list]=None,use_search:bool=False)->str:
+    payload=await _groq_payload(prompt,history,use_search)
     session=await get_http_session()
     async with session.post(
         f"{GROQ_BASE}/chat/completions",
@@ -148,11 +201,109 @@ async def ask_groq_text(prompt:str,history:Optional[list]=None,use_search:bool=F
     raw=data["choices"][0]["message"].get("content")
     if not raw or not raw.strip():
         raise RuntimeError("Groq response kosong")
-    raw=sanitize_ai_output(raw)
-    raw=re.sub(r"【\d+†L\d+-L\d+】","",raw)
-    raw=re.sub(r"\[\d+†L\d+-L\d+\]","",raw)
-    raw=re.sub(r"[ꦀ-꧿]+","",raw)
-    return raw.strip()
+    # Markdown mentah (bukan HTML) supaya bisa dikirim sebagai Rich Message.
+    return _clean_groq_output(raw)
+
+async def ask_groq_stream(prompt:str,history:Optional[list]=None,use_search:bool=False):
+    """Async generator delta teks Groq (SSE OpenAI-compatible).
+
+    Hanya `delta.content` yang di-yield; kolom `reasoning` (model reasoning
+    seperti gpt-oss) sengaja dilewatkan agar tidak bocor ke draft Telegram.
+    """
+    payload=await _groq_payload(prompt,history,use_search)
+    payload["stream"]=True
+    session=await get_http_session()
+    async with session.post(
+        f"{GROQ_BASE}/chat/completions",
+        headers={"Authorization":f"Bearer {GROQ_KEY}","Content-Type":"application/json"},
+        json=payload,
+        timeout=aiohttp.ClientTimeout(total=GROQ_TIMEOUT),
+    ) as resp:
+        if resp.status!=200:
+            body=await resp.text()
+            raise RuntimeError(f"Groq HTTP {resp.status}: {body[:300]}")
+        buffer=b""
+        async for raw in resp.content.iter_any():
+            buffer+=raw
+            while b"\n" in buffer:
+                line,buffer=buffer.split(b"\n",1)
+                line=line.strip()
+                if not line.startswith(b"data:"):
+                    continue
+                data=line[5:].strip()
+                if not data or data==b"[DONE]":
+                    continue
+                try:
+                    obj=json.loads(data.decode("utf-8"))
+                except Exception:
+                    continue
+                choices=obj.get("choices") or []
+                if not choices:
+                    continue
+                delta=choices[0].get("delta") or {}
+                text=delta.get("content")
+                if text:
+                    yield text
+
+async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
+    """Streaming Rich Message draft untuk DM; grup pakai jalur non-streaming."""
+    from utils.rich_stream import stream_to_draft
+    bot=context.bot
+    draft_id=msg.message_id
+    gen_stop=asyncio.Event()
+    app=context.application
+    stop_key=f"ask_draft_stop:{msg.chat_id}:{draft_id}"
+    if app:
+        app.bot_data[stop_key]=gen_stop
+
+    async def gen():
+        got=False
+        async for chunk in ask_groq_stream(prompt=prompt,history=history,use_search=use_search):
+            got=True
+            yield chunk
+        if not got:
+            yield "Model tidak memberikan jawaban."
+
+    def save(clean_md,last_id):
+        history.extend([
+            {"role":"user","content":prompt},
+            {"role":"assistant","content":clean_md},
+        ])
+        return groq_memory.set_history(user_id,history,last_id)
+
+    try:
+        raw=await stream_to_draft(
+            bot,msg.chat_id,draft_id,gen(),
+            message_thread_id=getattr(msg,"message_thread_id",None),
+            stop_event=gen_stop,
+        )
+        if gen_stop.is_set():
+            clean_md=_clean_groq_output(raw) or "⏹ Jawaban dibatalkan."
+            last_id=await _send_chunks(bot,msg,[clean_md])
+            await save(clean_md,last_id)
+            return
+        clean_md=_clean_groq_output(raw) or "Model tidak memberikan jawaban."
+        chunks=split_message(clean_md,4000)
+        last_id=await _send_chunks(bot,msg,chunks)
+        await save(clean_md,last_id)
+    except RuntimeError as e:
+        if "tidak didukung" not in str(e):
+            raise
+        # Server/klien tak punya draft streaming -> fallback non-streaming.
+        stop=asyncio.Event()
+        typing=asyncio.create_task(_typing_loop(bot,msg.chat_id,stop,None))
+        try:
+            raw2=await ask_groq_text(prompt=prompt,history=history,use_search=use_search)
+            clean_md=_clean_groq_output(raw2) or "Model tidak memberikan jawaban."
+            chunks=split_message(clean_md,4000)
+            await _stop_typing_task(stop,typing)
+            last_id=await _send_chunks(bot,msg,chunks)
+            await save(clean_md,last_id)
+        finally:
+            await _stop_typing_task(stop,typing)
+    finally:
+        if app:
+            app.bot_data.pop(stop_key,None)
 
 async def groq_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
@@ -189,21 +340,24 @@ async def groq_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
     try:
         is_forum = getattr(msg.chat, "is_forum", False)
         thread_id = msg.message_thread_id if is_forum else None
+        history=[] if fresh_session else await groq_memory.get_history(user_id)
+        is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
+        if is_dm:
+            await _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search)
+            return
         stop=asyncio.Event()
         typing=asyncio.create_task(_typing_loop(context.bot,msg.chat_id,stop,thread_id))
-        history=[] if fresh_session else await groq_memory.get_history(user_id)
         raw=await ask_groq_text(prompt=prompt,history=history,use_search=use_search)
+        clean_md=_clean_groq_output(raw) or "Model tidak memberikan jawaban."
+        chunks=split_message(clean_md,4000)
         await _stop_typing_task(stop,typing)
-        chunks=split_message(raw,4000)
-        last_sent=None
-        for chunk in chunks:
-            last_sent=await _reply_thread(context.bot,msg,chunk,parse_mode="HTML")
-        if last_sent:
+        last_sent_id=await _send_chunks(context.bot,msg,chunks)
+        if last_sent_id:
             history.extend([
                 {"role":"user","content":prompt},
-                {"role":"assistant","content":raw},
+                {"role":"assistant","content":clean_md},
             ])
-            await groq_memory.set_history(user_id,history,last_sent.message_id)
+            await groq_memory.set_history(user_id,history,last_sent_id)
     except Exception as e:
         await _stop_typing_task(stop,typing)
         log.warning("Groq request failed | user_id=%s err=%r",user_id,e)

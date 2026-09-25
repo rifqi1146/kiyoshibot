@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from telegram import Bot
 
 DEFAULT_DRAFT_INTERVAL = 0.8
-DEFAULT_THINKING_HINT = "Sedang mikir..."
+DEFAULT_THINKING_HINT = "Thinking..."
 MAX_DRAFT_CHARS = 30000
 
 

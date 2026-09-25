@@ -6,13 +6,14 @@ import html
 import logging
 import inspect
 import aiohttp
+import json
 
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from handlers.gsearch import google_search
-from utils.text import split_message, sanitize_ai_output
+from utils.text import split_message, sanitize_ai_output, sanitize_markdown, strip_tags_plain
 from .caca_prompt import PERSONAS
 from utils.http import get_http_session
 from database import caca_db
@@ -21,7 +22,7 @@ from utils import caca_memory
 logger = logging.getLogger(__name__)
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = os.getenv("CACA_GROQ_MODEL", "qwen/qwen3.6-27b").strip()
+GROQ_MODEL = os.getenv("CACA_GROQ_MODEL", "qwen/qwen3.8-27b").strip()
 GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT", "60"))
 _EMOS = ["🌸", "💖", "🧸", "🎀", "🌟", "💫"]
 
@@ -101,6 +102,15 @@ async def _reply_thread(bot, msg, text, parse_mode=None):
     try:
         return await bot.send_message(**kwargs)
     except Exception as e:
+        if parse_mode and "parse" in str(e).lower():
+            logger.warning("Telegram parse rejected, resend plain | chat_id=%s err=%r", msg.chat_id, e)
+            kwargs["text"] = strip_tags_plain(text)
+            kwargs["parse_mode"] = None
+            try:
+                return await bot.send_message(**kwargs)
+            except Exception as e2:
+                logger.warning("Plain resend failed | chat_id=%s err=%r", msg.chat_id, e2)
+                return None
         logger.warning(
             "Caca reply failed, retry without reply target | chat_id=%s thread_id=%s err=%r",
             msg.chat_id,
@@ -121,27 +131,37 @@ async def _reply_thread(bot, msg, text, parse_mode=None):
             return await bot.send_message(**kwargs)
 
 
-def _normalize_caca_output(text: str) -> str:
-    text = html.unescape(text or "")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"<[^>\n]+>", " ", text)
-    text = re.sub(r"\b/?(?:b|i|u|s|code|pre|strong|em|tg-spoiler)\b", " ", text, flags=re.I)
-    text = re.sub(r"&[a-zA-Z#0-9]+;", " ", text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s*\n+", "\n", text)
-    lines = []
-    for line in text.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        line = re.sub(r"\s+", " ", line)
-        if lines and len(lines[-1]) <= 35 and not re.search(r"[.!?:]$", lines[-1]):
-            lines[-1] += f" {line}"
-        else:
-            lines.append(line)
-    text = "\n".join(lines)
-    text = re.sub(r"\s{2,}", " ", text)
-    return text.strip()
+def _clean_caca_output(raw: str) -> str:
+    """Bersihkan output Caca dari leak thinking internal dan rapikan markdown."""
+    raw = _strip_thinking_leak(raw or "")
+    return sanitize_markdown(raw)
+
+
+async def _send_chunks(bot, msg, chunks: list[str]) -> int | None:
+    """Kirim hasil markdown sebagai Rich Message, fallback ke HTML sendMessage."""
+    from utils.rich_stream import send_rich_message
+    if not chunks:
+        return None
+    last_id = None
+    thread_id = _get_thread_id(msg)
+    for idx, chunk in enumerate(chunks):
+        try:
+            res = await send_rich_message(
+                bot, msg.chat_id, chunk,
+                message_thread_id=thread_id,
+                reply_to_message_id=msg.message_id if idx == 0 else None,
+            )
+            mid = (res or {}).get("message_id") if isinstance(res, dict) else getattr(res, "message_id", None)
+            if mid:
+                last_id = mid
+                continue
+        except Exception as e:
+            logger.warning("Caca send_rich_message failed, falling back to sendMessage HTML | err=%r", e)
+        clean_html = sanitize_ai_output(chunk)
+        sent = await _reply_thread(bot, msg, clean_html, parse_mode="HTML")
+        if sent:
+            last_id = sent.message_id
+    return last_id
 
 
 def _strip_thinking_leak(text: str) -> str:
@@ -265,6 +285,147 @@ async def _groq_chat(messages: list[dict]) -> str:
     raise RuntimeError("Semua API key Groq gagal: " + " | ".join(errors[-3:]))
 
 
+async def _groq_chat_stream(messages: list[dict]):
+    """Async generator delta streaming Caca via Groq (SSE OpenAI format)."""
+    keys = _groq_api_keys()
+    if not keys:
+        raise RuntimeError("GROQ_API_KEY belum disetel di environment.")
+
+    session = await _shared_http_session()
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.9,
+        "max_completion_tokens": 1024,
+        "top_p": 0.95,
+        "reasoning_effort": "none",
+        "stream": True,
+    }
+
+    errors = []
+    for idx, key in enumerate(keys, start=1):
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with session.post(
+                GROQ_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=GROQ_TIMEOUT),
+            ) as r:
+                if r.status != 200:
+                    err_msg = ""
+                    try:
+                        err_data = await r.json(content_type=None)
+                        if isinstance(err_data, dict):
+                            err_msg = (err_data.get("error") or {}).get("message") or str(err_data)
+                    except Exception:
+                        err_msg = await r.text()
+                    raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
+
+                buffer = b""
+                got_any = False
+                async for chunk_bytes in r.content.iter_any():
+                    buffer += chunk_bytes
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        line = line.strip()
+                        if not line.startswith(b"data:"):
+                            continue
+                        data = line[5:].strip()
+                        if not data or data == b"[DONE]":
+                            continue
+                        try:
+                            obj = json.loads(data.decode("utf-8"))
+                        except Exception:
+                            continue
+                        choices = obj.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        content = delta.get("content")
+                        if content:
+                            got_any = True
+                            yield content
+                if got_any:
+                    logger.info("Groq stream success | key_index=%s model=%s", idx, GROQ_MODEL)
+                    return
+                raise RuntimeError("Response stream kosong dari Groq.")
+        except Exception as e:
+            err = str(e)
+            errors.append(f"key#{idx}: {err}")
+            logger.warning("Groq stream failed | key_index=%s err=%s", idx, err)
+            continue
+
+    raise RuntimeError("Semua API key Groq stream gagal: " + " | ".join(errors[-3:]))
+
+
+async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages):
+    """Streaming Rich Message draft untuk DM Caca; grup pakai jalur non-streaming."""
+    from utils.rich_stream import stream_to_draft
+    bot = context.bot
+    draft_id = msg.message_id
+    gen_stop = asyncio.Event()
+    app = context.application
+    stop_key = f"ask_draft_stop:{msg.chat_id}:{draft_id}"
+    if app:
+        app.bot_data[stop_key] = gen_stop
+
+    async def gen():
+        got = False
+        async for chunk in _groq_chat_stream(messages):
+            got = True
+            yield chunk
+        if not got:
+            yield "Model tidak memberikan jawaban."
+
+    async def save(clean_md, last_id):
+        history.extend([
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": clean_md},
+        ])
+        await caca_memory.set_history(user_id, history)
+        if last_id:
+            await caca_memory.set_last_message_id(user_id, last_id)
+
+    try:
+        raw = await stream_to_draft(
+            bot, msg.chat_id, draft_id, gen(),
+            message_thread_id=_get_thread_id(msg),
+            stop_event=gen_stop,
+        )
+        if gen_stop.is_set():
+            clean_md = _clean_caca_output(raw) or "⏹ Jawaban dibatalkan."
+            last_id = await _send_chunks(bot, msg, [clean_md])
+            await save(clean_md, last_id)
+            return
+        clean_md = _clean_caca_output(raw) or "Model tidak memberikan jawaban."
+        chunks = split_message(clean_md, 4000)
+        last_id = await _send_chunks(bot, msg, chunks)
+        await save(clean_md, last_id)
+    except RuntimeError as e:
+        if "tidak didukung" not in str(e):
+            raise
+        # Rich draft tidak didukung di chat ini -> fallback non-streaming
+        stop = asyncio.Event()
+        thread_id = _get_thread_id(msg)
+        typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, message_thread_id=thread_id))
+        try:
+            raw2 = await _groq_chat(messages)
+            clean_md = _clean_caca_output(raw2) or "Model tidak memberikan jawaban."
+            chunks = split_message(clean_md, 4000)
+            await _stop_typing_task(stop, typing)
+            last_id = await _send_chunks(bot, msg, chunks)
+            await save(clean_md, last_id)
+        finally:
+            await _stop_typing_task(stop, typing)
+    finally:
+        if app:
+            app.bot_data.pop(stop_key, None)
+
+
 async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update, context):
         return
@@ -312,16 +473,6 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not prompt:
             return
 
-        logger.debug(
-            "Caca typing start | chat_id=%s message_id=%s has_reply=%s",
-            msg.chat_id,
-            msg.message_id,
-            bool(msg.reply_to_message),
-        )
-        stop = asyncio.Event()
-        thread_id = _get_thread_id(msg)
-        typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, message_thread_id=thread_id))
-
         search_context = ""
         if use_search:
             try:
@@ -348,26 +499,32 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + [{"role": "user", "content": user_prompt}]
         )
 
+        is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
+        if is_dm:
+            await _caca_stream_dm(update, context, msg, user_id, history, prompt, messages)
+            return
+
+        # Jalur grup: non-streaming Rich Message
+        stop = asyncio.Event()
+        thread_id = _get_thread_id(msg)
+        typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, message_thread_id=thread_id))
         raw = await _groq_chat(messages)
-        cleaned = _normalize_caca_output(sanitize_ai_output(_strip_thinking_leak(raw)))
-
-        history += [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": cleaned},
-        ]
-        await caca_memory.set_history(user_id, history)
+        clean_md = _clean_caca_output(raw) or "Model tidak memberikan jawaban."
+        chunks = split_message(clean_md, 4000)
         await _stop_typing_task(stop, typing)
-
-        chunks = split_message(cleaned, 4000)
-        sent = None
-        for chunk in chunks:
-            sent = await _reply_thread(context.bot, msg, chunk, parse_mode="HTML")
-        if sent:
-            await caca_memory.set_last_message_id(user_id, sent.message_id)
+        last_id = await _send_chunks(context.bot, msg, chunks)
+        history.extend([
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": clean_md},
+        ])
+        await caca_memory.set_history(user_id, history)
+        if last_id:
+            await caca_memory.set_last_message_id(user_id, last_id)
 
     except Exception as e:
         await _stop_typing_task(stop, typing)
         await _reply_thread(context.bot, msg, f"{em} Error: {html.escape(str(e))}", parse_mode="HTML")
+
 
 
 def init_background():
