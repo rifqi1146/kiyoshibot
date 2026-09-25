@@ -6,30 +6,29 @@ from utils.rich_stream import send_rich_message, edit_rich_message, is_rich_mess
 from utils.text import sanitize_ai_output
 
 
-def _is_dm(chat) -> bool:
-    return getattr(chat, "type", None) == "private" or getattr(chat, "id", 0) > 0
-
-
 async def _send_help(bot, chat, text_md: str, keyboard, reply_to=None):
-    """Kirim help: DM pakai rich message, grup fallback ke sendMessage HTML."""
-    if _is_dm(chat):
-        try:
-            return await send_rich_message(
-                bot, chat.id, text_md, reply_markup=keyboard,
-                reply_to_message_id=getattr(reply_to, "message_id", None),
-            )
-        except Exception:
-            pass
+    """Kirim help: coba rich message dulu (DM & supergroup), fallback HTML."""
+    try:
+        return await send_rich_message(
+            bot, chat.id, text_md, reply_markup=keyboard,
+            message_thread_id=getattr(reply_to, "message_thread_id", None),
+            reply_to_message_id=getattr(reply_to, "message_id", None),
+        )
+    except Exception:
+        pass
     kwargs = {"chat_id": chat.id, "text": sanitize_ai_output(text_md), "reply_markup": keyboard}
     if reply_to is not None:
         kwargs["reply_to_message_id"] = reply_to.message_id
+        tid = getattr(reply_to, "message_thread_id", None)
+        if tid:
+            kwargs["message_thread_id"] = tid
     return await bot.send_message(parse_mode="HTML", **kwargs)
 
 
 async def _edit_help(q, text_md: str, keyboard):
-    """Update menu: pertahankan rich message di DM, fallback HTML di grup."""
+    """Update menu: pertahankan rich message, fallback HTML kalau tak didukung."""
     msg = q.message
-    if _is_dm(msg.chat) and is_rich_message(msg):
+    if is_rich_message(msg):
         try:
             return await edit_rich_message(
                 q.get_bot(), msg.chat_id, msg.message_id, text_md,

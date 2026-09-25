@@ -14,29 +14,24 @@ from utils.rich_stream import send_rich_message, edit_rich_message, is_rich_mess
 from utils.text import sanitize_ai_output
 
 
-def _is_dm(chat) -> bool:
-    return getattr(chat, "type", None) == "private" or getattr(chat, "id", 0) > 0
-
-
 async def _send_settings(message, text_md: str, keyboard):
-    """Kirim settings: DM pakai rich message, grup fallback HTML."""
-    if _is_dm(message.chat):
-        try:
-            return await send_rich_message(
-                message.get_bot(), message.chat_id, text_md,
-                message_thread_id=getattr(message, "message_thread_id", None),
-                reply_markup=keyboard,
-            )
-        except Exception:
-            pass
+    """Kirim settings: coba rich message dulu (DM & supergroup), fallback HTML."""
+    try:
+        return await send_rich_message(
+            message.get_bot(), message.chat_id, text_md,
+            message_thread_id=getattr(message, "message_thread_id", None),
+            reply_markup=keyboard,
+        )
+    except Exception:
+        pass
     return await message.reply_text(
         sanitize_ai_output(text_md), parse_mode="HTML", reply_markup=keyboard
     )
 
 
 async def _edit_settings(message, text_md: str, keyboard):
-    """Edit settings: pertahankan rich message di DM, fallback HTML."""
-    if _is_dm(message.chat) and is_rich_message(message):
+    """Edit settings: pertahankan rich message, fallback HTML kalau tak didukung."""
+    if is_rich_message(message):
         try:
             return await edit_rich_message(
                 message.get_bot(), message.chat_id, message.message_id,

@@ -446,6 +446,101 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
             for fh,name in handles:
                 _safe_close(fh,f"album media {name}",chat_id)
 
+def _rich_slideshow_label(fmt_key: str, source: str) -> str:
+    """Label platform untuk caption slideshow (bukan hardcode TikTok)."""
+    key = (fmt_key or "").strip().lower()
+    src = (source or "").strip().lower()
+    if key in ("slideshow_images", "slideshow_video") or src == "tiktok":
+        return "TikTok Slideshow"
+    if src in ("instagram", "ig"):
+        return "Instagram"
+    if src in ("x", "twitter"):
+        return "X / Twitter"
+    if src == "threads":
+        return "Threads"
+    if src == "reddit":
+        return "Reddit"
+    if src == "pinterest":
+        return "Pinterest"
+    if src == "facebook":
+        return "Facebook"
+    if src in ("pixiv", "gallery-dl", "gallerydl"):
+        return "Pixiv"
+    if src:
+        return src.capitalize()
+    return "Media"
+
+
+async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key: str, message_thread_id=None) -> bool:
+    """Kirim album foto sebagai Rich Slideshow (swipe horizontal).
+
+    Digunakan untuk SEMUA platform (TikTok, Instagram, X/Twitter, Threads,
+    Reddit, Pinterest, dst) supaya tampilan album konsisten.
+
+    Return True jika berhasil SEMUA chunk, False jika gagal/harus fallback
+    ke sendMediaGroup (fallback menangani seluruh album dari awal).
+    """
+    items = result.get("items") or []
+    if len(items) < 2:
+        return False
+    # Cek apakah semua item berupa photo (slideshow tidak mendukung video)
+    paths: list[str] = []
+    for it in items:
+        p = it.get("path")
+        if not p or not os.path.exists(p):
+            return False
+        if detect_media_type(p) != "photo":
+            return False
+        paths.append(p)
+
+    from utils.rich_stream import send_rich_slideshow
+    title = (result.get("title") or "").strip()
+    source = str(result.get("source") or "").strip()
+    bot_name = await _get_bot_name(bot)
+    credit = f"🪄 Powered by {bot_name or 'Bot'}"
+    caption = title or _rich_slideshow_label(fmt_key, source)
+
+    # Telegram sendMediaGroup dipecah per 10; slideshow juga dipecah agar
+    # jumlah foto besar tidak ditolak server.
+    chunks = [paths[i:i + _ALBUM_CHUNK_SIZE] for i in range(0, len(paths), _ALBUM_CHUNK_SIZE)]
+    for idx, chunk in enumerate(chunks):
+        try:
+            await send_rich_slideshow(
+                bot=bot,
+                chat_id=chat_id,
+                photos=chunk,
+                caption=caption,
+                credit=credit,
+                message_thread_id=message_thread_id,
+                reply_to_message_id=reply_to if idx == 0 else None,
+            )
+        except Exception as e:
+            log.warning(
+                "Rich slideshow failed | chat_id=%s chunk=%s/%s err=%r",
+                chat_id, idx + 1, len(chunks), e,
+            )
+            if idx == 0:
+                # Belum ada yang terkirim -> fallback penuh ke sendMediaGroup.
+                return False
+            # Sebagian sudah terkirim -> kirim SISA item via media group
+            # agar tidak menggandakan foto chunk yang sudah sukses.
+            await _send_media_group_result(
+                bot=bot,
+                chat_id=chat_id,
+                reply_to=reply_to,
+                result={"items": items[idx * _ALBUM_CHUNK_SIZE:], "title": title},
+                message_thread_id=message_thread_id,
+            )
+            return True
+        if idx < len(chunks) - 1 and _ALBUM_CHUNK_COOLDOWN > 0:
+            await asyncio.sleep(_ALBUM_CHUNK_COOLDOWN)
+    log.info(
+        "Rich slideshow sent successfully | chat_id=%s count=%s chunks=%s source=%s",
+        chat_id, len(paths), len(chunks), source or fmt_key,
+    )
+    return True
+
+
 async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,message_thread_id=None):
     if isinstance(path,dict) and path.get("items"):
         items=path.get("items") or []
@@ -456,7 +551,13 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             first_type=detect_media_type(first_path)
         await _set_uploading_status(bot,chat_id,status_msg_id,"album" if len(items)>1 else ("video" if first_type=="video" else "photo"))
         try:
-            await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=path,message_thread_id=message_thread_id)
+            # Coba kirim via Rich Slideshow jika semua item adalah foto
+            sent = await _try_send_rich_slideshow(
+                bot=bot, chat_id=chat_id, reply_to=reply_to,
+                result=path, fmt_key=fmt_key, message_thread_id=message_thread_id,
+            )
+            if not sent:
+                await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=path,message_thread_id=message_thread_id)
         finally:
             await _cleanup_album_files(items)
         return
