@@ -1,9 +1,11 @@
 import io
 import os
 import aiohttp
+import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+log = logging.getLogger(__name__)
 QUOTE_API_URI = os.getenv("QUOTE_API_URI")
 
 
@@ -108,6 +110,13 @@ def _pick_color(arg: str | None) -> str:
     if arg in color_map:
         return color_map[arg]
 
+    # Support gradient: "#111/#222"
+    if "/" in arg and not arg.startswith("//"):
+        parts = arg.split("/")
+        if len(parts) == 2 and all(p.startswith("#") for p in parts):
+            return arg
+
+    # Support hex color
     if arg.startswith("#") and len(arg) in (4, 7):
         return arg
 
@@ -131,26 +140,98 @@ def _build_from_payload(sender):
             "username": None,
         }
 
-    if hasattr(sender, "title"):
-        return {
-            "id": int(getattr(sender, "id", 0) or 0),
-            "first_name": getattr(sender, "title", None),
-            "last_name": "",
-            "username": getattr(sender, "username", None),
-        }
-
-    return {
+    payload = {
         "id": int(getattr(sender, "id", 0) or 0),
-        "first_name": getattr(sender, "first_name", None),
-        "last_name": getattr(sender, "last_name", None),
         "username": getattr(sender, "username", None),
     }
+
+    # Handle channel/chat vs user
+    if hasattr(sender, "title"):
+        payload["first_name"] = getattr(sender, "title", None)
+        payload["last_name"] = ""
+    else:
+        payload["first_name"] = getattr(sender, "first_name", None)
+        payload["last_name"] = getattr(sender, "last_name", None)
+
+    # Avatar from profile photos
+    photo = getattr(sender, "photo", None)
+    if photo:
+        big_file_id = getattr(photo, "big_file_id", None)
+        if big_file_id:
+            payload["photo"] = {"big_file_id": big_file_id}
+
+    # Emoji status (custom emoji)
+    emoji_status = getattr(sender, "emoji_status", None)
+    if emoji_status:
+        custom_emoji_id = getattr(emoji_status, "custom_emoji_id", None)
+        if custom_emoji_id:
+            payload["emoji_status"] = custom_emoji_id
+
+    return payload
 
 
 def _get_message_text_and_entities(message):
     text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
     entities = message.entities if getattr(message, "text", None) else message.caption_entities
     return text, entities
+
+
+def _extract_media(message):
+    """Extract media (photo, sticker, video) from message."""
+    # Photo
+    if getattr(message, "photo", None):
+        photos = message.photo
+        if photos:
+            largest = max(photos, key=lambda p: p.width * p.height)
+            return {
+                "file_id": largest.file_id,
+                "width": largest.width,
+                "height": largest.height,
+            }
+
+    # Sticker
+    if getattr(message, "sticker", None):
+        sticker = message.sticker
+        return {
+            "file_id": sticker.file_id,
+            "width": getattr(sticker, "width", 512),
+            "height": getattr(sticker, "height", 512),
+            "is_animated": getattr(sticker, "is_animated", False),
+            "is_video": getattr(sticker, "is_video", False),
+        }
+
+    # Document as image
+    if getattr(message, "document", None):
+        doc = message.document
+        mime = getattr(doc, "mime_type", "")
+        if mime.startswith("image/"):
+            return {
+                "file_id": doc.file_id,
+            }
+
+    return None
+
+
+def _extract_voice(message):
+    """Extract voice waveform if available."""
+    voice = getattr(message, "voice", None)
+    if not voice:
+        return None
+
+    waveform_bytes = getattr(voice, "waveform", None)
+    if not waveform_bytes:
+        return None
+
+    # Telegram voice waveform is 5-bit encoded, 100 samples
+    # Convert bytes to list of integers
+    try:
+        waveform = list(waveform_bytes)
+        if waveform:
+            return {"waveform": waveform}
+    except Exception as e:
+        log.warning(f"Failed to extract waveform: {e}")
+
+    return None
 
 
 def _build_reply_payload(message):
@@ -215,52 +296,96 @@ def _parse_args(args: list[str]):
             include_reply = True
             continue
 
+        # Color or gradient
         color_arg = arg
 
     return count, include_reply, color_arg
 
 
-async def _generate_quote_sticker(session, bot_token: str, payload: dict):
+async def _generate_quote(session, bot_token: str, payload: dict, output_format: str):
+    """Generate quote via quote-api.
+    
+    Args:
+        output_format: 'webp' for sticker, 'png' for image
+    """
+    endpoint = f"{QUOTE_API_URI.rstrip('/')}/generate.{output_format}?botToken={bot_token}"
+    
     async with session.post(
-        f"{QUOTE_API_URI.rstrip('/')}/generate.webp?botToken={bot_token}",
+        endpoint,
         json=payload,
-        timeout=aiohttp.ClientTimeout(total=30),
+        timeout=aiohttp.ClientTimeout(total=45),
     ) as resp:
         if resp.status != 200:
             err = await resp.text()
-            raise RuntimeError(f"{resp.status} {err[:300]}")
+            raise RuntimeError(f"Quote API {resp.status}: {err[:300]}")
         return await resp.read()
 
 
-async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_type: str, output_format: str):
+    """Base handler for all quote commands.
+    
+    Args:
+        quote_type: 'quote' (sticker), 'image' (wallpaper), 'stories' (9:16)
+        output_format: 'webp' or 'png'
+    """
     msg = update.effective_message
     if not msg:
         return
 
     if not QUOTE_API_URI:
-        return await msg.reply_text("QUOTE_API_URI belum diset.")
+        return await msg.reply_text("⚠️ Quote API belum dikonfigurasi.")
 
     target = msg.reply_to_message
     if not target:
-        return await msg.reply_text("Reply pesan untuk membuat sticker.")
+        return await msg.reply_text("❌ Reply ke pesan yang ingin dijadikan quote.")
 
     count, include_reply, color_arg = _parse_args(context.args or [])
     background_color = _pick_color(color_arg)
 
     messages = _collect_reply_chain(target, count)
     if not messages:
-        return await msg.reply_text("Pesan tidak ditemukan.")
+        return await msg.reply_text("❌ Pesan tidak ditemukan.")
 
-    valid_messages = []
+    # Build payload messages
+    api_messages = []
     for item in messages:
         text, entities = _get_message_text_and_entities(item)
-        if text:
-            valid_messages.append((item, text, entities))
+        sender = _get_sender_obj(item)
+        from_payload = _build_from_payload(sender)
 
+        msg_payload = {
+            "chatId": int(from_payload["id"] or 0),
+            "avatar": True,
+            "from": from_payload,
+            "text": text or "",
+            "entities": _entities_to_quote(entities),
+        }
+
+        # Add reply context if requested
+        if include_reply:
+            reply_data = _build_reply_payload(item)
+            if reply_data:
+                msg_payload["replyMessage"] = reply_data
+
+        # Add media (photo/sticker)
+        media = _extract_media(item)
+        if media:
+            msg_payload["media"] = media
+            # Sticker type
+            if "is_animated" in media or "is_video" in media:
+                msg_payload["mediaType"] = "sticker"
+
+        # Add voice waveform
+        voice = _extract_voice(item)
+        if voice:
+            msg_payload["voice"] = voice
+
+        api_messages.append(msg_payload)
+
+    # Filter empty messages
+    valid_messages = [m for m in api_messages if m.get("text") or m.get("media") or m.get("voice")]
     if not valid_messages:
-        return await msg.reply_text("Pesan yang dipilih tidak punya teks.")
-
-    wait = await msg.reply_text("Sedang membuat sticker...")
+        return await msg.reply_text("❌ Tidak ada konten yang bisa dijadikan quote.")
 
     kwargs = {}
     if getattr(msg, "message_thread_id", None):
@@ -268,43 +393,55 @@ async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with aiohttp.ClientSession() as session:
-            for idx, (item, text, entities) in enumerate(valid_messages, start=1):
-                sender = _get_sender_obj(item)
-                from_payload = _build_from_payload(sender)
+            payload = {
+                "type": quote_type,
+                "format": output_format,
+                "backgroundColor": background_color,
+                "width": 512,
+                "height": 768,
+                "scale": 2,
+                "emojiBrand": "apple",
+                "messages": valid_messages,
+            }
 
-                payload = {
-                    "type": "quote",
-                    "format": "webp",
-                    "backgroundColor": background_color,
-                    "width": 512,
-                    "height": 768,
-                    "scale": 2,
-                    "emojiBrand": "apple",
-                    "messages": [
-                        {
-                            "chatId": int(from_payload["id"] or 0),
-                            "avatar": True,
-                            "from": from_payload,
-                            "text": text,
-                            "entities": _entities_to_quote(entities),
-                            "replyMessage": _build_reply_payload(item) if include_reply else {},
-                        }
-                    ],
-                }
+            image_bytes = await _generate_quote(session, context.bot.token, payload, output_format)
 
-                image_bytes = await _generate_quote_sticker(session, context.bot.token, payload)
-
+            if quote_type == "quote":
+                # Send as sticker
                 sticker = io.BytesIO(image_bytes)
-                sticker.name = f"quote_{idx}.webp"
-
+                sticker.name = f"quote.{output_format}"
                 await context.bot.send_sticker(
                     chat_id=msg.chat_id,
                     sticker=sticker,
                     reply_to_message_id=target.message_id,
                     **kwargs,
                 )
-
-        await wait.delete()
+            else:
+                # Send as photo (image/stories)
+                photo = io.BytesIO(image_bytes)
+                photo.name = f"quote.{output_format}"
+                await context.bot.send_photo(
+                    chat_id=msg.chat_id,
+                    photo=photo,
+                    reply_to_message_id=target.message_id,
+                    **kwargs,
+                )
 
     except Exception as e:
-        await wait.edit_text(f"Gagal membuat sticker: {e}")
+        log.error(f"Quote generation failed: {e}", exc_info=True)
+        await msg.reply_text(f"❌ Gagal membuat quote: {e}")
+
+
+async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate quote sticker (webp)."""
+    await _quote_base(update, context, quote_type="quote", output_format="webp")
+
+
+async def qi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate quote image with wallpaper (png)."""
+    await _quote_base(update, context, quote_type="image", output_format="png")
+
+
+async def qs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate quote for stories (720x1280 png)."""
+    await _quote_base(update, context, quote_type="stories", output_format="png")

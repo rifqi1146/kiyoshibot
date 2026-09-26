@@ -29,7 +29,7 @@ from handlers.dl.tiktok.livetiktok import recordlive_cmd, stoprecord_cmd, status
 from handlers.premium import premium_cmd
 from handlers.quiz import quiz_cmd
 from handlers.quoteanime import quoteanime_cmd
-from handlers.quotly import q_cmd
+from handlers.quotly import q_cmd, qi_cmd, qs_cmd
 from handlers.reload import reload_cmd
 from handlers.reminder import reminder_cmd
 from handlers.resi import resi_cmd
@@ -131,6 +131,8 @@ COMMAND_HANDLERS = [
     ("premium", premium_cmd, False),
     ("promote", promote_cmd, False),
     ("q", q_cmd, False),
+    ("qi", qi_cmd, False),
+    ("qs", qs_cmd, False),
     ("quiz", quiz_cmd, False),
     ("quoteanime", quoteanime_cmd, False),
     ("reload", reload_cmd, False),
