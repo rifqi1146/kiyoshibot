@@ -14,7 +14,7 @@ from .utils import detect_media_type,FileSizeLimitExceeded
 from .stages import stage
 from .ytdlp import ytdlp_download
 from .instagram.main import is_instagram_url,instagram_api_download
-from .youtube.main import is_youtube_url
+from .youtube.main import is_youtube_url, is_youtube_post_url, download_youtube_post
 from .facebook.main import is_facebook_url,facebook_download
 from .threads.main import is_threads_url,threads_download
 from .twitter.main import is_x_url,twitter_download
@@ -687,6 +687,11 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
             )
         except Exception as e:
             raise RuntimeError(f"Gallery-dl Pixiv download failed: {e}")
+    if is_youtube_post_url(raw_url):
+        t0=time.monotonic()
+        result=await download_youtube_post(raw_url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id)
+        stage("scrape+download:youtube_post",t0,job=raw_url)
+        return result
     if is_youtube_url(raw_url):
         if (engine or "").strip().lower() not in ("","ytdlp"):
             log.warning("Unsupported YouTube engine ignored | url=%s engine=%s",raw_url,engine)

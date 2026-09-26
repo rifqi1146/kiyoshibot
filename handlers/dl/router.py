@@ -22,7 +22,7 @@ from .tiktok.main import is_tiktok,tiktok_download
 from .service import download_non_tiktok,send_downloaded_media
 from database.user_settings_db import get_user_settings
 from .remux import prepare_download_result_for_send
-from .youtube.main import is_youtube_url
+from .youtube.main import is_youtube_url, is_youtube_shorts_url, is_youtube_post_url
 
 log=logging.getLogger(__name__)
 os.makedirs(TMP_DIR,exist_ok=True)
@@ -265,6 +265,8 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
 
 async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id:int,status_ready:bool=False):
     url=data["url"]
+    if is_youtube_shorts_url(url):
+        log.info("YouTube Shorts detected: skipping resolution picker, downloading best quality | url=%s", url)
     if choice=="video" and supports_resolution_picker(url):
         DL_CACHE[dl_id]["fmt_key"]="video"
         if supports_ytdlp_resolution(url):
@@ -540,6 +542,11 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                     known_size=known_size,
                 )
                 stage("download",t_dl,job=raw_url)
+        if isinstance(path,dict) and path.get("handled"):
+            log.info("Download already handled (no media to send) | url=%s",raw_url)
+            if status_msg_id:
+                await _safe_delete_message(bot,chat_id,status_msg_id,"download status")
+            return
         prepare_started=time.monotonic()
         path=await prepare_download_result_for_send(path,fmt_key=fmt_key)
         stage("processing",prepare_started,job=raw_url)
@@ -621,7 +628,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     settings=get_user_settings(user_id)
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
     
-    is_yt = is_youtube_url(url)
+    is_yt = is_youtube_url(url) and not is_youtube_shorts_url(url)
     silent_mode = bool(settings.get("silent_download")) and auto_choice == "video" and not is_yt
     
     if auto_choice in ("video","mp3"):

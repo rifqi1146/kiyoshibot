@@ -1,4 +1,5 @@
 from urllib.parse import urlparse
+from .community import is_youtube_post_url, download_youtube_post, is_youtube_shorts_url
 
 def is_youtube_url(url: str) -> bool:
     try:

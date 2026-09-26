@@ -9,6 +9,7 @@ import subprocess
 from urllib.parse import urlparse
 from telegram.error import RetryAfter
 from .instagram.main import is_instagram_url
+from .youtube.community import is_youtube_shorts_url
 from .constants import COOKIES_PATH, TMP_DIR, MAX_TG_SIZE
 from .utils import progress_bar, check_media_size_limit
 from .stages import stage
@@ -551,10 +552,16 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         # Fast path: resolution picker already ran yt-dlp -J and knows total_size.
         # Reuse it instead of spawning yt-dlp a second time (measured ~5.8s on YT).
         est_size = 0
-        if known_size and known_size > 0:
+        is_shorts = is_youtube_shorts_url(url)
+        if is_shorts:
+            # Shorts are tiny (<~60MB); probing size would spawn yt-dlp -J again
+            # and cost ~5s for a check that cannot realistically fail. yt-dlp
+            # --max-filesize still guards the hard 2GB limit.
+            log.info("yt-dlp size probe skipped for YouTube Shorts | url=%s", url)
+        elif known_size and known_size > 0:
             est_size = int(known_size)
             log.info("yt-dlp size from picker | url=%s known_size=%s", url, est_size)
-        if est_size <= 0:
+        if est_size <= 0 and not is_shorts:
             t_probe = time.monotonic()
             est_size = await asyncio.to_thread(_probe_total_size_sync, url, fmt)
             stage("probe:ytdlp", t_probe, job=url)

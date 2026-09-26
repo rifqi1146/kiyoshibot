@@ -27,7 +27,15 @@ def _host_match(host: str, domain: str) -> bool:
     domain = (domain or "").lower()
     return host == domain or host.endswith("." + domain)
 
+from .youtube.community import is_youtube_post_url, is_youtube_shorts_url
+
 def supports_ytdlp_resolution(url: str) -> bool:
+    # YouTube community posts bukan video -> tidak punya resolusi.
+    if is_youtube_post_url(url):
+        return False
+    # YouTube Shorts diunduh langsung best quality tanpa picker (video singkat).
+    if is_youtube_shorts_url(url):
+        return False
     host = _host(url)
     return any(_host_match(host, d) for d in YTDLP_RESOLUTION_DOMAINS)
 
