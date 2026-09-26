@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import time
 import uuid
 import shutil
@@ -7,7 +8,8 @@ import asyncio
 import aiohttp
 import aiofiles
 import logging
-from urllib.parse import urlparse, parse_qs
+from html import unescape as _html_unescape
+from urllib.parse import urlparse, parse_qs, unquote
 from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
@@ -26,14 +28,21 @@ _COOKIE_HEADER_CACHE = None
 
 WEB_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none",
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
 }
+
+OG_IMAGE_RE = re.compile(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', re.I)
+OG_DESC_RE = re.compile(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', re.I)
+VIDEO_SIGNAL_RE = re.compile(r'"(?:progressive_url|browser_native_hd_url|browser_native_sd_url)"')
 
 SHARE_RE = re.compile(r"https?://(?:(?:www|m)\.)?facebook\.com/share/(?:r|v|p)/([a-zA-Z0-9]+)", re.I)
 CONTENT_RE = re.compile(r"https?://(?:(?:www|m|mbasic)\.)?facebook\.com/" r"(?:watch/?\?(?:[^&]*&)*v=|share/(?:[rvp]/)?|(?:reel|videos?|posts?|permalink)/|groups/[^/]+/(?:posts|permalink)/|[^/]+/(?:videos|posts|reels?|permalink)/)" r"([a-zA-Z0-9]+)", re.I)
@@ -184,13 +193,15 @@ def _load_cookie_header(path: str) -> str:
         _COOKIE_HEADER_CACHE = ""
         return _COOKIE_HEADER_CACHE
 
-def _build_headers(referer: str | None = None) -> dict:
+def _build_headers(referer: str | None = None, use_cookies: bool = True) -> dict:
     headers = dict(WEB_HEADERS)
     if referer:
         headers["Referer"] = referer
-    cookie_header = _load_cookie_header(COOKIES_PATH)
-    if cookie_header:
-        headers["Cookie"] = cookie_header
+    # Cookies HANYA sebagai last resort. Fetch cookieless dulu (use_cookies=False).
+    if use_cookies:
+        cookie_header = _load_cookie_header(COOKIES_PATH)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
     return headers
 
 def _extract_content_id(url: str) -> str:
@@ -223,7 +234,7 @@ def _normalize_content_url(content_url: str, content_id: str) -> str:
 
 async def _follow_share_redirect(url: str) -> str:
     session = await get_http_session()
-    headers = _build_headers()
+    headers = _build_headers(use_cookies=False)
     _dbg("follow share redirect start | url=%s cookie=%s", url, bool(headers.get("Cookie")))
     async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
         final_url = str(resp.url)
@@ -253,15 +264,6 @@ def _unescape_unicode(text: str) -> str:
 def _unescape_facebook_url(text: str) -> str:
     return _unescape_unicode((text or "").replace(r"\/", "/"))
 
-def _clean_fb_title(text: str, fallback: str = "Facebook Video") -> str:
-    text = (text or "").strip()
-    if not text:
-        return fallback
-    text = re.sub(r"\s*\|\s*Facebook\s*$", "", text, flags=re.I).strip()
-    text = re.sub(r"\s*-\s*Facebook\s*$", "", text, flags=re.I).strip()
-    text = re.sub(r"\s+", " ", text).strip()
-    return text or fallback
-
 def _is_bad_fb_title(text: str) -> bool:
     text = re.sub(r"\s+", " ", (text or "").strip()).lower()
     return text in {"", "facebook", "reel", "watch", "facebook reel", "facebook watch"}
@@ -270,6 +272,9 @@ def _clean_fb_title(text: str, fallback: str = "Facebook Video") -> str:
     text = (text or "").strip()
     text = re.sub(r"\s*\|\s*facebook\s*$", "", text, flags=re.I).strip()
     text = re.sub(r"\s*-\s*facebook\s*$", "", text, flags=re.I).strip()
+    # Convert literal \n \t to real newlines/tabs (from JSON-escaped strings)
+    text = text.replace(r"\n", "\n").replace(r"\t", "\t")
+    # Collapse all whitespace to single space for clean single-line caption
     text = re.sub(r"\s+", " ", text).strip()
     if _is_bad_fb_title(text):
         return fallback
@@ -300,6 +305,256 @@ def _extract_title_from_html(body: bytes, fallback: str = "Facebook Video") -> s
             return val
 
     return fallback
+
+# ===== Facebook post photo/text scraper (cookieless) =====
+
+def _unescape_json_str(s: str) -> str:
+    """Decode string hasil escape JSON (\\/ , \\" , \\n, \\t)."""
+    if not s:
+        return ""
+    out = s.replace(r"\/", "/")
+    out = out.replace(r"\"", '"').replace("\\\\", "\\")
+    out = out.replace(r"\n", "\n").replace(r"\t", "\t")
+    return _html_unescape(out)
+
+def _normalize_image_url(url: str) -> str:
+    """Normalisasi URL foto utk dedup (strip param ukuran/crop)."""
+    text = (url or "").strip()
+    m = re.search(r"([^\?]+/(\d+)_\d+_\d+)(?:_\d+)?\.([a-zA-Z0-9]+)", text)
+    if m:
+        return f"{m.group(1)}_{m.group(3)}"
+    return text.split("?")[0]
+
+def _extract_og_image(text: str) -> str:
+    m = OG_IMAGE_RE.search(text or "")
+    if not m:
+        return ""
+    return unquote(_html_unescape(m.group(1)))
+
+def _extract_post_caption(text: str) -> str:
+    """Teks post utk caption foto: og:description, fallback og:title."""
+    caption = ""
+    m = OG_DESC_RE.search(text or "")
+    if m:
+        caption = _unescape_json_str(m.group(1))
+    if not caption:
+        m = OG_TITLE_RE.search(text or "")
+        if m:
+            caption = _unescape_json_str(m.group(1))
+    caption = (caption or "").strip()
+    caption = re.sub(r"\s*\|\s*Facebook\s*$", "", caption, flags=re.I).strip()
+    caption = re.sub(r"\s*-\s*Facebook\s*$", "", caption, flags=re.I).strip()
+    return caption
+
+def _extract_attachment_photos(text: str) -> list[dict]:
+    """Ekstrak foto lampiran post.
+
+    Prioritas 1: album multi-foto via JSON all_subattachments (urut feed,
+        varian resolusi tertinggi: viewer_image > image).
+    Prioritas 2: foto tunggal via photo_image + accessibility_caption.
+    Prioritas 3: photo_image + dimensi.
+    Return list of {url, width, height, photo_id, caption}.
+    """
+    text = text or ""
+
+    # Priority 1: album multi-foto (JSON parse all_subattachments)
+    for pm in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', text, re.S):
+        payload = pm.group(1)
+        if '"all_subattachments"' not in payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except Exception:
+            continue
+
+        found_sub = None
+
+        def _walk(o):
+            nonlocal found_sub
+            if found_sub is not None:
+                return
+            if isinstance(o, dict):
+                sub = o.get("all_subattachments")
+                if isinstance(sub, dict) and sub.get("count") and isinstance(sub.get("nodes"), list) and sub.get("nodes"):
+                    found_sub = sub
+                    return
+                for v in o.values():
+                    _walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    _walk(v)
+
+        _walk(data)
+        if not (found_sub and found_sub.get("nodes")):
+            continue
+
+        photos: list[dict] = []
+        seen_ids: set = set()
+        for node in found_sub["nodes"]:
+            media = node.get("media") or {}
+            if media.get("__typename") != "Photo":
+                continue
+            photo_id = str(media.get("id") or "")
+            if photo_id:
+                if photo_id in seen_ids:
+                    continue
+                seen_ids.add(photo_id)
+            best_uri, best_w, best_h = "", 0, 0
+            for candidate in (media.get("viewer_image") or {}, media.get("image") or {}):
+                uri = candidate.get("uri") or ""
+                try:
+                    w = int(candidate.get("width") or 0)
+                    h = int(candidate.get("height") or 0)
+                except (TypeError, ValueError):
+                    w = h = 0
+                if uri and (w * h > best_w * best_h or not best_uri):
+                    best_uri, best_w, best_h = uri, w, h
+            if best_uri:
+                photos.append({
+                    "url": _unescape_json_str(best_uri),
+                    "width": best_w,
+                    "height": best_h,
+                    "photo_id": photo_id,
+                    "caption": media.get("accessibility_caption") or "",
+                })
+        if photos:
+            # Urut feed dipertahankan — jangan di-sort
+            return photos
+
+    # Priority 2: foto tunggal via photo_image + accessibility_caption
+    found: dict = {}
+    for m in re.finditer(
+        r'"photo_image"\s*:\s*\{\s*"uri"\s*:\s*"((?:[^"\\]|\\.)+)"[^}]*"height"\s*:\s*(\d+)\s*,\s*"width"\s*:\s*(\d+)\s*\}\s*,\s*"accessibility_caption"\s*:\s*"([^"]*)"',
+        text,
+    ):
+        uri = _unescape_json_str(m.group(1))
+        h, w = int(m.group(2)), int(m.group(3))
+        key = _normalize_image_url(uri)
+        if key not in found or h * w > found[key]["height"] * found[key]["width"]:
+            found[key] = {"url": uri, "width": w, "height": h, "photo_id": "", "caption": m.group(4)}
+
+    # Priority 3: photo_image + dimensi apa saja
+    if not found:
+        for m in re.finditer(
+            r'"photo_image"\s*:\s*\{\s*"uri"\s*:\s*"((?:[^"\\]|\\.)+)"\s*,\s*"height"\s*:\s*(\d+)\s*,\s*"width"\s*:\s*(\d+)',
+            text,
+        ):
+            uri = _unescape_json_str(m.group(1))
+            key = _normalize_image_url(uri)
+            found.setdefault(key, {"url": uri, "width": int(m.group(3)), "height": int(m.group(2)), "photo_id": "", "caption": ""})
+
+    return sorted(found.values(), key=lambda d: d["height"] * d["width"], reverse=True)
+
+def _extract_mixed_media(text: str) -> dict:
+    """Ekstrak video + foto dari all_subattachments (mixed content post).
+    
+    Return {"videos": [{"id": ..., "type": "video"}], "photos": [{"url": ..., "type": "photo"}]}
+    """
+    text = text or ""
+    videos = []
+    photos = []
+    
+    for pm in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', text, re.S):
+        payload = pm.group(1)
+        if '"all_subattachments"' not in payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except Exception:
+            continue
+        
+        found_sub = None
+        def _walk(o):
+            nonlocal found_sub
+            if found_sub is not None:
+                return
+            if isinstance(o, dict):
+                sub = o.get("all_subattachments")
+                if isinstance(sub, dict) and sub.get("count") and isinstance(sub.get("nodes"), list) and sub.get("nodes"):
+                    found_sub = sub
+                    return
+                for v in o.values():
+                    _walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    _walk(v)
+        
+        _walk(data)
+        if not (found_sub and found_sub.get("nodes")):
+            continue
+        
+        seen_ids = set()
+        for node in found_sub["nodes"]:
+            media = node.get("media") or {}
+            media_type = media.get("__typename")
+            media_id = str(media.get("id") or "")
+            
+            if not media_id or media_id in seen_ids:
+                continue
+            seen_ids.add(media_id)
+            
+            if media_type == "Video":
+                videos.append({"id": media_id, "type": "video"})
+            elif media_type == "Photo":
+                best_uri, best_w, best_h = "", 0, 0
+                for candidate in (media.get("viewer_image") or {}, media.get("image") or {}):
+                    uri = candidate.get("uri") or ""
+                    try:
+                        w = int(candidate.get("width") or 0)
+                        h = int(candidate.get("height") or 0)
+                    except (TypeError, ValueError):
+                        w = h = 0
+                    if uri and (w * h > best_w * best_h or not best_uri):
+                        best_uri, best_w, best_h = uri, w, h
+                if best_uri:
+                    photos.append({
+                        "url": _unescape_json_str(best_uri),
+                        "width": best_w,
+                        "height": best_h,
+                        "photo_id": media_id,
+                        "type": "photo"
+                    })
+        
+        if videos or photos:
+            return {"videos": videos, "photos": photos}
+    
+    return {"videos": [], "photos": []}
+
+def _collect_photo_urls(text: str) -> list[str]:
+    """URL foto post, terdedup (og:image sering dobel dgn node pertama)."""
+    photos = [p["url"] for p in _extract_attachment_photos(text)]
+    og_image = _extract_og_image(text)
+    if og_image:
+        og_key = _normalize_image_url(og_image)
+        if not any(_normalize_image_url(u) == og_key for u in photos):
+            photos.insert(0, og_image)
+    return photos
+
+def _sniff_image_ext(path: str) -> str:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return ".jpg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+def _fix_image_ext(path: str) -> str:
+    """Sesuaikan ekstensi file dgn isi file (nama URL fbcdn bisa bohong)."""
+    if not path or not os.path.exists(path):
+        return path
+    ext = _sniff_image_ext(path)
+    if path.lower().endswith(ext):
+        return path
+    new_path = os.path.splitext(path)[0] + ext
+    try:
+        os.replace(path, new_path)
+        return new_path
+    except OSError:
+        return path
 
 def _find_video_section(body: bytes, video_id: str) -> bytes | None:
     if not video_id:
@@ -578,6 +833,58 @@ async def _download_with_best_engine(session, media_url: str, out_path: str, bot
                 pass
         await _aiohttp_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
 
+async def _fetch_page_html(content_url: str, content_id: str, use_cookies: bool = False) -> tuple[int, str, bytes]:
+    """Fetch halaman post (cookieless by default). Return (status, final_url, body)."""
+    content_url = _normalize_content_url(content_url, content_id)
+    session = await get_http_session()
+    headers = _build_headers(content_url, use_cookies=use_cookies)
+    _dbg("fetch page start | url=%s content_id=%s cookie=%s", content_url, content_id, bool(headers.get("Cookie")))
+    async with session.get(content_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
+        final_url = str(resp.url)
+        status = resp.status
+        body = await resp.read()
+        _dbg("fetch page response | status=%s final=%s body_len=%s", status, final_url, len(body))
+        return status, final_url, body
+
+async def _download_fb_photo(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str) -> str:
+    """Download 1 foto + fix ekstensi. Return path final. Raise jika gagal."""
+    _dbg("photo download start | out=%s url=%s", out_path, _clip(media_url, 200))
+    headers = dict(WEB_HEADERS)
+    async with session.get(media_url, headers=headers, timeout=aiohttp.ClientTimeout(total=600), allow_redirects=True) as r:
+        _dbg("photo download response | status=%s final=%s", r.status, str(r.url))
+        if r.status >= 400:
+            raise RuntimeError(f"Facebook photo download failed: HTTP {r.status}")
+        total = int(r.headers.get("Content-Length", 0) or 0)
+        if total:
+            check_media_size_limit(total, "Facebook photo")
+        downloaded = 0
+        last_edit = -10.0
+        last_sample_size = 0
+        last_sample_ts = time.time()
+        async with aiofiles.open(out_path, "wb") as f:
+            async for chunk in r.content.iter_chunked(64 * 1024):
+                if not chunk:
+                    continue
+                await f.write(chunk)
+                downloaded += len(chunk)
+                if downloaded > MAX_TG_SIZE:
+                    raise FileSizeLimitExceeded("Facebook photo exceeds 2GB limit. Download canceled.")
+                now = time.time()
+                elapsed = max(now - last_sample_ts, 0.001)
+                speed_bps = max(downloaded - last_sample_size, 0) / elapsed
+                eta_seconds = ((total - downloaded) / speed_bps) if total > 0 and speed_bps > 0 and downloaded <= total else None
+                if now - last_edit < 3 and last_edit >= 0:
+                    continue
+                await _safe_edit_progress(bot, chat_id, status_msg_id, title_text, downloaded, total, speed_bps, eta_seconds)
+                last_edit = now
+                last_sample_size = downloaded
+                last_sample_ts = now
+    if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
+        raise RuntimeError("Facebook photo download output empty")
+    final_path = _fix_image_ext(out_path)
+    _dbg("photo download success | out=%s", final_path)
+    return final_path
+
 async def _get_video_data(content_url: str, content_id: str) -> dict:
     content_url = _normalize_content_url(content_url, content_id)
     session = await get_http_session()
@@ -597,7 +904,7 @@ async def _get_video_data(content_url: str, content_id: str) -> dict:
 
 async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
     if not metadata_ready:
-        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Facebook video...</b>")
+        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Facebook post...</b>")
     _dbg("facebook init | BASE_DIR=%s COOKIES_PATH=%s exists=%s",BASE_DIR,COOKIES_PATH,os.path.exists(COOKIES_PATH))
     _dbg("facebook scrape start | raw_url=%s fmt_key=%s",raw_url,fmt_key)
     content_url=(raw_url or "").strip()
@@ -608,9 +915,36 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     content_id=_extract_content_id(content_url)
     if not content_id:
         _dbg("no content_id extracted from url, proceeding to fetch page directly | url=%s", content_url)
-    _dbg("before _get_video_data | content_url=%s content_id=%s",content_url,content_id)
-    video_data=await _get_video_data(content_url,content_id)
-    _dbg("after _get_video_data | video_data=%r",video_data)
+    # Fetch cookieless dulu; cookies.txt hanya last resort.
+    _dbg("before _fetch_page_html (cookieless) | content_url=%s content_id=%s",content_url,content_id)
+    status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=False)
+    if status!=200 or not body:
+        _dbg("cookieless fetch failed | status=%s body_len=%s, retry with cookies",status,len(body or b""))
+        status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=True)
+    if status!=200 or not body:
+        _write_debug_file("facebook_http_error", body or b"")
+        raise RuntimeError(f"failed to get page: HTTP {status}")
+    body_text=body.decode("utf-8",errors="ignore")
+    # Post foto/teks tidak memuat sinyal video -> jalur scraper foto.
+    if not VIDEO_SIGNAL_RE.search(body_text):
+        return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id)
+    # Jalur video (parse dari body yg sudah di-fetch, tanpa fetch ulang).
+    _dbg("video signal found, parse video from fetched body")
+    
+    # Cek mixed content: video + foto dalam all_subattachments
+    mixed_media = _extract_mixed_media(body_text)
+    has_photos = bool(mixed_media.get("photos"))
+    _dbg("mixed media check | videos=%s photos=%s", len(mixed_media.get("videos", [])), len(mixed_media.get("photos", [])))
+    
+    video_data=None
+    try:
+        video_data=_parse_video_from_body(body,content_id)
+    except RuntimeError as e:
+        _dbg("parse video from cookieless body failed | err=%r",e)
+    if not video_data or not (video_data.get("hd_url") or video_data.get("sd_url")):
+        # Last resort: fetch ulang dgn cookies lalu parse.
+        _dbg("no video urls in cookieless body, retry with cookies")
+        video_data=await _get_video_data(content_url,content_id)
     _dbg("video data parsed | hd=%s sd=%s",bool(video_data.get("hd_url")),bool(video_data.get("sd_url")))
     video_url=video_data.get("hd_url") or video_data.get("sd_url")
     _dbg("video url selected | exists=%s",bool(video_url))
@@ -627,8 +961,110 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     await _download_with_best_engine(session,video_url,out_path,bot,chat_id,status_msg_id,"Downloading Facebook video...",headers=headers)
     if not os.path.exists(out_path) or os.path.getsize(out_path)<=0:
         raise RuntimeError("Facebook download output empty")
-    _dbg("facebook scrape download done | out=%s",out_path)
+    _dbg("facebook scrape download video done | out=%s",out_path)
+    
+    # Jika mixed content: download foto juga dan return sebagai album
+    if has_photos:
+        _dbg("mixed content: downloading photos | count=%s", len(mixed_media["photos"]))
+        photo_paths = []
+        try:
+            for idx, photo in enumerate(mixed_media["photos"], 1):
+                photo_url = photo.get("url", "")
+                if not photo_url:
+                    continue
+                title_text = f"Downloading Facebook photo {idx}/{len(mixed_media['photos'])}..."
+                if status_msg_id:
+                    await _safe_edit_status(bot, chat_id, status_msg_id, f"<b>{title_text}</b>")
+                photo_out = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.jpg")
+                photo_final = await _download_fb_photo(session, photo_url, photo_out, bot, chat_id, status_msg_id, title_text)
+                photo_paths.append(photo_final)
+        except Exception as e:
+            _dbg("mixed content photo download failed | err=%r", e)
+            # Cleanup downloaded photos
+            for p in photo_paths:
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+            # Cleanup video
+            try:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+            except Exception:
+                pass
+            raise
+        
+        _dbg("mixed content download done | video=%s photos=%s", out_path, len(photo_paths))
+        # Return album: video pertama, lalu foto
+        items = [{"path": out_path, "type": "video"}]
+        items.extend([{"path": p, "type": "photo"} for p in photo_paths])
+        return {"items": items, "title": title, "source": "Facebook"}
+    
+    # Video saja (tidak ada foto)
     return {"path":out_path,"title":title,"source":"Facebook"}
+
+async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id):
+    """Scrape post foto/teks cookieless. Return format album service.py.
+
+    - 1 foto  -> {"path","title","source"} (caption nempel di foto)
+    - N foto  -> {"items","title","source"} (caption di item pertama)
+    - 0 foto  -> {"handled":True} setelah kirim teks post (fallback yt-dlp tidak perlu)
+    """
+    photo_urls=_collect_photo_urls(body_text)
+    caption=_extract_post_caption(body_text)
+    if not caption:
+        caption=_extract_title_from_html(body,"Facebook Photo")
+    _dbg("photo post parsed | photos=%s caption_len=%s",len(photo_urls),len(caption or ""))
+    if not photo_urls:
+        # Post teks saja: kirim sebagai pesan teks agar user tetap dapat isi.
+        if caption and bot is not None and chat_id is not None:
+            safe_caption=(caption or "").strip()
+            if len(safe_caption)>3500:
+                safe_caption=safe_caption[:3497].rstrip()+"..."
+            try:
+                from html import escape as _esc
+                bot_name=""
+                try:
+                    me=await bot.get_me()
+                    bot_name=getattr(me,"first_name",None) or ""
+                except Exception:
+                    bot_name=""
+                suffix=f"\n\n🪄 <i>Powered by {_esc(bot_name or 'Bot')}</i>"
+                await bot.send_message(chat_id=chat_id,text=f"<blockquote expandable>📝 {_esc(safe_caption)}</blockquote>{suffix}",parse_mode="HTML",disable_web_page_preview=True)
+                if status_msg_id:
+                    try:
+                        await bot.delete_message(chat_id=chat_id,message_id=status_msg_id)
+                    except Exception:
+                        pass
+                return {"handled":True}
+            except Exception as e:
+                log.warning("Facebook text post send failed | err=%r",e)
+        raise RuntimeError("no photo or video found in Facebook post")
+    os.makedirs(TMP_DIR,exist_ok=True)
+    session=await get_http_session()
+    downloaded=[]
+    try:
+        total=len(photo_urls)
+        for idx,url in enumerate(photo_urls,1):
+            title_text=f"Downloading Facebook photo {idx}/{total}..." if total>1 else "Downloading Facebook photo..."
+            if status_msg_id:
+                await _safe_edit_status(bot,chat_id,status_msg_id,f"<b>{title_text}</b>")
+            out_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}.jpg")
+            final_path=await _download_fb_photo(session,url,out_path,bot,chat_id,status_msg_id,title_text)
+            downloaded.append(final_path)
+    except Exception:
+        for p in downloaded:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        raise
+    _dbg("photo post download done | ok=%s/%s",len(downloaded),len(photo_urls))
+    if len(downloaded)==1:
+        return {"path":downloaded[0],"title":caption or "Facebook Photo","source":"Facebook"}
+    return {"items":[{"path":p,"type":"photo"} for p in downloaded],"title":caption or "Facebook Photo","source":"Facebook"}
 
 async def facebook_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
     try:
