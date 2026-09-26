@@ -8,7 +8,7 @@ from utils.config import SUPPORT_CHANNEL_ID,SUPPORT_CHANNEL_LINK
 from database.join_status_db import (
     set_member_status,
     get_member_status,
-    get_member_status_many,
+    get_updated_at,
     MEMBER_STATUSES,
 )
 
@@ -155,18 +155,10 @@ async def is_joined_support_channel(user_id:int,context:ContextTypes.DEFAULT_TYP
 
 
 async def _member_needs_recheck(user_id:int)->bool:
-    from database.db import db_session
-    from database.join_status_db import JOIN_STATUS_DB,_init
-    try:
-        with db_session(JOIN_STATUS_DB) as con:
-            _init(con)
-            row=con.execute("SELECT updated_at FROM join_status WHERE user_id=?",(int(user_id),)).fetchone()
-        if not row:
-            return True
-        return (time.time()-float(row[0]))>MEMBERSHIP_TTL
-    except Exception as e:
-        log.debug("[JOIN DB] recheck lookup failed | user_id=%s err=%r",user_id,e)
-        return False
+    updated_at=get_updated_at(user_id)
+    if updated_at is None:
+        return True
+    return (time.time()-updated_at)>MEMBERSHIP_TTL
 
 
 async def _recheck_member(user_id:int,context:ContextTypes.DEFAULT_TYPE):

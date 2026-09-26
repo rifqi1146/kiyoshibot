@@ -3,6 +3,9 @@
 Status di-update secara realtime oleh ``ChatMemberHandler`` sehingga saat
 user keluar dari channel, barisnya langsung ditandai ``left`` dan akses bot
 dicabut pada detik itu juga.
+
+Baris tidak pernah dihapus: baca lewat PRIMARY KEY index O(log n), jadi
+menyimpan seluruh riwayat user tidak berpengaruh ke performa.
 """
 
 import time
@@ -64,7 +67,7 @@ def set_member_status(user_id: int, status: str) -> bool:
 
 
 def get_member_status(user_id: int):
-    """Ambil (status, is_member) tersimpan, atau ``(None, None)`` bila belum ada."""
+    """Ambil ``(status, is_member)`` tersimpan, atau ``(None, None)`` bila belum ada."""
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
@@ -84,74 +87,20 @@ def get_member_status(user_id: int):
         return None, None
 
 
-def get_member_status_many(user_ids: list[int]) -> dict[int, bool]:
-    """Ambil peta ``{user_id: is_member}`` untuk banyak user sekaligus."""
-    out: dict[int, bool] = {}
-    try:
-        uids = []
-        for u in user_ids or []:
-            try:
-                uids.append(int(u))
-            except (TypeError, ValueError):
-                continue
-        if not uids:
-            return out
-        with db_session(JOIN_STATUS_DB) as con:
-            _init(con)
-            placeholders = ",".join("?" * len(uids))
-            cur = con.execute(
-                f"SELECT user_id, is_member FROM join_status WHERE user_id IN ({placeholders})",
-                uids,
-            )
-            for uid, is_member in cur.fetchall():
-                out[int(uid)] = bool(is_member)
-    except Exception as e:
-        log.warning("[JOIN DB] Failed to read many statuses | err=%r", e)
-    return out
-
-
-def forget_member(user_id: int):
-    """Hapus cache user sehingga status akan diverifikasi ulang ke Telegram."""
+def get_updated_at(user_id: int):
+    """Ambil timestamp update terakhir user, atau ``None`` bila tidak ada."""
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
-        return
+        return None
     try:
         with db_session(JOIN_STATUS_DB) as con:
             _init(con)
-            con.execute("DELETE FROM join_status WHERE user_id=?", (uid,))
-            con.commit()
-        log.info("[JOIN DB] cache forgotten | user_id=%s", uid)
+            row = con.execute(
+                "SELECT updated_at FROM join_status WHERE user_id=?",
+                (uid,),
+            ).fetchone()
+        return float(row[0]) if row else None
     except Exception as e:
-        log.warning("[JOIN DB] Failed to forget | user_id=%s err=%r", user_id, e)
-
-
-def purge_non_members(older_than_days: int = 30) -> int:
-    """Hapus baris non-member yang sudah lama (housekeeping ringan)."""
-    try:
-        cutoff = time.time() - (older_than_days * 86400)
-        with db_session(JOIN_STATUS_DB) as con:
-            _init(con)
-            cur = con.execute(
-                "DELETE FROM join_status WHERE is_member=0 AND updated_at < ?",
-                (cutoff,),
-            )
-            removed = cur.rowcount or 0
-            con.commit()
-        if removed:
-            log.info("[JOIN DB] purged %s stale non-member row(s)", removed)
-        return int(removed)
-    except Exception as e:
-        log.warning("[JOIN DB] purge failed | err=%r", e)
-        return 0
-
-
-def count_members() -> int:
-    try:
-        with db_session(JOIN_STATUS_DB) as con:
-            _init(con)
-            row = con.execute("SELECT COUNT(*) FROM join_status WHERE is_member=1").fetchone()
-        return int(row[0]) if row else 0
-    except Exception as e:
-        log.debug("[JOIN DB] count failed | err=%r", e)
-        return 0
+        log.warning("[JOIN DB] Failed to read updated_at | user_id=%s err=%r", user_id, e)
+        return None
