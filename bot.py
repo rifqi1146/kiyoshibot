@@ -9,6 +9,7 @@ from utils.http import close_http_session
 from handlers.commands import register_commands
 from handlers.callbacks import register_callbacks
 from handlers.messages import register_messages
+from handlers.join import register_join_handlers
 from utils.startup import startup_tasks
 from utils.config import BOT_TOKEN
 from handlers.dl.mtproto_uploader import warmup_mtproto_uploader,shutdown_mtproto_uploader
@@ -237,6 +238,7 @@ def main():
     register_commands(app)
     register_messages(app)
     register_callbacks(app)
+    register_join_handlers(app)
     banner=r"""
  ／l、
 （ﾟ､ ｡ ７   < Nya~ Master! Bot waking up…

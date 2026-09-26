@@ -15,6 +15,5 @@ __pycache__/
 data/*.db
 data/cookies.txt
 data/upload_engine.json
-data/join_cache.json
 downloads/
 tgdata/

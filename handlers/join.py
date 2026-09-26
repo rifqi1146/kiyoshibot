@@ -1,153 +1,180 @@
-import os
 import time
-import json
 import logging
 import asyncio
 from telegram import InlineKeyboardMarkup,InlineKeyboardButton,Update
 from telegram.ext import ContextTypes
 from telegram.error import NetworkError,TimedOut,RetryAfter,BadRequest,Forbidden
 from utils.config import SUPPORT_CHANNEL_ID,SUPPORT_CHANNEL_LINK
+from database.join_status_db import (
+    set_member_status,
+    get_member_status,
+    get_member_status_many,
+    MEMBER_STATUSES,
+)
 
 log=logging.getLogger(__name__)
 
-_JOIN_CACHE={}          # user_id -> {"ts": monotonic_seconds}
-_JOIN_CACHE_TTL=300     # status positif dianggap valid selama 5 menit
-_JOIN_CACHE_PATH=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),"data","join_cache.json")
-_JOIN_CACHE_SAVE_DEBOUNCE=5.0
-_RETRY_DELAYS=(0.6,1.5)          # jeda sebelum retry ke-2 dan ke-3
-# BadRequest/Forbidden adalah error permanen (bot tidak boleh retry & bukan
-# indikasi user sudah join). Perlu dicek lebih dulu karena di PTB keduanya
-# mewarisi NetworkError.
+MEMBERSHIP_TTL=600          # verifikasi ulang status member setiap 10 menit
+_RETRY_DELAYS=(0.6,1.5)     # jeda sebelum retry ke-2 dan ke-3
+# BadRequest/Forbidden adalah error permanen. Wajib dicek lebih dulu karena di
+# PTB keduanya mewarisi NetworkError.
 _PERMANENT_ERRORS=(BadRequest,Forbidden)
-_last_save=0.0
+_TRANSIENT_ERRORS=(NetworkError,TimedOut,RetryAfter)
 
 
-def _load_cache_from_disk():
-    """Muat cache status positif dari disk agar tidak hilang saat restart."""
-    try:
-        if not os.path.exists(_JOIN_CACHE_PATH):
-            return
-        with open(_JOIN_CACHE_PATH,"r",encoding="utf-8") as fh:
-            raw=json.load(fh)
-        if not isinstance(raw,dict):
-            return
-        now=time.monotonic()
-        loaded=0
-        for key,entry in raw.items():
-            try:
-                uid=int(key)
-                if isinstance(entry,dict):
-                    ts=float(entry.get("ts") or 0)
-                else:
-                    ts=float(entry or 0)
-            except (TypeError,ValueError):
-                continue
-            # Simpan sebagai timestamp epoch pada disk; konversi ke uptime-relative.
-            age=max(0.0,time.time()-ts)
-            if age>=_JOIN_CACHE_TTL:
-                continue
-            _JOIN_CACHE[uid]={"ts":now-age}
-            loaded+=1
-        if loaded:
-            log.info("[JOIN CACHE] Restored %s verified user(s) from disk",loaded)
-    except Exception as e:
-        log.warning("[JOIN CACHE] Failed to load cache | err=%r",e)
+# ---------------------------------------------------------------- helpers
+
+def _is_member_status(status:str|None)->bool:
+    return str(status or "").strip().lower() in MEMBER_STATUSES
 
 
-def _save_cache_to_disk():
-    """Persist cache ke disk (debounced) supaya tahan restart."""
-    global _last_save
-    now=time.monotonic()
-    if now-_last_save<_JOIN_CACHE_SAVE_DEBOUNCE:
+def _is_stale(status:str)->bool:
+    """Status selain left/kicked boleh dipakai tanpa verifikasi ulang."""
+    st=str(status or "").strip().lower()
+    return st in ("", "unknown")
+
+
+# ------------------------------------------------- event-driven (realtime)
+
+async def chat_member_update(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    """Simpan perubahan keanggotaan channel support secara realtime.
+
+    Dipanggil Telegram setiap kali status member berubah (join/leave/kick),
+    sehingga begitu user keluar dari channel, akses bot dicabut pada detik itu
+    juga tanpa menunggu TTL cache.
+    """
+    if not SUPPORT_CHANNEL_ID:
         return
-    _last_save=now
+    cm=update.chat_member
+    if not cm:
+        return
     try:
-        os.makedirs(os.path.dirname(_JOIN_CACHE_PATH),exist_ok=True)
-        payload={}
-        epoch=time.time()
-        uptime=time.monotonic()
-        for uid,entry in _JOIN_CACHE.items():
-            ts=float((entry or {}).get("ts") or 0)
-            payload[str(uid)]={"ts":round(epoch-(uptime-ts),3)}
-        tmp=f"{_JOIN_CACHE_PATH}.tmp"
-        with open(tmp,"w",encoding="utf-8") as fh:
-            json.dump(payload,fh)
-        os.replace(tmp,_JOIN_CACHE_PATH)
-    except Exception as e:
-        log.debug("[JOIN CACHE] Failed to persist cache | err=%r",e)
+        chat_id=int(getattr(getattr(cm,"chat",None),"id",0) or 0)
+    except (TypeError,ValueError):
+        chat_id=0
+    if chat_id!=int(SUPPORT_CHANNEL_ID):
+        return
+    # Ambil objek member yang statusnya berubah (bukan pelaku aksinya).
+    # Saat admin mengeluarkan user, from_user=admin sedangkan targetnya ada
+    # di new_chat_member.user.
+    member=getattr(cm,"new_chat_member",None)
+    user=getattr(member,"user",None)
+    user_id=getattr(user,"id",None)
+    if not user_id:
+        return
+    new_status=getattr(member,"status",None)
+    old_status=getattr(getattr(cm,"old_chat_member",None),"status",None)
+    is_member=set_member_status(user_id,new_status)
+    log.info(
+        "[JOIN EVENT] chat=%s user_id=%s %s -> %s member=%s",
+        chat_id,user_id,old_status,new_status,is_member,
+    )
 
 
-_load_cache_from_disk()
+def register_join_handlers(app):
+    """Daftarkan handler event keanggotaan. Idempotent."""
+    from telegram.ext import ChatMemberHandler
+    if getattr(app,"_join_handlers_registered",False):
+        return
+    app.add_handler(
+        ChatMemberHandler(chat_member_update,ChatMemberHandler.CHAT_MEMBER),
+        group=-100,
+    )
+    app._join_handlers_registered=True
+    log.info("Join membership handlers registered")
 
 
-def _cache_positive(user_id:int,now:float):
-    _JOIN_CACHE[int(user_id)]={"ts":now}
-    _save_cache_to_disk()
-
+# ------------------------------------------------------------ verifikasi
 
 async def _fetch_member_status(user_id:int,context:ContextTypes.DEFAULT_TYPE):
     """Panggil get_chat_member dengan retry singkat untuk error jaringan.
 
-    Return (status_str, error) — status_str None berarti gagal total (transien).
+    Return ``(status, error, transient)``. ``status`` None berarti gagal.
     """
     last_err=None
+    transient=False
     for attempt,sleep_for in enumerate((0.0,)+_RETRY_DELAYS):
         if sleep_for:
             await asyncio.sleep(sleep_for)
         try:
             member=await context.bot.get_chat_member(SUPPORT_CHANNEL_ID,user_id)
-            return getattr(member,"status",None),None
+            return getattr(member,"status",None),None,False
         except RetryAfter as e:
-            last_err=e
+            last_err=e; transient=True
             wait=max(int(getattr(e,"retry_after",2) or 2),1)
             log.warning("[JOIN RETRY] Flood control | user_id=%s attempt=%s wait=%ss",user_id,attempt+1,wait)
             await asyncio.sleep(wait+0.5)
         except _PERMANENT_ERRORS as e:
-            # Error permanen dari Telegram (mis. USER_NOT_FOUND, CHAT_ADMIN_REQUIRED).
-            # Langsung hentikan loop: jangan retry dan jangan fail-open.
-            return None,e
+            return None,e,False
         except (NetworkError,TimedOut) as e:
-            last_err=e
+            last_err=e; transient=True
             log.warning("[JOIN RETRY] Transient network error | user_id=%s attempt=%s err=%r",user_id,attempt+1,e)
         except Exception as e:
-            return None,e
-    return None,last_err
+            return None,e,False
+    return None,last_err,transient
 
 
 async def is_joined_support_channel(user_id:int,context:ContextTypes.DEFAULT_TYPE)->bool:
+    """Cek keanggotaan channel support.
+
+    Sumber utama adalah database yang di-update realtime oleh
+    ``chat_member_update``. Baris ``left``/``kicked`` langsung memblokir user
+    pada detik itu juga. Status member diverifikasi ulang setelah TTL tertentu.
+    """
     if not SUPPORT_CHANNEL_ID:
         return True
-    now=time.monotonic()
-    key=int(user_id)
-    cached=_JOIN_CACHE.get(key)
-    if cached and now-float(cached.get("ts") or 0)<_JOIN_CACHE_TTL:
-        return True
-    if cached:
-        _JOIN_CACHE.pop(key,None)
 
-    status,err=await _fetch_member_status(key,context)
-    if status is not None:
-        if status in ("member","administrator","creator"):
-            _cache_positive(key,now)
+    status,is_member=get_member_status(user_id)
+
+    if status and not _is_stale(status):
+        if is_member:
+            if await _member_needs_recheck(user_id):
+                await _recheck_member(user_id,context)
+                status,is_member=get_member_status(user_id)
+            return bool(is_member)
+        # Terakhir diketahui bukan member: verifikasi ulang agar user yang
+        # baru join langsung bisa (tanpa menunggu event).
+        fetched,err,transient=await _fetch_member_status(user_id,context)
+        if fetched is not None:
+            return set_member_status(user_id,fetched)
+        if transient:
+            log.warning("[JOIN CHECK ERROR] Transient failure, allowing access | user_id=%s err=%r",user_id,err)
             return True
-        _JOIN_CACHE.pop(key,None)
-        return False
-
-    # Gagal total. Klasifikasi menentukan apakah user boleh lolos.
-    if isinstance(err,_PERMANENT_ERRORS):
-        # Telegram sendiri bilang user/channel tak bisa diverifikasi -> tetap blokir.
         log.warning("[JOIN CHECK ERROR] Permanent failure | user_id=%s err=%r",user_id,err)
         return False
-    if isinstance(err,(NetworkError,TimedOut,RetryAfter)):
-        # Gagal karena error transien (network/timeout/flood): JANGAN blokir user.
-        # Fail-open agar user yang sudah join tidak dihukum oleh glitch jaringan
-        # bot ke Telegram. Update masuk membuktikan bot masih terhubung.
+
+    # Belum ada data / status belum diketahui -> tanya Telegram langsung.
+    fetched,err,transient=await _fetch_member_status(user_id,context)
+    if fetched is not None:
+        return set_member_status(user_id,fetched)
+    if transient:
         log.warning("[JOIN CHECK ERROR] Transient failure, allowing access | user_id=%s err=%r",user_id,err)
         return True
-
-    # Error tak terduga lainnya: perlakukan sama seperti perilaku lama (blokir).
-    log.warning("[JOIN CHECK ERROR] user_id=%s err=%r",user_id,err)
+    log.warning("[JOIN CHECK ERROR] Permanent failure | user_id=%s err=%r",user_id,err)
     return False
+
+
+async def _member_needs_recheck(user_id:int)->bool:
+    from database.db import db_session
+    from database.join_status_db import JOIN_STATUS_DB,_init
+    try:
+        with db_session(JOIN_STATUS_DB) as con:
+            _init(con)
+            row=con.execute("SELECT updated_at FROM join_status WHERE user_id=?",(int(user_id),)).fetchone()
+        if not row:
+            return True
+        return (time.time()-float(row[0]))>MEMBERSHIP_TTL
+    except Exception as e:
+        log.debug("[JOIN DB] recheck lookup failed | user_id=%s err=%r",user_id,e)
+        return False
+
+
+async def _recheck_member(user_id:int,context:ContextTypes.DEFAULT_TYPE):
+    fetched,err,transient=await _fetch_member_status(user_id,context)
+    if fetched is not None:
+        set_member_status(user_id,fetched)
+    elif not transient:
+        log.warning("[JOIN CHECK ERROR] Permanent failure on recheck | user_id=%s err=%r",user_id,err)
 
 
 def join_required_keyboard():
