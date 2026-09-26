@@ -556,6 +556,25 @@ def _fix_image_ext(path: str) -> str:
     except OSError:
         return path
 
+def _extract_video_duration_from_url(url: str) -> int:
+    """Extract duration_s from efg parameter in video URL. Return -1 if not found or parse error."""
+    import base64
+    if not url:
+        return -1
+    m = re.search(r'[?&]efg=([^&]+)', url)
+    if not m:
+        return -1
+    try:
+        efg_b64 = unquote(m.group(1))
+        efg_json = base64.b64decode(efg_b64).decode('utf-8', errors='ignore')
+        efg_data = json.loads(efg_json)
+        duration = int(efg_data.get('duration_s', -1))
+        _dbg("video url duration parsed | duration_s=%s", duration)
+        return duration
+    except Exception as e:
+        _dbg("video url duration parse failed | err=%r", e)
+        return -1
+
 def _find_video_section(body: bytes, video_id: str) -> bytes | None:
     if not video_id:
         _dbg("find section skipped | no video_id")
@@ -930,12 +949,7 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
         return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id)
     # Jalur video (parse dari body yg sudah di-fetch, tanpa fetch ulang).
     _dbg("video signal found, parse video from fetched body")
-    
-    # Cek mixed content: video + foto dalam all_subattachments
-    mixed_media = _extract_mixed_media(body_text)
-    has_photos = bool(mixed_media.get("photos"))
-    _dbg("mixed media check | videos=%s photos=%s", len(mixed_media.get("videos", [])), len(mixed_media.get("photos", [])))
-    
+    # Parse video dari body
     video_data=None
     try:
         video_data=_parse_video_from_body(body,content_id)
@@ -951,6 +965,27 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     if not video_url:
         _dbg("video url empty after parse | content_url=%s content_id=%s",content_url,content_id)
         raise RuntimeError("no video formats found")
+    # Cek duration dari URL (animated thumbnail punya duration_s=0)
+    duration = _extract_video_duration_from_url(video_url)
+    _dbg("video duration check | duration_s=%s", duration)
+    # Jika duration = 0, kemungkinan bukan video asli (animated thumbnail/preview), fallback ke photo scraper.
+    # duration=-1 artinya tidak ada info efg -> perlakukan sebagai video normal (jalur lama).
+    if duration == 0:
+        _dbg("video duration invalid or zero, treating as photo post | duration=%s", duration)
+        # Cek apakah ada foto di post
+        mixed_media = _extract_mixed_media(body_text)
+        has_photos = bool(mixed_media.get("photos"))
+        og_image = _extract_og_image(body_text)
+        all_photos = _collect_photo_urls(body_text)
+        _dbg("video duration check fallback | photos=%s og_image=%s all_photos=%s", len(mixed_media.get("photos", [])), bool(og_image), len(all_photos))
+        if has_photos or all_photos:
+            return await _scrape_photo_post(body, body_text, bot, chat_id, status_msg_id)
+        raise RuntimeError("video has invalid duration and no photo found in post")
+    
+    # Cek mixed content: video + foto dalam all_subattachments
+    mixed_media = _extract_mixed_media(body_text)
+    has_photos = bool(mixed_media.get("photos"))
+    _dbg("mixed media check | videos=%s photos=%s", len(mixed_media.get("videos", [])), len(mixed_media.get("photos", [])))
     title=(video_data.get("title") or "Facebook Video").strip() or "Facebook Video"
     _dbg("fb title selected | title=%s",_clip(title,200))
     os.makedirs(TMP_DIR,exist_ok=True)
