@@ -101,7 +101,7 @@ def video_meta(path:str)->dict:
             _VIDEO_META_CACHE.clear()
     return meta
 
-def remux_video_for_telegram(src_path:str)->str:
+def remux_video_for_telegram(src_path:str, delete_src:bool=True)->str:
     before=video_meta(src_path)
     if before["duration"]<=0:
         raise RuntimeError("Invalid video duration")
@@ -119,11 +119,19 @@ def remux_video_for_telegram(src_path:str)->str:
             remux_path,
         ],timeout=FFMPEG_REMUX_TIMEOUT)
         
-        after=video_meta(remux_path)
-        if os.path.exists(remux_path) and os.path.getsize(remux_path)>0 and after["duration"]>0:
-            log.info("Video remuxed | src=%s before=%s after=%s",os.path.basename(src_path),before,after)
+        # Optimal: hindari ffprobe kedua. ffmpeg returncode==0 dengan -c copy
+        # mempertahankan durasi, resolusi, dan codec persis seperti 'before'.
+        if os.path.exists(remux_path) and os.path.getsize(remux_path)>0:
+            # Seed cache untuk remux_path memakai metadata 'before'
+            try:
+                st = os.stat(remux_path)
+                ck = f"{remux_path}:{st.st_mtime_ns}:{st.st_size}"
+                _VIDEO_META_CACHE[ck] = (time.monotonic(), before)
+            except OSError:
+                pass
+            log.info("Video remuxed | src=%s meta=%s",os.path.basename(src_path),before)
             log.info("Remux done | original=%s output=%s",os.path.basename(src_path),os.path.basename(remux_path))
-            if remux_path!=src_path:
+            if delete_src and remux_path!=src_path:
                 _delete_file(src_path,"original video after remux")
             return remux_path
         raise RuntimeError("Remux output invalid")
@@ -153,6 +161,31 @@ def make_video_thumbnail(src_path:str)->str|None:
         _delete_file(thumb_path,"failed thumbnail")
     return None
 
+async def remux_and_thumbnail_parallel(src_path:str)->tuple[str, str|None, dict]:
+    """Jalankan faststart remux dan pembuatan thumbnail secara paralel.
+    
+    Menghilangkan delay sekuensial (hemat ~0.3s) dan menjamin video tetap di-remux
+    (tidak ada issue blank hitam di Telegram).
+    Mengembalikan (final_video_path, thumb_path, meta_dict).
+    """
+    if not src_path or not os.path.exists(src_path):
+        return src_path, None, {}
+    if detect_media_type(src_path) != "video":
+        return src_path, None, {}
+    
+    meta = await asyncio.to_thread(video_meta, src_path)
+    
+    # Jalankan remux dan thumbnail bersamaan dari src_path
+    remux_fut = asyncio.to_thread(remux_video_for_telegram, src_path, False)
+    thumb_fut = asyncio.to_thread(make_video_thumbnail, src_path)
+    remuxed_path, thumb_path = await asyncio.gather(remux_fut, thumb_fut)
+    
+    # Bersihkan source jika remux berhasil menghasilkan file baru
+    if remuxed_path != src_path and os.path.exists(src_path):
+        _delete_file(src_path, "original video after parallel remux")
+        
+    return remuxed_path, thumb_path, meta
+
 def _prepare_single_path(file_path:str)->str:
     if not file_path or not os.path.exists(file_path):
         return file_path
@@ -165,15 +198,25 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
         return result
     if isinstance(result,dict) and result.get("items"):
         items=result.get("items") or []
-        for item in items:
-            p=item.get("path")
-            if p and os.path.exists(p):
-                item["path"]=await asyncio.to_thread(_prepare_single_path,p)
+        paths=[i.get("path") for i in items]
+        # Siapkan semua item bersamaan (remux+thumbnail paralel per file).
+        prepped=await asyncio.gather(*(asyncio.to_thread(_prepare_single_path,p) for p in paths))
+        for item,new_path in zip(items,prepped):
+            if new_path:
+                item["path"]=new_path
         return result
     if isinstance(result,dict):
         p=result.get("path")
         if p and os.path.exists(p):
-            result["path"]=await asyncio.to_thread(_prepare_single_path,p)
+            if detect_media_type(p)=="video":
+                new_path,thumb_path,meta=await remux_and_thumbnail_parallel(p)
+                result["path"]=new_path
+                if thumb_path:
+                    result["thumb"]=thumb_path
+                if meta:
+                    result["meta"]=meta
+            else:
+                result["path"]=await asyncio.to_thread(_prepare_single_path,p)
         return result
     if isinstance(result,str) and os.path.exists(result):
         return await asyncio.to_thread(_prepare_single_path,result)

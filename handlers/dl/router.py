@@ -15,11 +15,11 @@ from .constants import TMP_DIR,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOMAINS
 from .stages import stage
 from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
-from .utils import normalize_url,is_invalid_video
+from .utils import normalize_url,is_invalid_video,extract_all_urls
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
 from .probe import get_resolutions,supports_resolution_picker,supports_ytdlp_resolution
 from .tiktok.main import is_tiktok,tiktok_download
-from .service import download_non_tiktok,send_downloaded_media
+from .service import download_non_tiktok,send_downloaded_media,send_batch_downloaded_media
 from database.user_settings_db import get_user_settings
 from .remux import prepare_download_result_for_send
 from .youtube.main import is_youtube_url, is_youtube_shorts_url, is_youtube_post_url
@@ -346,9 +346,51 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     chat=update.effective_chat
     if not chat:
         return
-    text=normalize_url(msg.text)
-    if text.startswith("/"):
+    if msg.text.strip().startswith("/"):
         return
+
+    # Batch: 2-5 link didukung dalam satu pesan -> kirim sebagai 1 album.
+    batch_urls=[u for u in extract_all_urls(msg.text,limit=5) if is_supported_platform(u)]
+    if len(batch_urls)>1:
+        settings=get_user_settings(update.effective_user.id)
+        if chat.type in ("group","supergroup"):
+            groups=load_auto_dl()
+            if chat.id not in groups and not bool(settings.get("force_autodl")):
+                return
+        if not await require_join_or_block(update,context):
+            return
+        user_id=update.effective_user.id
+        for u in batch_urls:
+            if is_premium_required(u,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
+                return await msg.reply_text("🔞 One of these links can only be downloaded by premium users.")
+        wait_time=_check_and_consume_limit(user_id)
+        if wait_time>0:
+            return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+        auto_choice=str(settings.get("autodl_format") or "ask").lower()
+        # Batch butuh format tetap; "ask" (butuh picker) tidak berlaku di sini.
+        fmt_key="mp3" if auto_choice=="mp3" else "video"
+        silent_mode=bool(settings.get("silent_download")) and fmt_key=="video"
+        status_msg=None
+        if not silent_mode:
+            status_msg=await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(batch_urls)}</code> selesai",parse_mode="HTML")
+        else:
+            try: await msg.set_reaction("😍")
+            except Exception: pass
+        context.application.create_task(
+            _batch_dl_worker(
+                app=context.application,
+                chat_id=chat.id,
+                reply_to=msg.message_id,
+                urls=batch_urls,
+                status_msg_id=status_msg.message_id if status_msg else None,
+                fmt_key=fmt_key,
+                message_thread_id=getattr(msg,"message_thread_id",None),
+                user_id=user_id,
+            )
+        )
+        return
+
+    text=normalize_url(msg.text)
     if not is_supported_platform(text):
         return
     settings=get_user_settings(update.effective_user.id)
@@ -595,6 +637,92 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
         await _safe_edit_error(bot, chat_id, status_msg_id, f"<b>Download failed</b>\n\n<code>{public_err}</code>")
 
 
+async def _download_one_for_batch(url:str,fmt_key:str,bot,chat_id,status_msg_id,message_thread_id=None):
+    """Unduh satu URL untuk keperluan batch. Return hasil siap kirim."""
+    if is_tiktok(url):
+        async with TIKTOK_LOCK:
+            res=await tiktok_download(url,bot,chat_id,None,fmt_key,metadata_ready=True)
+            if isinstance(res,dict) and res.get("choice_required")=="tiktok_slideshow":
+                # Untuk batch, paksa slideshow video agar tidak menahan antrean picker.
+                media=res.get("media") or {}
+                video_url=(media.get("video_url") or media.get("music_url") or "")
+                if not video_url:
+                    return None
+                res=await tiktok_download(url,bot,chat_id,None,"slideshow_video",metadata_ready=True)
+            return res
+    async with YTDLP_SEM:
+        return await download_non_tiktok(
+            raw_url=url,
+            fmt_key=fmt_key,
+            bot=bot,
+            chat_id=chat_id,
+            status_msg_id=None,
+            format_id=None,
+            has_audio=False,
+            engine=None,
+            metadata_ready=True,
+            known_size=0,
+        )
+
+
+async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:str="video",message_thread_id=None,user_id:int|None=None):
+    bot=app.bot
+    total=len(urls)
+    done={"n":0}
+    lock=asyncio.Lock()
+    sem=asyncio.Semaphore(3)
+    results=[None]*total
+
+    async def _render(status_text:str):
+        if not status_msg_id:
+            return
+        try:
+            await bot.edit_message_text(chat_id=chat_id,message_id=status_msg_id,text=status_text,parse_mode="HTML")
+        except Exception:
+            pass
+
+    t0=time.monotonic()
+    log.info("Batch download start | chat_id=%s total=%s urls=%s",chat_id,total,urls)
+    await _render(f"📦 <b>Batch download started</b>\n<code>{done['n']}/{total}</code> selesai...")
+
+    async def _task(idx:int,u:str):
+        async with sem:
+            try:
+                res=await _download_one_for_batch(u,fmt_key,bot,chat_id,None,message_thread_id)
+                if res:
+                    res=await prepare_download_result_for_send(res,fmt_key=fmt_key)
+                results[idx]=res
+            except Exception as e:
+                log.warning("Batch item failed | url=%s err=%r",u,e)
+                results[idx]=None
+            finally:
+                async with lock:
+                    done["n"]+=1
+                    await _render(f"📦 <b>Batch downloading...</b>\n<code>{done['n']}/{total}</code> selesai")
+
+    await asyncio.gather(*(_task(i,u) for i,u in enumerate(urls)))
+    ok=[r for r in results if r]
+    log.info("Batch download done | chat_id=%s ok=%s/%s elapsed=%.2fs",chat_id,len(ok),total,time.monotonic()-t0)
+
+    if not ok:
+        await _render("<b>Batch download failed</b>\n\n<code>Semua link gagal diunduh.</code>")
+        return
+
+    await _render(f"📤 <b>Uploading {len(ok)} item...</b>")
+    try:
+        await send_batch_downloaded_media(
+            bot=bot,
+            chat_id=chat_id,
+            reply_to=reply_to,
+            status_msg_id=status_msg_id,
+            results=ok,
+            message_thread_id=message_thread_id,
+        )
+    finally:
+        if status_msg_id:
+            await _safe_delete_message(bot,chat_id,status_msg_id,"batch status")
+
+
 async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
         return
@@ -606,9 +734,37 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             "Send a video link to download.\n\n"
             "By using this downloader, you are responsible for the content you download and how you use it."
         )
+
+    # Cek apakah ada multiple URLs di args atau body pesan
+    all_batch_urls = [u for u in extract_all_urls(" ".join(context.args), limit=5) if is_supported_platform(u)]
+    user_id = update.effective_user.id
+    if len(all_batch_urls) > 1:
+        for u in all_batch_urls:
+            if is_premium_required(u, PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
+                return await msg.reply_text("🔞 One of these links can only be downloaded by premium users.")
+        wait_time = _check_and_consume_limit(user_id)
+        if wait_time > 0:
+            return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+        settings = get_user_settings(user_id)
+        auto_choice = str(settings.get("autodl_format") or "video").lower()
+        fmt_key = "mp3" if auto_choice == "mp3" else "video"
+        status_msg = await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(all_batch_urls)}</code> selesai", parse_mode="HTML")
+        context.application.create_task(
+            _batch_dl_worker(
+                app=context.application,
+                chat_id=msg.chat.id,
+                reply_to=msg.message_id,
+                urls=all_batch_urls,
+                status_msg_id=status_msg.message_id if status_msg else None,
+                fmt_key=fmt_key,
+                message_thread_id=getattr(msg, "message_thread_id", None),
+                user_id=user_id,
+            )
+        )
+        return
+
     url=context.args[0]
     
-    user_id = update.effective_user.id
     if is_premium_required(url,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
         return await msg.reply_text("🔞 Download from this website is for premium users only.")
         

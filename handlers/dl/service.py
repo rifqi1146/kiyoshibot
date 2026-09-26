@@ -122,7 +122,7 @@ async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,
         return False
 
         
-async def reencode_mp3(src_path:str)->str:
+async def reencode_mp3(src_path:str, cover_path:str|None=None, title:str="", artist:str="")->str:
     fixed_path=f"{TMP_DIR}/{uuid.uuid4().hex}.mp3"
     def _run():
         result=subprocess.run(
@@ -134,8 +134,65 @@ async def reencode_mp3(src_path:str)->str:
             raise RuntimeError(f"FFmpeg re-encode failed with exit code {result.returncode}")
         if not os.path.exists(fixed_path) or os.path.getsize(fixed_path)<=0:
             raise RuntimeError("FFmpeg re-encode failed")
+        _embed_audio_metadata(fixed_path, cover_path, title, artist)
         return fixed_path
     return await asyncio.to_thread(_run)
+
+
+def _embed_audio_metadata(path:str, cover_path:str|None, title:str, artist:str):
+    """Tulis tag ID3v2 (judul, artis) + cover art APIC ke file MP3.
+
+    Pakai mutagen (in-process, tanpa spawn ffmpeg ekstra). Gagal sekalipun
+    tidak merusak audio, cukup log warning.
+    """
+    try:
+        from mutagen.mp3 import MP3
+        from mutagen.id3 import ID3, APIC, TIT2, TPE1, error as id3_error
+    except Exception as e:
+        log.debug("mutagen unavailable, skipping ID3 embed | err=%r", e)
+        return
+    try:
+        audio = MP3(path, ID3=ID3)
+        try:
+            audio.add_tags()
+        except id3_error:
+            pass
+        if title:
+            audio.tags.add(TIT2(encoding=3, text=[title[:120]]))
+        if artist:
+            audio.tags.add(TPE1(encoding=3, text=[artist[:80]]))
+        if cover_path and os.path.exists(cover_path) and os.path.getsize(cover_path) > 0:
+            # Telegram butuh thumbnail persegi <200KB. Cover besar di-ekstrak
+            # jadi JPG 320px via ffmpeg agar aman dan kecil.
+            thumb_out = f"{TMP_DIR}/{uuid.uuid4().hex}_cover.jpg"
+            try:
+                subprocess.run(
+                    ["ffmpeg","-y","-i",cover_path,"-vf","scale='min(320,iw)':-2","-q:v","4",thumb_out],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+                )
+                data = None
+                if os.path.exists(thumb_out) and os.path.getsize(thumb_out) > 0:
+                    with open(thumb_out, "rb") as fh:
+                        data = fh.read()
+                if data:
+                    audio.tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=data))
+            finally:
+                _delete_file_silent(thumb_out)
+        audio.save(v2_version=3)
+        log.info("MP3 metadata embedded | file=%s title=%r artist=%r cover=%s",
+                 os.path.basename(path), title, artist, bool(cover_path))
+    except Exception as e:
+        log.warning("Failed to embed MP3 metadata | file=%s err=%r", os.path.basename(path), e)
+
+
+def _delete_file_silent(path:str|None):
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 async def _ensure_photo_size(file_path: str):
     if not file_path or not os.path.exists(file_path) or os.path.getsize(file_path) < 10000000:
@@ -365,7 +422,7 @@ async def _send_video_with_fallback(bot,chat_id,video,caption,reply_to=None,mess
             log.exception("Failed to send video | chat_id=%s",chat_id)
             raise
 
-async def _send_audio_with_fallback(bot,chat_id,audio,title,performer,filename,reply_to=None,message_thread_id=None):
+async def _send_audio_with_fallback(bot,chat_id,audio,title,performer,filename,reply_to=None,message_thread_id=None,thumbnail=None):
     kwargs={
         "chat_id":chat_id,
         "audio":audio,
@@ -376,6 +433,8 @@ async def _send_audio_with_fallback(bot,chat_id,audio,title,performer,filename,r
         "message_thread_id":message_thread_id,
         "disable_notification":True,
     }
+    if thumbnail:
+        kwargs["thumbnail"]=thumbnail
     while True:
         try:
             started=time.monotonic()
@@ -577,8 +636,24 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
     try:
         if fmt_key=="mp3":
             await _set_uploading_status(bot,chat_id,status_msg_id,"audio")
-            fixed_audio=await reencode_mp3(file_path)
-            await _send_audio_with_fallback(bot=bot,chat_id=chat_id,audio=fixed_audio,title=caption_text[:64],performer=bot_name,filename=f"{caption_text[:50]}.mp3",reply_to=reply_to,message_thread_id=message_thread_id)
+            cover_path=(meta.get("thumb") if isinstance(meta,dict) else None)
+            artist_name=(meta.get("artist") if isinstance(meta,dict) else "") or bot_name
+            log.info("Sending audio | title=%r performer=%r cover=%s",caption_text[:60],artist_name,bool(cover_path and os.path.exists(cover_path)))
+            fixed_audio=await reencode_mp3(
+                file_path,
+                cover_path=cover_path if cover_path and os.path.exists(cover_path) else None,
+                title=caption_text,
+                artist=artist_name,
+            )
+            thumb_fh=None
+            try:
+                if cover_path and os.path.exists(cover_path):
+                    thumb_fh=open(cover_path,"rb")
+                await _send_audio_with_fallback(bot=bot,chat_id=chat_id,audio=fixed_audio,title=caption_text[:64],performer=artist_name,filename=f"{caption_text[:50]}.mp3",reply_to=reply_to,message_thread_id=message_thread_id,thumbnail=thumb_fh)
+            finally:
+                _safe_close(thumb_fh,"audio cover",chat_id)
+                if cover_path:
+                    await _delete_file(cover_path,"audio cover")
             return
         if media_type=="photo":
             await _set_uploading_status(bot,chat_id,status_msg_id,"photo")
@@ -591,10 +666,17 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             video_fh=None
             thumb_fh=None
             try:
-                meta_video,thumb_path=await asyncio.gather(
-                    asyncio.to_thread(video_meta,file_path),
-                    asyncio.to_thread(make_video_thumbnail,file_path),
-                )
+                pre_thumb=meta.get("thumb") if isinstance(meta,dict) else None
+                pre_meta=meta.get("meta") if isinstance(meta,dict) else None
+                if pre_thumb and os.path.exists(pre_thumb):
+                    # Thumbnail sudah dibuat paralel dengan remux di tahap processing.
+                    thumb_path=pre_thumb
+                    meta_video=pre_meta or await asyncio.to_thread(video_meta,file_path)
+                else:
+                    meta_video,thumb_path=await asyncio.gather(
+                        asyncio.to_thread(video_meta,file_path),
+                        asyncio.to_thread(make_video_thumbnail,file_path),
+                    )
                 caption=_build_safe_caption(caption_text,bot_name)
                 sent=await _try_send_video_via_upload_engine(
                     bot=bot,
@@ -707,3 +789,71 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
     result=await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio,known_size=known_size)
     stage("scrape+download:ytdlp",t0,job=raw_url)
     return result
+
+
+async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results:list,message_thread_id=None):
+    """Kirim hasil batch (multi-link).
+
+    Foto/video dikumpulkan jadi satu album Telegram. Audio dikirim terpisah
+    setelah album supaya tetap rapi.
+    """
+    album_items:list[dict]=[]
+    audio_entries:list[dict]=[]
+    extra_files:list[str]=[]
+
+    for res in results:
+        if not res:
+            continue
+        if isinstance(res,dict) and res.get("items"):
+            for it in res.get("items") or []:
+                p=it.get("path")
+                if p and os.path.exists(p):
+                    album_items.append({"path":p,"type":detect_media_type(p)})
+            continue
+        meta=res if isinstance(res,dict) else {"path":res,"title":None}
+        p=meta.get("path")
+        if not p or not os.path.exists(p):
+            continue
+        if str(meta.get("kind") or "").lower()=="audio" or detect_media_type(p)=="unknown" and p.lower().endswith((".mp3",".flac")):
+            audio_entries.append(meta)
+        else:
+            album_items.append({"path":p,"type":detect_media_type(p)})
+
+    log.info("Batch send | chat_id=%s album=%s audio=%s",chat_id,len(album_items),len(audio_entries))
+
+    if album_items:
+        payload={"items":[{"path":it["path"],"type":it["type"]} for it in album_items],"title":"Batch Download"}
+        try:
+            await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=payload,message_thread_id=message_thread_id)
+        except Exception as e:
+            log.warning("Batch album send failed, sending individually | chat_id=%s err=%r",chat_id,e)
+            for it in album_items:
+                try:
+                    await send_downloaded_media(bot=bot,chat_id=chat_id,reply_to=reply_to,status_msg_id=None,path={"path":it["path"],"title":None},fmt_key="mp4",message_thread_id=message_thread_id)
+                except Exception as e2:
+                    log.warning("Batch item send failed | path=%s err=%r",it["path"],e2)
+        finally:
+            await _cleanup_album_files(album_items)
+
+    for meta in audio_entries:
+        p=meta.get("path")
+        try:
+            await _set_uploading_status(bot,chat_id,status_msg_id,"audio")
+            cover=meta.get("thumb")
+            artist=(meta.get("artist") or "") or await _get_bot_name(bot)
+            title=(meta.get("title") or _clean_caption_from_path(p) or "Audio")
+            fixed=await reencode_mp3(p,cover_path=cover if cover and os.path.exists(cover) else None,title=title,artist=artist)
+            thumb_fh=None
+            try:
+                if cover and os.path.exists(cover):
+                    thumb_fh=open(cover,"rb")
+                await _send_audio_with_fallback(bot=bot,chat_id=chat_id,audio=fixed,title=title[:64],performer=artist,filename=f"{title[:50]}.mp3",reply_to=reply_to,message_thread_id=message_thread_id,thumbnail=thumb_fh)
+            finally:
+                _safe_close(thumb_fh,"audio cover",chat_id)
+            await _delete_file(fixed,"temp audio")
+            if cover:
+                await _delete_file(cover,"audio cover")
+        except Exception as e:
+            log.warning("Batch audio send failed | path=%s err=%r",p,e)
+        finally:
+            await _cleanup_single_file(p)

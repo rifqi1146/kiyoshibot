@@ -56,6 +56,22 @@ def normalize_url(text: str) -> str:
     text = text.split("\n")[0]
     return text
 
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+
+def extract_all_urls(text: str, limit: int = 8) -> list[str]:
+    """Ambil seluruh URL di dalam teks (untuk batch / multi-link download)."""
+    raw = (text or "").replace("\u200b", "")
+    found: list[str] = []
+    seen: set[str] = set()
+    for m in _URL_RE.finditer(raw):
+        u = m.group(0).rstrip(".,;:!?)]}\"'")
+        if u and u not in seen:
+            seen.add(u)
+            found.append(u)
+        if len(found) >= limit:
+            break
+    return found
+
 def is_invalid_video(path: str) -> bool:
     try:
         p = subprocess.run(

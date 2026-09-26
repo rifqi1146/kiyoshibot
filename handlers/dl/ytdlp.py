@@ -420,6 +420,46 @@ def _list_job_outputs(job_id: str) -> list[str]:
         log.warning("Failed to list yt-dlp outputs | job_id=%s err=%r", job_id, e)
         return []
 
+def _find_job_thumbnail(job_id: str, exclude: str = "") -> str | None:
+    """Temukan file cover thumbnail (.jpg/.png/.webp) yang dihasilkan job ini."""
+    try:
+        cand = []
+        for f in os.listdir(TMP_DIR):
+            if not f.startswith(job_id + "_"):
+                continue
+            if not f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                continue
+            p = os.path.join(TMP_DIR, f)
+            if p == exclude:
+                continue
+            cand.append(p)
+        if not cand:
+            return None
+        def _pri(x: str) -> int:
+            lx = x.lower()
+            if lx.endswith((".jpg", ".jpeg")): return 0
+            if lx.endswith(".png"): return 1
+            return 2
+        cand.sort(key=lambda p: (_pri(p), -os.path.getmtime(p)))
+        return cand[0]
+    except Exception as e:
+        log.warning("Failed to find job thumbnail | job_id=%s err=%r", job_id, e)
+        return None
+
+
+def _extract_audio_meta(url: str, raw_title: str) -> tuple[str, str]:
+    """Ekstrak (artist, clean_title) dari pola judul seperti 'Artist - Title'."""
+    raw = (raw_title or "").strip()
+    for sep in (" - ", " – ", " — ", " | "):
+        if sep in raw:
+            parts = raw.split(sep, 1)
+            art = parts[0].strip()
+            ttl = parts[1].strip()
+            if art and ttl and len(art) <= 60:
+                return art, ttl
+    return "", raw
+
+
 async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: str | None = None, has_audio: bool = False, known_size: int = 0):
     YT_DLP = shutil.which("yt-dlp")
     if not YT_DLP:
@@ -533,6 +573,9 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
             "--extract-audio",
             "--audio-format", "flac",
             "--audio-quality", "0",
+            # Simpan cover art + metadata supaya bisa di-embed ke ID3 (mirip Spotify).
+            "--write-thumbnail",
+            "--convert-thumbnails", "jpg",
             "--newline",
             "--progress-template", "%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str)s|%(progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
             "-o", out_tpl,
@@ -615,4 +658,12 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
     picked = files[0]
     title = title_gallerydl(picked, job_id, url)
     final_path = _strip_job_prefix(picked, job_id)
+    if fmt_key == "mp3":
+        thumb_path = _find_job_thumbnail(job_id, exclude=final_path)
+        artist, clean_title = _extract_audio_meta(url, title)
+        log.info(
+            "yt-dlp audio result | job_id=%s title=%r artist=%r cover=%s",
+            job_id, clean_title, artist, bool(thumb_path),
+        )
+        return {"path": final_path, "title": clean_title, "artist": artist, "thumb": thumb_path}
     return {"path": final_path, "title": title}
