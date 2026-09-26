@@ -90,25 +90,6 @@ def _flood_wait_seconds(exc:Exception)->int:
         return max(int(getattr(exc,"value",1)),1)
     return 0
 
-async def _edit_caption_via_bot_api(bot,chat_id,message_id,caption):
-    if not bot or not chat_id or not message_id or not caption:
-        log.warning("Pyrofork caption edit skipped | chat_id=%s message_id=%s caption=%s",chat_id,message_id,bool(caption))
-        return
-    for attempt in range(2):
-        try:
-            await bot.edit_message_caption(chat_id=chat_id,message_id=message_id,caption=caption,parse_mode="HTML")
-            log.info("Pyrofork caption edited via Bot API | chat_id=%s message_id=%s",chat_id,message_id)
-            return
-        except RetryAfter as e:
-            wait=max(int(getattr(e,"retry_after",1)),1)
-            log.warning("Pyrofork caption edit RetryAfter | chat_id=%s wait=%s attempt=%s",chat_id,wait,attempt+1)
-            await asyncio.sleep(wait+1)
-        except Exception as e:
-            if "message is not modified" in str(e).lower():
-                return
-            log.warning("Failed to edit Pyrofork caption via Bot API | chat_id=%s message_id=%s attempt=%s err=%r",chat_id,message_id,attempt+1,e)
-            return
-
 async def _disconnect_client(client,label:str):
     try:
         if client and client.is_connected:
@@ -319,6 +300,7 @@ async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,captio
             "chat_id":target_chat_id,
             "video":file_path,
             "caption":caption,
+            "parse_mode":enums.ParseMode.HTML if enums else None,
             "supports_streaming":True,
             "disable_notification":True,
             "reply_to_message_id":reply_to,
@@ -352,8 +334,10 @@ async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,captio
                 sent=await _send_video(client,kwargs)
             else:
                 raise
-        message_id=getattr(sent,"id",None) or getattr(sent,"message_id",None)
-        await _edit_caption_via_bot_api(bot,chat_id,message_id,caption)
+        # Caption HTML sudah di-parse saat send_video (client parse_mode=HTML,
+        # entity identik dengan edit Bot API: <blockquote expandable> ->
+        # MessageEntityBlockquote collapsed=True). edit_caption tambahan dihapus:
+        # satu round-trip Bot API lebih sedikit per upload, tampilan tidak berubah.
         await _wait_last_progress_task(state)
         elapsed=time.monotonic()-started
         speed=file_size/max(elapsed,0.001)

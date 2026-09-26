@@ -11,6 +11,7 @@ from telegram import InputMediaPhoto,InputMediaVideo
 from telegram.error import RetryAfter
 from .constants import TMP_DIR,MAX_TG_SIZE
 from .utils import detect_media_type,FileSizeLimitExceeded
+from .stages import stage
 from .ytdlp import ytdlp_download
 from .instagram.main import is_instagram_url,instagram_api_download
 from .youtube.main import is_youtube_url
@@ -590,8 +591,10 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             video_fh=None
             thumb_fh=None
             try:
-                meta_video=await asyncio.to_thread(video_meta,file_path)
-                thumb_path=await asyncio.to_thread(make_video_thumbnail,file_path)
+                meta_video,thumb_path=await asyncio.gather(
+                    asyncio.to_thread(video_meta,file_path),
+                    asyncio.to_thread(make_video_thumbnail,file_path),
+                )
                 caption=_build_safe_caption(caption_text,bot_name)
                 sent=await _try_send_video_via_upload_engine(
                     bot=bot,
@@ -634,24 +637,42 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             await _delete_file(fixed_audio,"temp audio")
         await _cleanup_single_file(file_path)
 
-async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id:str|None,has_audio:bool,engine:str|None=None,metadata_ready:bool=False):
+async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id:str|None,has_audio:bool,engine:str|None=None,metadata_ready:bool=False,known_size:int=0):
     if is_instagram_url(raw_url):
         try:
-            return await instagram_api_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
+            t0=time.monotonic()
+            result=await instagram_api_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
+            stage("scrape+download:instagram",t0,job=raw_url)
+            return result
         except FileSizeLimitExceeded:
             raise
         except Exception as e:
             log.warning("Instagram API download failed, falling back to yt-dlp | url=%s err=%r",raw_url,e)
     if is_pinterest_url(raw_url):
-        return await pinterest_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        t0=time.monotonic()
+        result=await pinterest_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        stage("scrape+download:pinterest",t0,job=raw_url)
+        return result
     if is_facebook_url(raw_url):
-        return await facebook_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        t0=time.monotonic()
+        result=await facebook_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        stage("scrape+download:facebook",t0,job=raw_url)
+        return result
     if is_reddit_url(raw_url):
-        return await reddit_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        t0=time.monotonic()
+        result=await reddit_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        stage("scrape+download:reddit",t0,job=raw_url)
+        return result
     if is_x_url(raw_url):
-        return await twitter_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        t0=time.monotonic()
+        result=await twitter_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        stage("scrape+download:twitter",t0,job=raw_url)
+        return result
     if is_threads_url(raw_url):
-        return await threads_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        t0=time.monotonic()
+        result=await threads_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        stage("scrape+download:threads",t0,job=raw_url)
+        return result
     if re.search(r'(?:pixiv\.net|pixiv\.me)', raw_url, re.I):
         log.info("Pixiv URL detected, routing directly to gallery-dl | url=%s", raw_url)
         try:
@@ -669,10 +690,15 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
     if is_youtube_url(raw_url):
         if (engine or "").strip().lower() not in ("","ytdlp"):
             log.warning("Unsupported YouTube engine ignored | url=%s engine=%s",raw_url,engine)
-        result=await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio)
+        t0=time.monotonic()
+        result=await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio,known_size=known_size)
+        stage("scrape+download:youtube",t0,job=raw_url)
         file_path=result.get("path") if isinstance(result,dict) else result
         if not file_path:
             raise RuntimeError("yt-dlp returned no file")
         return result
 
-    return await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio)
+    t0=time.monotonic()
+    result=await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio,known_size=known_size)
+    stage("scrape+download:ytdlp",t0,job=raw_url)
+    return result

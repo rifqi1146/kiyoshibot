@@ -1,6 +1,7 @@
 import os
 import uuid
 import json
+import time
 import shutil
 import logging
 import subprocess
@@ -44,6 +45,9 @@ def _delete_file(path:str|None,label:str):
     except Exception as e:
         log.warning("Failed to delete %s file | path=%s err=%r",label,path,e)
 
+_VIDEO_META_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = 60.0
+
 def _ffprobe_data(path:str)->dict:
     try:
         out=_run_cmd([
@@ -59,6 +63,21 @@ def _ffprobe_data(path:str)->dict:
         return {}
 
 def video_meta(path:str)->dict:
+    """Get metadata with short TTL cache to avoid duplicate ffprobe calls.
+
+    Same file is probed 2-3x during download (remux pre/post, then service).
+    Cache keyed by path + mtime + size so a rewrite invalidates.
+    """
+    try:
+        st = os.stat(path)
+        cache_key = f"{path}:{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        cache_key = None
+    if cache_key:
+        hit = _VIDEO_META_CACHE.get(cache_key)
+        if hit and (time.monotonic() - hit[0]) < _CACHE_TTL:
+            return hit[1]
+
     data=_ffprobe_data(path)
     streams=data.get("streams") or []
     fmt=data.get("format") or {}
@@ -68,13 +87,19 @@ def video_meta(path:str)->dict:
         duration=float(duration_raw or 0)
     except (TypeError,ValueError):
         duration=0.0
-    return {
+    meta = {
         "duration":max(int(round(duration)),0),
         "width":int(video.get("width") or 0),
         "height":int(video.get("height") or 0),
         "codec":str(video.get("codec_name") or ""),
         "pix_fmt":str(video.get("pix_fmt") or ""),
     }
+    if cache_key:
+        _VIDEO_META_CACHE[cache_key] = (time.monotonic(), meta)
+        # keep cache small
+        if len(_VIDEO_META_CACHE) > 256:
+            _VIDEO_META_CACHE.clear()
+    return meta
 
 def remux_video_for_telegram(src_path:str)->str:
     before=video_meta(src_path)

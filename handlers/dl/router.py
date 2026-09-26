@@ -12,6 +12,7 @@ from handlers.join import require_join_or_block
 from utils.config import OWNER_ID
 from database.premium import init_premium_db
 from .constants import TMP_DIR,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOMAINS
+from .stages import stage
 from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
 from .utils import normalize_url,is_invalid_video
@@ -170,7 +171,7 @@ async def _cleanup_download_result(result):
     except Exception as e:
         log.warning("Failed to cleanup download result | err=%r",e)
 
-async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=False,label=None,engine:str|None=None,status_ready:bool=False):
+async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=False,label=None,engine:str|None=None,status_ready:bool=False,known_size:int=0):
     log.info(
         "Start download task | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s label=%s status_ready=%s",
         data.get("url"),fmt_key,format_id,has_audio,engine,label,status_ready,
@@ -196,6 +197,7 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
             message_thread_id=data.get("message_thread_id",getattr(message,"message_thread_id",None) if message else None),
             metadata_ready=status_ready,
             user_id=data.get("user"),
+            known_size=known_size,
         )
     )
 
@@ -243,6 +245,7 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
                 label=f"{picked_height}p",
                 engine=engine,
                 status_ready=status_ready,
+                known_size=int(picked.get("total_size") or 0),
             )
             
     DL_CACHE[dl_id]["res_map"]=res_map
@@ -448,17 +451,22 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
         parse_mode="HTML",
     )
     
-async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0):
+async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0):
     bot=app.bot
     path=None
+    t_detect=time.monotonic()
     try:
         log.info(
             "Download worker start | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s",
             raw_url,fmt_key,format_id,has_audio,engine,
         )
-        if is_tiktok(raw_url):
+        is_tiktok_url=is_tiktok(raw_url)
+        stage("detection",t_detect,job=raw_url)
+        if is_tiktok_url:
             async with TIKTOK_LOCK:
+                t_tiktok=time.monotonic()
                 path=await tiktok_download(raw_url,bot,chat_id,status_msg_id,fmt_key,metadata_ready=metadata_ready)
+                stage("tiktok_download",t_tiktok,job=raw_url)
                 
                 if isinstance(path,dict) and path.get("choice_required")=="tiktok_slideshow":
                     data={
@@ -513,6 +521,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                     raise RuntimeError("Static video")
         else:
             async with YTDLP_SEM:
+                t_dl=time.monotonic()
                 path=await download_non_tiktok(
                     raw_url=raw_url,
                     fmt_key=fmt_key,
@@ -523,10 +532,14 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                     has_audio=has_audio,
                     engine=engine,
                     metadata_ready=metadata_ready,
+                    known_size=known_size,
                 )
+                stage("download",t_dl,job=raw_url)
         prepare_started=time.monotonic()
         path=await prepare_download_result_for_send(path,fmt_key=fmt_key)
+        stage("processing",prepare_started,job=raw_url)
         log.info("Prepare media done | url=%s elapsed=%.2fs",raw_url,time.monotonic()-prepare_started)
+        upload_started=time.monotonic()
         await send_downloaded_media(
             bot=bot,
             chat_id=chat_id,
@@ -536,6 +549,8 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
             fmt_key=fmt_key,
             message_thread_id=message_thread_id,
         )
+        stage("upload",upload_started,job=raw_url)
+        stage("total",t_detect,job=raw_url)
         if status_msg_id:
             await _safe_delete_message(bot,chat_id,status_msg_id,"download status")
     except Exception as e:
@@ -560,6 +575,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                 metadata_ready=metadata_ready,
                 user_id=user_id,
                 _flood_retry=_flood_retry+1,
+                known_size=known_size,
             )
         log.warning("Download worker failed | chat_id=%s url=%s err=%r",chat_id,raw_url,e)
         await _cleanup_download_result(path)
@@ -747,6 +763,7 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         has_audio=bool(picked.get("has_audio")),
         label=f"{height}p",
         engine=engine,
+        known_size=int(picked.get("total_size") or 0),
     )
 
 try:

@@ -11,6 +11,7 @@ from telegram.error import RetryAfter
 from .instagram.main import is_instagram_url
 from .constants import COOKIES_PATH, TMP_DIR, MAX_TG_SIZE
 from .utils import progress_bar, check_media_size_limit
+from .stages import stage
 
 _SIZE_100MB = 100 * 1024 * 1024
 YTDLP_TIMEOUT = int(os.getenv("YTDLP_TIMEOUT", "1800"))
@@ -418,7 +419,7 @@ def _list_job_outputs(job_id: str) -> list[str]:
         log.warning("Failed to list yt-dlp outputs | job_id=%s err=%r", job_id, e)
         return []
 
-async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: str | None = None, has_audio: bool = False):
+async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: str | None = None, has_audio: bool = False, known_size: int = 0):
     YT_DLP = shutil.which("yt-dlp")
     if not YT_DLP:
         raise RuntimeError("yt-dlp not found in PATH")
@@ -534,7 +535,17 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
                 return fallback
         fmt = _build_ytdlp_format(format_id, has_audio)
         log.info("yt-dlp selected format | url=%s format_id=%s has_audio=%s fmt=%s", url, format_id, has_audio, fmt)
-        est_size = await asyncio.to_thread(_probe_total_size_sync, url, fmt)
+
+        # Fast path: resolution picker already ran yt-dlp -J and knows total_size.
+        # Reuse it instead of spawning yt-dlp a second time (measured ~5.8s on YT).
+        est_size = 0
+        if known_size and known_size > 0:
+            est_size = int(known_size)
+            log.info("yt-dlp size from picker | url=%s known_size=%s", url, est_size)
+        if est_size <= 0:
+            t_probe = time.monotonic()
+            est_size = await asyncio.to_thread(_probe_total_size_sync, url, fmt)
+            stage("probe:ytdlp", t_probe, job=url)
         check_media_size_limit(est_size, "Requested video")
         update_interval = 7 if (not est_size and format_id) or est_size >= _SIZE_100MB else 5
         
