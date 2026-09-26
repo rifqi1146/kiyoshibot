@@ -428,6 +428,8 @@ async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int
             log.debug("TikTok progress edit failed | chat_id=%s message_id=%s err=%r",chat_id,status_msg_id,e)
 
 async def _safe_edit_status(bot,chat_id,status_msg_id,text:str,min_interval:float=1.2):
+    if not status_msg_id:
+        return
     cache=getattr(bot,"_status_edit_cache",{})
     key=(chat_id,status_msg_id)
     now=time.monotonic()
@@ -477,7 +479,7 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
     aria2=shutil.which("aria2c")
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
-    total=await _probe_total_bytes(session,media_url,headers=headers) if TIKTOK_PROGRESS else 0
+    total=await _probe_total_bytes(session,media_url,headers=headers) if (TIKTOK_PROGRESS and status_msg_id) else 0
     if total:
         check_media_size_limit(total, "TikTok media")
     out_dir=os.path.dirname(out_path) or "."
@@ -522,6 +524,8 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
         if downloaded>MAX_TG_SIZE:
             await _kill_process(proc,"aria2c")
             raise FileSizeLimitExceeded("TikTok media exceeds 2GB limit. Download canceled.")
+        if not status_msg_id:
+            continue
         now=time.time()
         elapsed=max(now-last_sample_ts,0.001)
         speed_bps=max(downloaded-last_sample_size,0)/elapsed
@@ -554,7 +558,7 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
                 downloaded+=len(chunk)
                 if downloaded>MAX_TG_SIZE:
                     raise FileSizeLimitExceeded("TikTok media exceeds 2GB limit. Download canceled.")
-                if not TIKTOK_PROGRESS:
+                if not TIKTOK_PROGRESS or not status_msg_id:
                     continue
                 now=time.time()
                 elapsed=max(now-last_sample_ts,0.001)

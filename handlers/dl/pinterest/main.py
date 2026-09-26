@@ -305,6 +305,8 @@ def _format_eta(seconds: float) -> str:
     return f"{s}s"
 
 async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
+    if not status_msg_id:
+        return
     try:
         await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
     except Exception:

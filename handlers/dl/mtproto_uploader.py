@@ -267,7 +267,7 @@ async def try_send_video_via_mtproto(bot,chat_id,status_msg_id,file_path,caption
         return False
     key=(int(chat_id),int(status_msg_id) if status_msg_id else 0)
     file_size=os.path.getsize(file_path)
-    show_progress=file_size>=_PROGRESS_MIN_BYTES
+    show_progress=bool(status_msg_id) and file_size>=_PROGRESS_MIN_BYTES
     interval=_progress_interval(file_size)
     started=time.monotonic()
     fast_used=False
