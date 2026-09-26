@@ -27,7 +27,7 @@ _PROGRESS_LOCKS={}
 _SESSION_NAME=os.getenv("MTPROTO_SESSION","tgdata/mtproto_bot")
 _ENABLED=os.getenv("MTPROTO_UPLOAD","1").lower() not in ("0","false","off","no")
 _FAST_STATE_FILE=os.getenv("MTPROTO_FAST_STATE_FILE","tgdata/fasttelethon.json")
-_FAST_UPLOAD_DEFAULT=os.getenv("MTPROTO_FAST_UPLOAD","0").lower() in ("1","true","on","yes")
+_FAST_UPLOAD_DEFAULT=os.getenv("MTPROTO_FAST_UPLOAD","1").lower() in ("1","true","on","yes")
 _PROGRESS_MIN_BYTES=int(os.getenv("MTPROTO_PROGRESS_MIN_BYTES",str(5*1024*1024)))
 _PROGRESS_SMALL_LIMIT=int(os.getenv("MTPROTO_PROGRESS_SMALL_LIMIT",str(100*1024*1024)))
 _PROGRESS_SMALL_INTERVAL=float(os.getenv("MTPROTO_PROGRESS_SMALL_INTERVAL","5.0"))
@@ -195,16 +195,6 @@ async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="
                 f"<code>ETA: {_format_eta(eta)}</code>"
             )
             await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML")
-            log.info(
-                "MTProto upload progress | chat_id=%s %.1f%% %s/%s speed=%s/s eta=%s label=%s",
-                chat_id,
-                percent,
-                _format_size(current),
-                _format_size(total),
-                _format_size(speed),
-                _format_eta(eta),
-                label,
-            )
         except RetryAfter as e:
             wait=int(getattr(e,"retry_after",1))
             log.warning("MTProto progress RetryAfter | chat_id=%s wait=%s",chat_id,wait)
@@ -214,15 +204,35 @@ async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="
                 log.warning("MTProto upload progress edit failed | chat_id=%s err=%r",chat_id,e)
 
 def _make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_progress,interval,label):
-    state={"last_ts":0.0,"last_pct":-1.0,"task":None}
+    state={"last_ts":0.0,"last_pct":-1.0,"last_log_ts":started,"task":None}
     loop=asyncio.get_running_loop()
     def progress_callback(current,total):
-        if not show_progress or not total:
+        if not total:
             return
         if file_size and total<file_size*0.8:
             return
         now=time.monotonic()
+        current=max(int(current or 0),0)
+        total=max(int(total or 0),0)
         pct=(current/total*100) if total else 0
+        # Terminal log: always on (silent mode included), throttled by size-based interval.
+        if pct>=100 or now-state["last_log_ts"]>=interval:
+            state["last_log_ts"]=now
+            elapsed=max(now-started,0.001)
+            speed=current/elapsed
+            eta=(max(total-current,0)/speed) if speed>0 else 0
+            log.info(
+                "MTProto upload progress | chat_id=%s %.1f%% %s/%s speed=%s/s eta=%s label=%s",
+                chat_id,
+                pct,
+                _format_size(current),
+                _format_size(total),
+                _format_size(speed),
+                _format_eta(eta),
+                label,
+            )
+        if not show_progress:
+            return
         if pct<100 and now-state["last_ts"]<interval:
             return
         if pct<100 and state["last_pct"]>=0 and pct-state["last_pct"]<_PROGRESS_STEP:
