@@ -757,12 +757,31 @@ def _filter_urls_for_media(urls:list[str],fmt_key:str="video",meta_items:list[di
     photos=[u for u in urls if _guess_media_type_from_url(u)!="video"]
     if fmt_key=="mp3":
         return videos[:1] if videos else []
+    wanted=_media_types_from_meta(meta_items or [])
+    # Carousel/campuran (mis. 2 video + 1 foto): samakan dengan urutan metadata asli
+    # supaya foto tidak ikut terbuang hanya karena ada video.
+    if wanted and len(wanted)>1:
+        selected=[]
+        used=set()
+        for kind in wanted:
+            pool=videos if kind=="video" else photos
+            for u in pool:
+                if u in used:
+                    continue
+                selected.append(u)
+                used.add(u)
+                break
+        if selected:
+            log.info("Instagram media filtered by metadata | wanted=%s raw=%s selected=%s",wanted,len(urls),len(selected))
+            return selected
     if fmt_key in ("video","mp4"):
+        if videos and photos:
+            log.info("Instagram mixed media without metadata, keeping all | raw=%s videos=%s photos=%s",len(urls),len(videos),len(photos))
+            return urls
         if videos:
             log.info("Instagram format requested video-only | raw=%s videos=%s selected=%s",len(urls),len(videos),len(videos))
             return videos
         log.info("Instagram has no video, falling back to photos | raw=%s photos=%s",len(urls),len(photos))
-    wanted=_media_types_from_meta(meta_items or [])
     if wanted:
         selected=[]
         used=set()
