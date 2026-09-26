@@ -224,9 +224,10 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     settings=get_user_settings(data["user"])
     preferred_height = int(settings.get("youtube_resolution") or 0)
     
+    # Settings "ask" (preferred_height=0) harus tetap memunculkan picker resolusi,
+    # termasuk saat silent mode. Penghapusan pesan picker setelah user memilih
+    # dilakukan di dlres_callback lewat flag DL_CACHE["silent_picker"].
     silent_mode = bool(settings.get("silent_download", 0))
-    if preferred_height == 0 and silent_mode:
-        preferred_height = 720
 
     if preferred_height > 720 and not is_premium_user(data["user"]):
         preferred_height = 720
@@ -251,6 +252,10 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     DL_CACHE[dl_id]["res_map"]=res_map
     if engine:
         DL_CACHE[dl_id]["engine"]=engine
+    # Silent mode: pesan picker ini harus hilang begitu user memilih resolusi.
+    # Flag dititipkan di DL_CACHE supaya dlres_callback tahu harus menghapus,
+    # tanpa mengubah flow non-silent (picker tetap tampil & pesan tetap ada).
+    DL_CACHE[dl_id]["silent_picker"]=silent_mode
         
     if message:
         return await message.edit_text("<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML")
@@ -747,13 +752,31 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text("Resolution is no longer available.")
         
     engine=data.get("engine")
+    silent_picker=bool(data.get("silent_picker"))
     DL_CACHE.pop(dl_id,None)
     
     log.info(
         "Resolution callback selected | url=%s height=%s format_id=%s has_audio=%s engine=%s picked=%s",
         data.get("url"),height,picked.get("format_id"),picked.get("has_audio"),engine,picked,
     )
-    
+
+    # Silent mode: hapus pesan picker begitu resolusi dipilih, lalu teruskan
+    # message=None agar status/progress berikutnya tidak menempel di pesan itu.
+    if silent_picker:
+        await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"resolution picker")
+        return await _start_dl_task(
+            context=context,
+            message=None,
+            data=data,
+            fmt_key="video",
+            format_id=_format_id_for_engine(engine,height,picked),
+            has_audio=bool(picked.get("has_audio")),
+            label=f"{height}p",
+            engine=engine,
+            status_ready=True,
+            known_size=int(picked.get("total_size") or 0),
+        )
+
     return await _start_dl_task(
         context=context,
         message=q.message,
