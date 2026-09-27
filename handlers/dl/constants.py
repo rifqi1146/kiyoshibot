@@ -40,6 +40,15 @@ PREMIUM_ONLY_DOMAINS = {
     "bokepindoh.xxx",
     "bokepinfo.today",
     "bokepinfo.info",
+    "indobocil.com",
+    "lendirqu.surf",
+    "bocilterbaru.surf",
+    "rajabocil.surf",
+    "abgindoterbaru.com",
+    "kangencoli.com",
+    "ksatriabokep.com",
+    "pemburubokep.com",
+    "becekku.live",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -93,4 +102,13 @@ AUTO_DOWNLOAD_DOMAINS = {
     "bokepindoh.xxx",
     "bokepinfo.today",
     "bokepinfo.info",
+    "indobocil.com",
+    "lendirqu.surf",
+    "bocilterbaru.surf",
+    "rajabocil.surf",
+    "abgindoterbaru.com",
+    "kangencoli.com",
+    "ksatriabokep.com",
+    "pemburubokep.com",
+    "becekku.live",
 }

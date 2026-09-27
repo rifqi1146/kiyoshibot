@@ -53,10 +53,28 @@ RETROTUBE_DOMAINS = (
     "bokepindoh.xxx",
     "bokepinfo.today",
     "bokepinfo.info",
+    "indobocil.com",
+    "lendirqu.surf",
+    "bocilterbaru.surf",
+    "rajabocil.surf",
+    "abgindoterbaru.com",
+    "kangencoli.com",
+    "ksatriabokep.com",
+    "pemburubokep.com",
+    "becekku.live",
 )
 
-# Host yang embed-nya didukung khusus (lulustream, mumu). Diprioritaskan.
-_PREFERRED_HOSTS = ("lulust.com", "lulustream.com", "luluvdo.com", "luluvid.com", "mumu.watch")
+# Host yang embed-nya didukung khusus (lulustream, mumu, voe/clone). Diprioritaskan.
+_PREFERRED_HOSTS = (
+    "lulust.com",
+    "lulustream.com",
+    "luluvdo.com",
+    "luluvid.com",
+    "mumu.watch",
+    "voe.sx",
+    "jeremyparticipantanything.com",
+    "miaw.lol",
+)
 
 # Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
 _DECOY_HOSTS = ("test-videos.co.uk",)
@@ -75,6 +93,16 @@ _MIRROR_GROUPS = (
     ),
     ("bokepindoh.design", "bokepindoh.xxx"),
     ("bokepinfo.today", "bokepinfo.info"),
+    (
+        "indobocil.com",
+        "lendirqu.surf",
+        "bocilterbaru.surf",
+        "rajabocil.surf",
+        "abgindoterbaru.com",
+        "kangencoli.com",
+        "ksatriabokep.com",
+        "pemburubokep.com",
+    ),
 )
 
 _SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))
@@ -254,22 +282,30 @@ def _mirror_urls(raw_url: str) -> list:
 
 def _resolve_embed(embed_url: str, referer: str):
     """-> (kind, media_url, thumb) dengan kind di {'hls','mp4'}, atau (None,None,None)."""
-    try:
-        r = curl_requests.get(
-            embed_url,
-            headers={"User-Agent": UA, "Referer": referer or embed_url},
-            impersonate="chrome",
-            timeout=_HTTP_TIMEOUT,
-            allow_redirects=True,
-        )
-    except Exception as e:
-        _dbg("resolve fetch gagal | %s %r", embed_url, e)
-        return None, None, None
-    if r.status_code != 200:
-        _dbg("resolve non-200 | %s %s", embed_url, r.status_code)
-        return None, None, None
+    
+    # Bypass DDoS-Guard untuk voe.sx dengan melakukan rewrite ke domain clone-nya.
+    # Clone (seperti miaw.lol) tidak dilindungi DDG, sehingga script JSON bisa di-extract.
+    embed_url = re.sub(r'https?://(?:www\.)?voe\.sx/e/', 'https://jeremyparticipantanything.com/e/', embed_url)
 
-    text = r.text
+    text = None
+    for attempt in range(2):
+        try:
+            r = curl_requests.get(
+                embed_url,
+                headers={"User-Agent": UA, "Referer": referer or embed_url},
+                impersonate="chrome",
+                timeout=_HTTP_TIMEOUT,
+                allow_redirects=True,
+            )
+            if r.status_code == 200:
+                text = r.text
+                break
+            _dbg("resolve non-200 | %s %s", embed_url, r.status_code)
+        except Exception as e:
+            _dbg("resolve fetch gagal (attempt %s) | %s %r", attempt + 1, embed_url, e)
+            time.sleep(1.0)
+    if not text:
+        return None, None, None
     m = _PACKER_RE.search(text)
     if m:
         try:
@@ -315,9 +351,21 @@ def _resolve_embed(embed_url: str, referer: str):
 def _fetch_segments(master_url: str, referer: str) -> list:
     """Ambil daftar URL segmen .ts dari master -> variant playlist (kualitas terbaik)."""
     h = {"User-Agent": UA, "Referer": referer or master_url}
-    r = curl_requests.get(master_url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code} saat mengambil playlist")
+    
+    def _get_playlist(url: str):
+        last_err = None
+        for attempt in range(3):
+            try:
+                r = curl_requests.get(url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+                if r.status_code == 200:
+                    return r.text
+                last_err = f"HTTP {r.status_code}"
+            except Exception as e:
+                last_err = repr(e)
+            time.sleep(1.0)
+        raise RuntimeError(f"Gagal mengambil playlist setelah 3 percobaan ({last_err})")
+
+    master_text = _get_playlist(master_url)
 
     def _parse(text, base_url):
         best_bw = -1
@@ -343,18 +391,16 @@ def _fetch_segments(master_url: str, referer: str) -> list:
                 segs.append(ln)
         return best_uri, segs
 
-    variant_uri, segs = _parse(r.text, master_url)
-    if "#EXT-X-KEY" in r.text and "AES" in r.text.upper():
+    variant_uri, segs = _parse(master_text, master_url)
+    if "#EXT-X-KEY" in master_text and "AES" in master_text.upper():
         raise RuntimeError("Playlist HLS terenkripsi (AES), belum didukung")
 
     if variant_uri:
         variant_url = urljoin(master_url, variant_uri)
-        r2 = curl_requests.get(variant_url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
-        if r2.status_code != 200:
-            raise RuntimeError(f"HTTP {r2.status_code} saat mengambil variant playlist")
-        if "#EXT-X-KEY" in r2.text and "AES" in r2.text.upper():
+        variant_text = _get_playlist(variant_url)
+        if "#EXT-X-KEY" in variant_text and "AES" in variant_text.upper():
             raise RuntimeError("Playlist HLS terenkripsi (AES), belum didukung")
-        _, segs = _parse(r2.text, variant_url)
+        _, segs = _parse(variant_text, variant_url)
         base = variant_url
     else:
         base = master_url
@@ -549,15 +595,23 @@ async def retrotube_download(
         if not metadata_ready:
             await _safe_edit_status(bot, chat_id, status_msg_id, "<b>Scraping website...</b>")
 
-        # Coba post di domain asal + domain mirror (path identik). Berguna saat domain
-        # asal menyajikan embed terproteksi sementara domain mirror menyajikan lulustream.
-        page_urls = [raw_url] + _mirror_urls(raw_url)
-
+        # Scrape domain asal dulu. Mirror hanya di-scrape kalau domain asal
+        # tidak menghasilkan embed preferred (hemat network dan jauh lebih cepat).
         title = None
         page_thumb = None
         candidate_pairs = []  # (embed_url, referer)
         seen_cands = set()
-        for idx, page_url in enumerate(page_urls):
+
+        def _has_preferred(pairs):
+            return any(
+                any(_host(p[0]) == h or _host(p[0]).endswith("." + h) for h in _PREFERRED_HOSTS)
+                for p in pairs
+            )
+
+        for idx, page_url in enumerate([raw_url] + _mirror_urls(raw_url)):
+            # Jika domain asal sudah menghasilkan preferred embed, stop (tidak perlu scrape mirror).
+            if idx > 0 and _has_preferred(candidate_pairs):
+                break
             try:
                 t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
             except Exception as e:
