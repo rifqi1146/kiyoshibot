@@ -18,8 +18,18 @@ TIKWM_SEARCH_API = "https://www.tikwm.com/api/feed/search"
 TIKWM_RESOLVE_API = "https://www.tikwm.com/api/"
 CF_COOKIE_FILE = os.path.join("data", "tikwm_cf.json")
 
-# cf_clearance umurnya terbatas; anggap basi setelah 25 menit biar aman.
+# cf_clearance umurnya terbatas. TTL ini cuma HINT (untuk log); cookie yang
+# lewat TTL tetap dicoba dulu via curl karena sering masih valid, dan browser
+# solve (~25s) baru dipakai kalau curl benar-benar ditolak Cloudflare.
 CF_COOKIE_TTL = 25 * 60
+
+# tikwm free API membalas code=-1 saat kena limit 1 req/detik. Itu BUKAN masalah
+# cookie Cloudflare, jadi jangan sampai memicu browser solve.
+_RATE_LIMITED = object()
+
+
+class _RateLimited(Exception):
+    """tikwm membalas code=-1 (limit 1 req/detik); sesi Cloudflare masih bagus."""
 
 # Pool video DIPISAH per-keyword. Ini mencegah video hasil search keyword A
 # bocor/terpakai untuk keyword B (dulu pool-nya global sehingga campur).
@@ -126,8 +136,9 @@ def _map_videos(data: dict) -> list[dict]:
 def _search_via_curl(query: str, cf: dict) -> list[dict] | None:
     """Fast-path: keyword search pakai cf_clearance + impersonasi TLS Chrome.
 
-    Return list video kalau sukses, atau None kalau cookie ditolak/expired/error
-    (supaya pemanggil bisa refresh lewat browser).
+    Return list video kalau sukses, None kalau cookie ditolak/expired/error
+    (supaya pemanggil refresh lewat browser), atau raise _RateLimited kalau
+    tikwm cuma membalas limit 1 req/detik (cookie CF tetap valid).
     """
     headers = {
         "User-Agent": cf["ua"],
@@ -155,10 +166,16 @@ def _search_via_curl(query: str, cf: dict) -> list[dict] | None:
         return None
 
     try:
-        return _map_videos(resp.json())
+        data = resp.json()
     except Exception as e:
-        log.warning("Search via curl_cffi parse error: %r", e)
+        # Bukan JSON -> hampir pasti halaman challenge Cloudflare.
+        log.warning("Search via curl_cffi bukan JSON (kemungkinan challenge CF): %r", e)
         return None
+
+    if data.get("code") == -1:
+        raise _RateLimited(data.get("msg") or "Free Api Limit")
+
+    return _map_videos(data)
 
 
 def _fetch_api_in_browser(query: str) -> list[dict]:
@@ -235,18 +252,54 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
 
 
 async def _search_keyword(query: str) -> list[dict]:
-    """Cari video berdasarkan keyword. Cepat via curl_cffi, refresh via browser kalau perlu."""
-    cf = _load_cf_session()
-    if _cf_session_fresh(cf):
+    """Cari video via curl_cffi (cepat); browser solve hanya kalau terpaksa.
+
+    Optimasi bypass Cloudflare:
+    - cookie yang lewat TTL tetap dicoba dulu (TTL cuma estimasi) -> sering
+      menghemat satu browser solve ~25s;
+    - sesi dibaca ulang di dalam _api_gate supaya cookie yang baru di-refresh
+      request lain langsung terpakai (tidak browser solve berkali-kali);
+    - code=-1 (rate limit) diulang tanpa membuang waktu solve browser;
+    - error jaringan sesaat pun diulang dulu sebelum jatuh ke browser.
+    """
+    for _ in range(3):
+        cf = _load_cf_session()
+        if cf is None:
+            break
+        if not _cf_session_fresh(cf):
+            log.debug("Sesi Cloudflare lewat TTL, tetap dicoba via curl")
+
         async with _api_gate():
-            items = await asyncio.to_thread(_search_via_curl, query, cf)
+            # Baca ulang: request lain mungkin baru saja me-refresh cookie.
+            cf = _load_cf_session() or cf
+            try:
+                items = await asyncio.to_thread(_search_via_curl, query, cf)
+            except _RateLimited:
+                items = _RATE_LIMITED
+
+        if items is _RATE_LIMITED:
+            log.warning("Search keyword=%r kena rate limit, ulangi", query)
+            await asyncio.sleep(API_MIN_INTERVAL)
+            continue
         if items is not None:
             return items
-        log.info("Fast search gagal/expired, refresh sesi Cloudflare via browser")
+        break  # cookie ditolak/expired -> refresh lewat browser
+    else:
+        log.warning("Search keyword=%r tetap rate-limited, lewati", query)
+        return []
 
-    # Belum ada sesi valid atau sesi ditolak -> solve Cloudflare pakai browser
+    # Belum ada cookie / cookie ditolak -> solve Cloudflare lewat browser
     # (sekaligus menyimpan cookie + mengembalikan hasil search).
     async with _api_gate():
+        cf = _load_cf_session()
+        if cf is not None:
+            # Request lain rupanya baru refresh cookie; cukup pakai curl.
+            try:
+                items = await asyncio.to_thread(_search_via_curl, query, cf)
+            except _RateLimited:
+                items = None
+            if items is not None:
+                return items
         return await asyncio.to_thread(_fetch_api_in_browser, query)
 
 
