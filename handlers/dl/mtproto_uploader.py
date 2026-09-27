@@ -158,6 +158,16 @@ async def _resolve_entity(client,chat_id):
         log.warning("MTProto iter_dialogs resolve failed | chat_id=%s err=%r",chat_id,e)
     return chat_id
 
+async def fetch_messages_raw(chat_id,ids):
+    """Read-only fetch of messages by id for consumers that need chat history
+    (e.g. rebuilding reply chains the Bot API strips out of nested updates).
+
+    `ids` may be a single int (returns one Message or None) or a list of ints
+    (returns a list of Messages)."""
+    client=await _get_client()
+    entity=await _resolve_entity(client,chat_id)
+    return await client.get_messages(entity,ids=ids)
+
 async def warmup_mtproto_uploader(app=None):
     if not _ENABLED:
         log.info("MTProto uploader warmup skipped | disabled")

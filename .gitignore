@@ -17,3 +17,6 @@ data/cookies.txt
 data/upload_engine.json
 downloads/
 tgdata/
+
+# Agent / tooling notes (keep local)
+AGENTS.md

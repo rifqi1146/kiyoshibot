@@ -7,10 +7,10 @@ from handlers.commands import COMMAND_HANDLERS
 
 log = logging.getLogger(__name__)
 
-_DOLLAR_CMD_MAP = {
-    name: handler
-    for name, handler, _ in COMMAND_HANDLERS
-}
+_DOLLAR_CMD_MAP = {}
+for names, handler, _ in COMMAND_HANDLERS:
+    for name in ([names] if isinstance(names, str) else list(names)):
+        _DOLLAR_CMD_MAP[name] = handler
 
 async def dollar_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message

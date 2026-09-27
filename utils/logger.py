@@ -13,7 +13,14 @@ _COMMAND_NAMES: set[str] | None = None
 def _command_names() -> set[str]:
     global _COMMAND_NAMES
     if _COMMAND_NAMES is None:
-        _COMMAND_NAMES = {c[0] for c in COMMAND_HANDLERS}
+        names: set[str] = set()
+        for entry in COMMAND_HANDLERS:
+            cmd = entry[0]
+            if isinstance(cmd, str):
+                names.add(cmd)
+            else:
+                names.update(cmd)
+        _COMMAND_NAMES = names
     return _COMMAND_NAMES
 
 def _is_image_document(msg) -> bool:

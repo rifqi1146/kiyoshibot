@@ -1,5 +1,5 @@
 from telegram import Update
-from telegram.ext import MessageHandler, ChatMemberHandler, TypeHandler, filters
+from telegram.ext import MessageHandler, ChatMemberHandler, TypeHandler, ContextTypes, filters
 
 from handlers.blacklist import blacklist_message_gate
 from handlers.caca import meta_query
@@ -12,6 +12,7 @@ from handlers.welcome import welcome_handler, welcome_chat_member_handler
 from utils.caca_memory import get_last_message_id as meta_db_get_last_message_id
 from utils.caca_memory import has_last_message_id as meta_db_has_last_message_id
 from utils.logger import log_commands
+from utils.recent_messages import remember as remember_recent_message
 from utils.stop_draft import stopped_generation_handler
 from utils.user_collector import user_collector
 from handlers.gemini import ai_cmd
@@ -77,6 +78,15 @@ async def ai_reply_router(update, context):
         )
     return
 
+async def recent_message_recorder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if msg and msg.chat_id:
+        remember_recent_message(msg.chat_id, msg)
+        reply = getattr(msg, "reply_to_message", None)
+        if reply:
+            remember_recent_message(msg.chat_id, reply)
+
+
 def register_messages(app):
     app.add_handler(
         MessageHandler(filters.ALL, blacklist_message_gate),
@@ -122,6 +132,10 @@ def register_messages(app):
     app.add_handler(
         MessageHandler(filters.ALL & ~filters.COMMAND, user_collector, block=False),
         group=51,
+    )
+    app.add_handler(
+        MessageHandler(filters.ALL, recent_message_recorder, block=False),
+        group=52,
     )
     app.add_handler(
         MessageHandler(filters.ALL, log_commands, block=False),
