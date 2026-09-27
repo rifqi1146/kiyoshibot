@@ -17,7 +17,9 @@ Catatan: semua panggilan curl_cffi bersifat blocking, dijalankan lewat asyncio.t
 import os
 import re
 import time
+import json
 import uuid
+import base64
 import shutil
 import logging
 import subprocess
@@ -78,6 +80,12 @@ _SEG_RETRIES = int(os.getenv("RETROTUBE_SEG_RETRIES", "3"))
 _HTTP_TIMEOUT = int(os.getenv("RETROTUBE_HTTP_TIMEOUT", "30"))
 _FFMPEG_TIMEOUT = int(os.getenv("RETROTUBE_FFMPEG_TIMEOUT", "300"))
 
+# Interval edit pesan progress (detik), adaptif terhadap kecepatan download.
+# Server lambat (< _FAST_SPEED_BPS) diedit lebih jarang agar tidak "flicker".
+_FAST_INTERVAL = float(os.getenv("RETROTUBE_FAST_INTERVAL", "5"))
+_SLOW_INTERVAL = float(os.getenv("RETROTUBE_SLOW_INTERVAL", "10"))
+_FAST_SPEED_BPS = float(os.getenv("RETROTUBE_FAST_SPEED_BPS", "1000000"))  # 1 MB/s
+
 _PACKER_RE = re.compile(
     r"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)",
     re.S,
@@ -128,6 +136,41 @@ def _unpack_eval(packed: str, radix: int, count: int, words: list) -> str:
         if words[i]:
             packed = re.sub(r"\b" + re.escape(_to_base(i, radix)) + r"\b", lambda m, v=words[i]: v, packed)
     return packed
+
+
+def _deobfuscate_voe_json(html_text: str):
+    """Bongkar obfuscation script JSON dari player VOE (seperti miaw.lol)
+    menggunakan ROT13 -> replace patterns -> b64 -> shift(3) -> reverse -> b64 -> JSON.
+    """
+    m = re.search(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html_text, re.S)
+    if not m:
+        return None, None
+    try:
+        arr = json.loads(m.group(1).strip())
+        if not (isinstance(arr, list) and arr and isinstance(arr[0], str)):
+            return None, None
+        obf = arr[0]
+        out = []
+        for ch in obf:
+            o = ord(ch)
+            if 65 <= o <= 90:
+                out.append(chr(((o - 65 + 13) % 26) + 65))
+            elif 97 <= o <= 122:
+                out.append(chr(((o - 97 + 13) % 26) + 97))
+            else:
+                out.append(ch)
+        s1 = "".join(out)
+        for p in ['@$', '^^', '~@', '%?', '*~', '!!', '#&']:
+            s1 = s1.replace(p, '')
+        s3 = base64.b64decode(s1 + '=' * ((4 - len(s1) % 4) % 4)).decode('utf-8', 'replace')
+        s4 = "".join(chr(ord(c) - 3) for c in s3)
+        s5 = s4[::-1]
+        s6 = base64.b64decode(s5 + '=' * ((4 - len(s5) % 4) % 4)).decode('utf-8', 'replace')
+        cfg = json.loads(s6)
+        return cfg.get("source"), cfg.get("direct_access_url")
+    except Exception as e:
+        _dbg("VOE deobfuscate gagal | %r", e)
+        return None, None
 
 
 def _collect_embed_candidates(html_text: str) -> list:
@@ -231,6 +274,13 @@ def _resolve_embed(embed_url: str, referer: str):
             text = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"))
         except Exception as e:
             _dbg("unpack gagal | %s %r", embed_url, e)
+
+    # VOE / kloningnya (miaw.lol): config JSON ter-obfuscate -> m3u8 (source) / mp4.
+    voe_hls, voe_mp4 = _deobfuscate_voe_json(text)
+    if voe_hls:
+        return "hls", voe_hls, None
+    if voe_mp4:
+        return "mp4", voe_mp4, None
 
     # mumu.watch: MASTER_URL disimpan plaintext di JS dengan slash ter-escape (\/).
     if "mumu.watch" in embed_url or "m-cdn.video" in text:
@@ -346,15 +396,34 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
     last_edit = 0.0
     last_pct = -1.0
 
+    start_ts = time.monotonic()
+    last_sample_bytes = 0
+    last_sample_ts = start_ts
+    current_speed = 0.0
+
     async def _emit(force: bool = False):
-        nonlocal last_edit, last_pct
+        nonlocal last_edit, last_pct, last_sample_bytes, last_sample_ts, current_speed
         if not status_msg_id:
             return
-        pct = done * 100.0 / max(1, total)
+
         now = time.monotonic()
-        if not force and (now - last_edit) < 5.0:
+        elapsed_sample = now - last_sample_ts
+        # Update speed reading every 1s
+        if elapsed_sample >= 1.0:
+            current_speed = (total_bytes - last_sample_bytes) / elapsed_sample
+            last_sample_bytes = total_bytes
+            last_sample_ts = now
+        elif current_speed == 0.0 and now > start_ts:
+            current_speed = total_bytes / (now - start_ts)
+
+        # Jika >= 1 MB/s, edit 5s sekali. Jika < 1 MB/s (lambat), edit 10s sekali.
+        interval = _FAST_INTERVAL if current_speed >= _FAST_SPEED_BPS else _SLOW_INTERVAL
+
+        if not force and (now - last_edit) < interval:
             return
+
         last_edit = now
+        pct = done * 100.0 / max(1, total)
         last_pct = pct
         lines = [
             f"<b>{title_text}</b>",
