@@ -44,10 +44,11 @@ RETROTUBE_DOMAINS = (
     "bokepcrot.xyz",
     "lendirqu.stream",
     "lendirqu.wtf",
+    "bokepindoh.design",
 )
 
-# Host yang embed-nya berupa JW Player lulustream (packer + m3u8). Diprioritaskan.
-_PREFERRED_HOSTS = ("lulust.com", "lulustream.com")
+# Host yang embed-nya didukung khusus (lulustream, mumu). Diprioritaskan.
+_PREFERRED_HOSTS = ("lulust.com", "lulustream.com", "mumu.watch")
 
 # Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
 _DECOY_HOSTS = ("test-videos.co.uk",)
@@ -194,6 +195,15 @@ def _resolve_embed(embed_url: str, referer: str):
             text = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"))
         except Exception as e:
             _dbg("unpack gagal | %s %r", embed_url, e)
+
+    # mumu.watch: MASTER_URL disimpan plaintext di JS dengan slash ter-escape (\/).
+    if "mumu.watch" in embed_url or "m-cdn.video" in text:
+        mm = re.search(r'MASTER_URL\s*=\s*"([^"]+)"', text)
+        if mm:
+            return "hls", mm.group(1).replace("\\/", "/"), None
+        mm2 = re.search(r'https?:\\/\\/[^"\']+?master\.m3u8', text)
+        if mm2:
+            return "hls", mm2.group(0).replace("\\/", "/"), None
 
     m3u8 = re.findall(r'file\s*:\s*["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', text)
     if not m3u8:
