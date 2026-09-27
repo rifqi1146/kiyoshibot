@@ -24,6 +24,8 @@ import subprocess
 
 import asyncio
 
+from urllib.parse import urljoin, urlsplit, urlunsplit
+
 from curl_cffi import requests as curl_requests
 
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
@@ -48,10 +50,27 @@ RETROTUBE_DOMAINS = (
 )
 
 # Host yang embed-nya didukung khusus (lulustream, mumu). Diprioritaskan.
-_PREFERRED_HOSTS = ("lulust.com", "lulustream.com", "mumu.watch")
+_PREFERRED_HOSTS = ("lulust.com", "lulustream.com", "luluvdo.com", "mumu.watch")
 
 # Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
 _DECOY_HOSTS = ("test-videos.co.uk",)
+
+# Grup domain mirror: situs yang sama di beberapa domain. Dipakai sebagai fallback:
+# kalau embed di domain asal tidak bisa di-resolve (mis. lendirqu.wtf menyajikan
+# embed bysekoze/miaw yang terproteksi, sedangkan lendirqu.stream menyajikan luluvdo),
+# coba post yang sama (path identik) di domain saudaranya.
+_MIRROR_GROUPS = (
+    ("lendirqu.stream", "lendirqu.wtf"),
+    (
+        "bokepcrot.gives",
+        "bokepcrot.land",
+        "bokepcrot.quest",
+        "bokepcrot.com",
+        "bokepcrot.net",
+        "bokepcrot.xyz",
+    ),
+    ("bokepindoh.design",),
+)
 
 _SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))
 _SEG_RETRIES = int(os.getenv("RETROTUBE_SEG_RETRIES", "3"))
@@ -164,11 +183,27 @@ def _scrape_post(url: str) -> tuple:
             break
 
     candidates = _collect_embed_candidates(html_text)
-    if not candidates:
-        raise RuntimeError("URL video (embed) tidak ditemukan di halaman")
-
     _dbg("post scraped | title=%r candidates=%s", title, candidates)
     return title, thumb, candidates
+
+
+def _mirror_urls(raw_url: str) -> list:
+    """Kembalikan URL post yang sama di domain mirror (path identik), tanpa domain asal."""
+    try:
+        parts = urlsplit(raw_url)
+    except Exception:
+        return []
+    host = (parts.netloc or "").lower()
+    if not host:
+        return []
+    for group in _MIRROR_GROUPS:
+        if any(host == g or host.endswith("." + g) for g in group):
+            return [
+                urlunsplit((parts.scheme, g, parts.path, parts.query, parts.fragment))
+                for g in group
+                if g != host
+            ]
+    return []
 
 
 def _resolve_embed(embed_url: str, referer: str):
@@ -260,8 +295,6 @@ def _fetch_segments(master_url: str, referer: str) -> list:
         raise RuntimeError("Playlist HLS terenkripsi (AES), belum didukung")
 
     if variant_uri:
-        from urllib.parse import urljoin
-
         variant_url = urljoin(master_url, variant_uri)
         r2 = curl_requests.get(variant_url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
         if r2.status_code != 200:
@@ -272,8 +305,6 @@ def _fetch_segments(master_url: str, referer: str) -> list:
         base = variant_url
     else:
         base = master_url
-
-    from urllib.parse import urljoin
 
     urls = []
     for ln in segs:
@@ -433,12 +464,42 @@ async def retrotube_download(
         if not metadata_ready:
             await _safe_edit_status(bot, chat_id, status_msg_id, "<b>Scraping website...</b>")
 
-        title, page_thumb, candidates = await asyncio.to_thread(_scrape_post, raw_url)
-        title = sanitize_filename(title, 100)
+        # Coba post di domain asal + domain mirror (path identik). Berguna saat domain
+        # asal menyajikan embed terproteksi sementara domain mirror menyajikan lulustream.
+        page_urls = [raw_url] + _mirror_urls(raw_url)
+
+        title = None
+        page_thumb = None
+        candidate_pairs = []  # (embed_url, referer)
+        seen_cands = set()
+        for idx, page_url in enumerate(page_urls):
+            try:
+                t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
+            except Exception as e:
+                _dbg("scrape gagal | %s %r", page_url, e)
+                continue
+            if idx == 0 or title is None:
+                title = t
+            if thumb and not page_thumb:
+                page_thumb = thumb
+            for c in cands:
+                if c not in seen_cands:
+                    seen_cands.add(c)
+                    candidate_pairs.append((c, page_url))
+
+        if not candidate_pairs:
+            raise RuntimeError("URL video (embed) tidak ditemukan di halaman")
+
+        # Dahulukan host yang dikenal andal (lulust, luluvdo, mumu) dari semua mirror
+        pref = [p for p in candidate_pairs if any(_host(p[0]) == h or _host(p[0]).endswith("." + h) for h in _PREFERRED_HOSTS)]
+        rest = [p for p in candidate_pairs if p not in pref]
+        candidate_pairs = pref + rest
+
+        title = sanitize_filename(title or "Video", 100)
 
         kind = media_url = embed_thumb = embed_url = None
-        for cand in candidates:
-            k, mu, th = await asyncio.to_thread(_resolve_embed, cand, raw_url)
+        for cand, refers in candidate_pairs:
+            k, mu, th = await asyncio.to_thread(_resolve_embed, cand, refers)
             if mu:
                 kind, media_url, embed_thumb, embed_url = k, mu, th, cand
                 break
