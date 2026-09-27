@@ -62,6 +62,19 @@ RETROTUBE_DOMAINS = (
     "ksatriabokep.com",
     "pemburubokep.com",
     "becekku.live",
+    "lordbokep.com",
+    "bokepnoz.co",
+    "bokepbrut.co",
+    "bokepcluk.com",
+    "bokepjret.net",
+    "bokeplik.com",
+    "bokeplot.com",
+    "bokepmun.com",
+    "bokeprit.in",
+    "bokepsut.in",
+    "bokeptod.pro",
+    "bokepud.in",
+    "growbokep.co",
 )
 
 # Host yang embed-nya didukung khusus (lulustream, mumu, voe/clone). Diprioritaskan.
@@ -74,6 +87,18 @@ _PREFERRED_HOSTS = (
     "voe.sx",
     "jeremyparticipantanything.com",
     "miaw.lol",
+    "lordfile.site",
+    "nozstream.site",
+    "colistream.site",
+    "jretfile.site",
+    "likstream.site",
+    "filendung.site",
+    "munfile.site",
+    "ritfile.site",
+    "sutfile.site",
+    "ngicstream.site",
+    "domfile.site",
+    "growfile.site",
 )
 
 # Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
@@ -328,6 +353,14 @@ def _resolve_embed(embed_url: str, referer: str):
         mm2 = re.search(r'https?:\\/\\/[^"\']+?master\.m3u8', text)
         if mm2:
             return "hls", mm2.group(0).replace("\\/", "/"), None
+
+    # HTML5 <video>/<source> (mis. lordfile.site): mp4 langsung, URL bisa berisi
+    # spasi mentah di nama file -> encode agar bisa diunduh.
+    for m in re.finditer(r'<(?:source|video)\b[^>]*\bsrc=["\']([^"\']+)["\']', text, re.I):
+        u = m.group(1).strip()
+        if re.search(r"\.(?:mp4|m3u8|webm)(?:\?|#|$)", u, re.I):
+            u = u.replace(" ", "%20")
+            return ("hls" if ".m3u8" in u.lower() else "mp4"), u, None
 
     m3u8 = re.findall(r'file\s*:\s*["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', text)
     if not m3u8:
