@@ -118,7 +118,7 @@ def _platform_label(url:str)->str:
         (("reddit.com","redd.it"),"Reddit"),
         (("threads.net","threads.com"),"Threads"),
         (("pinterest.com","pin.it"),"Pinterest"),
-        (("bokepcrot.gives","bokepcrot.land","bokepcrot.quest","bokepcrot.com","bokepcrot.net","bokepcrot.xyz","lendirqu.stream","lendirqu.wtf","bokepindoh.design"),"RetroTube"),
+        (("bokepcrot.gives","bokepcrot.land","bokepcrot.quest","bokepcrot.com","bokepcrot.net","bokepcrot.xyz","lendirqu.stream","lendirqu.wtf","bokepindoh.design","bokepindoh.xxx"),"RetroTube"),
     )
     for domains,label in checks:
         if any(_host_match(host,d) for d in domains):

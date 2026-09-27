@@ -47,10 +47,11 @@ RETROTUBE_DOMAINS = (
     "lendirqu.stream",
     "lendirqu.wtf",
     "bokepindoh.design",
+    "bokepindoh.xxx",
 )
 
 # Host yang embed-nya didukung khusus (lulustream, mumu). Diprioritaskan.
-_PREFERRED_HOSTS = ("lulust.com", "lulustream.com", "luluvdo.com", "mumu.watch")
+_PREFERRED_HOSTS = ("lulust.com", "lulustream.com", "luluvdo.com", "luluvid.com", "mumu.watch")
 
 # Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
 _DECOY_HOSTS = ("test-videos.co.uk",)
@@ -69,7 +70,7 @@ _MIRROR_GROUPS = (
         "bokepcrot.net",
         "bokepcrot.xyz",
     ),
-    ("bokepindoh.design",),
+    ("bokepindoh.design", "bokepindoh.xxx"),
 )
 
 _SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))
