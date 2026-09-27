@@ -386,6 +386,17 @@ def _download_one_segment(url: str, referer: str, out_path: str) -> int:
     raise RuntimeError(f"Gagal mengunduh segmen ({last_err})")
 
 
+def _format_speed(bytes_per_sec: float) -> str:
+    if bytes_per_sec <= 0:
+        return "0 B/s"
+    value = float(bytes_per_sec)
+    for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
+        if value < 1024 or unit == "GB/s":
+            return f"{int(value)} {unit}" if unit == "B/s" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB/s"
+
+
 async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_id, status_msg_id, title_text) -> list:
     sem = asyncio.Semaphore(max(1, _SEG_CONCURRENCY))
     total = len(urls)
@@ -430,6 +441,8 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
             "",
             f"<code>{progress_bar(pct)}</code>",
         ]
+        if current_speed > 0:
+            lines.append(f"<code>Speed: {_format_speed(current_speed)}</code>")
         await _safe_edit_status(bot, chat_id, status_msg_id, "\n".join(lines))
 
     async def worker(idx: int, seg_url: str) -> str:
