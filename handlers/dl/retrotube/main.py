@@ -1,0 +1,487 @@
+"""Extractor generic untuk situs WordPress/RetroTube yang menanamkan embed JW Player
+lulustream (mis. bokepcrot.*, lendirqu.stream).
+
+Alur:
+  1. Ambil halaman post -> judul (og:title), thumbnail (og:image), dan SEMUA kandidat
+     URL embed (itemprop="embedUrl" + <iframe src/data-src>). Host lulustream
+     (lulust.com / lulustream.com) diprioritaskan karena server lain (mis. miaw.lol)
+     memakai player ter-obfuscate + video decoy.
+  2. Coba tiap kandidat -> unpack JS packer (Dean Edwards) -> dapat master.m3u8, atau
+     mp4 langsung (bukan decoy).
+  3. CDN HLS-nya menolak TLS non-browser (403 untuk urllib/yt-dlp/ffmpeg). Jadi
+     master/variant m3u8 dan segmen .ts diunduh via curl_cffi (impersonate="chrome"),
+     lalu digabung dengan ffmpeg concat demuxer -> MP4 (atau MP3 kalau fmt_key=mp3).
+
+Catatan: semua panggilan curl_cffi bersifat blocking, dijalankan lewat asyncio.to_thread.
+"""
+import os
+import re
+import time
+import uuid
+import shutil
+import logging
+import subprocess
+
+import asyncio
+
+from curl_cffi import requests as curl_requests
+
+from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
+from handlers.dl.utils import sanitize_filename, FileSizeLimitExceeded, progress_bar
+
+log = logging.getLogger(__name__)
+
+DEBUG_RETROTUBE = os.getenv("RETROTUBE_DEBUG", "0").strip().lower() in ("1", "true", "on", "yes")
+
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+RETROTUBE_DOMAINS = (
+    "bokepcrot.gives",
+    "bokepcrot.land",
+    "bokepcrot.quest",
+    "bokepcrot.com",
+    "bokepcrot.net",
+    "bokepcrot.xyz",
+    "lendirqu.stream",
+)
+
+# Host yang embed-nya berupa JW Player lulustream (packer + m3u8). Diprioritaskan.
+_PREFERRED_HOSTS = ("lulust.com", "lulustream.com")
+
+# Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
+_DECOY_HOSTS = ("test-videos.co.uk",)
+
+_SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))
+_SEG_RETRIES = int(os.getenv("RETROTUBE_SEG_RETRIES", "3"))
+_HTTP_TIMEOUT = int(os.getenv("RETROTUBE_HTTP_TIMEOUT", "30"))
+_FFMPEG_TIMEOUT = int(os.getenv("RETROTUBE_FFMPEG_TIMEOUT", "300"))
+
+_PACKER_RE = re.compile(
+    r"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)",
+    re.S,
+)
+_BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def _dbg(msg, *args):
+    if DEBUG_RETROTUBE:
+        log.warning("RTDBG | " + msg, *args)
+
+
+def _host(url: str) -> str:
+    try:
+        return (url or "").split("//", 1)[-1].split("/", 1)[0].split("@")[-1].split(":")[0].lower()
+    except Exception:
+        return ""
+
+
+def is_retrotube_url(url: str) -> bool:
+    host = _host(url)
+    if not host:
+        return False
+    return any(host == d or host.endswith("." + d) for d in RETROTUBE_DOMAINS)
+
+
+async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
+    if bot is None or chat_id is None or not status_msg_id:
+        return
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=text, parse_mode="HTML")
+    except Exception as e:
+        _dbg("edit status failed | %r", e)
+
+
+def _to_base(num: int, base: int) -> str:
+    if num == 0:
+        return "0"
+    out = ""
+    while num:
+        out = _BASE36[num % base] + out
+        num //= base
+    return out
+
+
+def _unpack_eval(packed: str, radix: int, count: int, words: list) -> str:
+    for i in range(count - 1, -1, -1):
+        if words[i]:
+            packed = re.sub(r"\b" + re.escape(_to_base(i, radix)) + r"\b", lambda m, v=words[i]: v, packed)
+    return packed
+
+
+def _collect_embed_candidates(html_text: str) -> list:
+    """Kumpulkan semua kandidat URL embed, host lulustream diprioritaskan."""
+    seen = []
+    order = []
+
+    def add(u):
+        u = (u or "").strip()
+        if not u or not u.lower().startswith(("http://", "https://")):
+            return
+        if u in seen:
+            return
+        seen.append(u)
+        order.append(u)
+
+    for m in re.finditer(r'itemprop="embedUrl"\s+content="([^"]+)"', html_text, re.I):
+        add(m.group(1))
+    for m in re.finditer(r'<iframe[^>]+(?:src|data-src)="(https?://[^"]+)"', html_text, re.I):
+        add(m.group(1))
+
+    pref = [u for u in order if any(_host(u) == h or _host(u).endswith("." + h) for h in _PREFERRED_HOSTS)]
+    rest = [u for u in order if u not in pref]
+    return pref + rest
+
+
+def _scrape_post(url: str) -> tuple:
+    """-> (title, thumb_url, [embed_candidates]) dari halaman post."""
+    r = curl_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} saat mengambil halaman")
+    html_text = r.text
+
+    title = None
+    for pat in (
+        r'<meta\s+property="og:title"\s+content="([^"]+)"',
+        r'<meta\s+content="([^"]+)"\s+property="og:title"',
+        r"<title>([^<]+)</title>",
+    ):
+        m = re.search(pat, html_text, re.I)
+        if m:
+            title = m.group(1).strip()
+            break
+    title = title or "Video"
+
+    thumb = None
+    for pat in (
+        r'<meta\s+property="og:image"\s+content="([^"]+)"',
+        r'<meta\s+content="([^"]+)"\s+property="og:image"',
+    ):
+        m = re.search(pat, html_text, re.I)
+        if m:
+            thumb = m.group(1).strip()
+            break
+
+    candidates = _collect_embed_candidates(html_text)
+    if not candidates:
+        raise RuntimeError("URL video (embed) tidak ditemukan di halaman")
+
+    _dbg("post scraped | title=%r candidates=%s", title, candidates)
+    return title, thumb, candidates
+
+
+def _resolve_embed(embed_url: str, referer: str):
+    """-> (kind, media_url, thumb) dengan kind di {'hls','mp4'}, atau (None,None,None)."""
+    try:
+        r = curl_requests.get(
+            embed_url,
+            headers={"User-Agent": UA, "Referer": referer or embed_url},
+            impersonate="chrome",
+            timeout=_HTTP_TIMEOUT,
+            allow_redirects=True,
+        )
+    except Exception as e:
+        _dbg("resolve fetch gagal | %s %r", embed_url, e)
+        return None, None, None
+    if r.status_code != 200:
+        _dbg("resolve non-200 | %s %s", embed_url, r.status_code)
+        return None, None, None
+
+    text = r.text
+    m = _PACKER_RE.search(text)
+    if m:
+        try:
+            text = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"))
+        except Exception as e:
+            _dbg("unpack gagal | %s %r", embed_url, e)
+
+    m3u8 = re.findall(r'file\s*:\s*["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', text)
+    if not m3u8:
+        m3u8 = re.findall(r'https?://[^"\'\s\\]+\.m3u8[^"\'\s\\]*', text)
+    if m3u8:
+        thumbs = re.findall(r'image\s*:\s*["\'](https?://[^"\']+)["\']', text)
+        return "hls", m3u8[0], (thumbs[0] if thumbs else None)
+
+    mp4 = re.findall(r'file\s*:\s*["\'](https?://[^"\']+\.mp4[^"\']*)["\']', text)
+    if not mp4:
+        mp4 = re.findall(r'https?://[^"\'\s\\]+\.mp4[^"\'\s\\]*', text)
+    for u in mp4:
+        if any(_host(u) == d or _host(u).endswith("." + d) for d in _DECOY_HOSTS):
+            continue
+        return "mp4", u, None
+
+    _dbg("no media | %s", embed_url)
+    return None, None, None
+
+
+def _fetch_segments(master_url: str, referer: str) -> list:
+    """Ambil daftar URL segmen .ts dari master -> variant playlist (kualitas terbaik)."""
+    h = {"User-Agent": UA, "Referer": referer or master_url}
+    r = curl_requests.get(master_url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} saat mengambil playlist")
+
+    def _parse(text, base_url):
+        best_bw = -1
+        best_uri = None
+        pending_bw = None
+        segs = []
+        for raw in text.splitlines():
+            ln = raw.strip()
+            if not ln:
+                continue
+            if ln.startswith("#EXT-X-STREAM-INF"):
+                mb = re.search(r"BANDWIDTH=(\d+)", ln)
+                pending_bw = int(mb.group(1)) if mb else 0
+                continue
+            if ln.startswith("#"):
+                continue
+            if pending_bw is not None:
+                if pending_bw > best_bw:
+                    best_bw = pending_bw
+                    best_uri = ln
+                pending_bw = None
+            else:
+                segs.append(ln)
+        return best_uri, segs
+
+    variant_uri, segs = _parse(r.text, master_url)
+    if "#EXT-X-KEY" in r.text and "AES" in r.text.upper():
+        raise RuntimeError("Playlist HLS terenkripsi (AES), belum didukung")
+
+    if variant_uri:
+        from urllib.parse import urljoin
+
+        variant_url = urljoin(master_url, variant_uri)
+        r2 = curl_requests.get(variant_url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+        if r2.status_code != 200:
+            raise RuntimeError(f"HTTP {r2.status_code} saat mengambil variant playlist")
+        if "#EXT-X-KEY" in r2.text and "AES" in r2.text.upper():
+            raise RuntimeError("Playlist HLS terenkripsi (AES), belum didukung")
+        _, segs = _parse(r2.text, variant_url)
+        base = variant_url
+    else:
+        base = master_url
+
+    from urllib.parse import urljoin
+
+    urls = []
+    for ln in segs:
+        if ln.startswith(("http://", "https://")):
+            urls.append(ln)
+        else:
+            urls.append(urljoin(base, ln))
+    if not urls:
+        raise RuntimeError("Tidak ada segmen video di playlist")
+    _dbg("segments found | count=%s", len(urls))
+    return urls
+
+
+def _download_one_segment(url: str, referer: str, out_path: str) -> int:
+    h = {"User-Agent": UA, "Referer": referer}
+    last_err = None
+    for attempt in range(_SEG_RETRIES):
+        try:
+            r = curl_requests.get(url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+            if r.status_code == 200 and r.content:
+                with open(out_path, "wb") as f:
+                    f.write(r.content)
+                return len(r.content)
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = repr(e)
+        time.sleep(0.6 * (attempt + 1))
+    raise RuntimeError(f"Gagal mengunduh segmen ({last_err})")
+
+
+async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_id, status_msg_id, title_text) -> list:
+    sem = asyncio.Semaphore(max(1, _SEG_CONCURRENCY))
+    total = len(urls)
+    done = 0
+    total_bytes = 0
+    lock = asyncio.Lock()
+    emit_lock = asyncio.Lock()
+    last_edit = 0.0
+    last_pct = -1.0
+
+    async def _emit(force: bool = False):
+        nonlocal last_edit, last_pct
+        if not status_msg_id:
+            return
+        pct = done * 100.0 / max(1, total)
+        now = time.monotonic()
+        if not force and (now - last_edit) < 5.0:
+            return
+        last_edit = now
+        last_pct = pct
+        lines = [
+            f"<b>{title_text}</b>",
+            "",
+            f"<code>{progress_bar(pct)}</code>",
+        ]
+        await _safe_edit_status(bot, chat_id, status_msg_id, "\n".join(lines))
+
+    async def worker(idx: int, seg_url: str) -> str:
+        nonlocal done, total_bytes
+        seg_path = os.path.join(work_dir, f"seg_{idx:05d}.ts")
+        async with sem:
+            size = await asyncio.to_thread(_download_one_segment, seg_url, referer, seg_path)
+        exceed = False
+        async with lock:
+            done += 1
+            total_bytes += size
+            exceed = total_bytes > MAX_TG_SIZE
+        if exceed:
+            raise FileSizeLimitExceeded("File melebihi batas 2GB")
+        async with emit_lock:
+            await _emit()
+        return seg_path
+
+    async with emit_lock:
+        await _emit(force=True)
+    results = await asyncio.gather(*(worker(i, u) for i, u in enumerate(urls)))
+    async with emit_lock:
+        await _emit(force=True)
+    return list(results)
+
+
+def _concat(segment_files: list, out_path: str, work_dir: str, audio_only: bool = False) -> str:
+    concat_list = os.path.join(work_dir, "concat.txt")
+    with open(concat_list, "w", encoding="utf-8") as f:
+        for p in segment_files:
+            safe = os.path.abspath(p).replace("'", "'\\''")
+            f.write(f"file '{safe}'\n")
+
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", concat_list]
+    if audio_only:
+        cmd += ["-vn", "-acodec", "libmp3lame", "-q:a", "2", out_path]
+    else:
+        cmd += ["-c", "copy", "-movflags", "faststart", out_path]
+
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=_FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"ffmpeg timeout setelah {_FFMPEG_TIMEOUT}s") from e
+    if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
+        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+    return out_path
+
+
+def _extract_audio(src_path: str, out_path: str) -> str:
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", src_path, "-vn", "-acodec", "libmp3lame", "-q:a", "2", out_path]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=_FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"ffmpeg timeout setelah {_FFMPEG_TIMEOUT}s") from e
+    if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
+        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+    return out_path
+
+
+def _download_direct(url: str, referer: str, out_path: str) -> int:
+    h = {"User-Agent": UA, "Referer": referer}
+    r = curl_requests.get(url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+    if r.status_code != 200 or not r.content:
+        raise RuntimeError(f"Gagal mengunduh file ({r.status_code})")
+    with open(out_path, "wb") as f:
+        f.write(r.content)
+    if os.path.getsize(out_path) > MAX_TG_SIZE:
+        raise FileSizeLimitExceeded("File melebihi batas 2GB")
+    return os.path.getsize(out_path)
+
+
+def _download_thumb(thumb_url: str, out_path: str):
+    if not thumb_url:
+        return None
+    try:
+        r = curl_requests.get(thumb_url, headers={"User-Agent": UA}, impersonate="chrome", timeout=15)
+        if r.status_code == 200 and r.content:
+            with open(out_path, "wb") as f:
+                f.write(r.content)
+            return out_path
+    except Exception as e:
+        _dbg("thumb gagal | %r", e)
+    return None
+
+
+async def retrotube_download(
+    raw_url,
+    fmt_key,
+    bot,
+    chat_id,
+    status_msg_id,
+    format_id: str | None = None,
+    has_audio: bool = False,
+    metadata_ready: bool = False,
+    known_size: int = 0,
+):
+    del format_id, has_audio, known_size
+    work_dir = os.path.join(TMP_DIR, f"rt_{uuid.uuid4().hex[:10]}")
+    os.makedirs(work_dir, exist_ok=True)
+    final_path = None
+    try:
+        if not metadata_ready:
+            await _safe_edit_status(bot, chat_id, status_msg_id, "<b>Scraping website...</b>")
+
+        title, page_thumb, candidates = await asyncio.to_thread(_scrape_post, raw_url)
+        title = sanitize_filename(title, 100)
+
+        kind = media_url = embed_thumb = embed_url = None
+        for cand in candidates:
+            k, mu, th = await asyncio.to_thread(_resolve_embed, cand, raw_url)
+            if mu:
+                kind, media_url, embed_thumb, embed_url = k, mu, th, cand
+                break
+        if not media_url:
+            raise RuntimeError("Tidak ada sumber video yang bisa diunduh dari halaman ini")
+
+        if kind == "hls":
+            segments = await asyncio.to_thread(_fetch_segments, media_url, embed_url)
+            seg_files = await _download_segments(segments, embed_url, work_dir, bot, chat_id, status_msg_id, title)
+            if fmt_key == "mp3":
+                final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp3")
+                await asyncio.to_thread(_concat, seg_files, final_path, work_dir, True)
+            else:
+                final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp4")
+                await asyncio.to_thread(_concat, seg_files, final_path, work_dir, False)
+        else:
+            # mp4 langsung
+            raw_file = os.path.join(work_dir, "direct.mp4")
+            await asyncio.to_thread(_download_direct, media_url, embed_url, raw_file)
+            if fmt_key == "mp3":
+                final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp3")
+                await asyncio.to_thread(_extract_audio, raw_file, final_path)
+            else:
+                final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp4")
+                shutil.move(raw_file, final_path)
+
+        result = {"path": final_path, "title": title}
+
+        if fmt_key == "mp3":
+            thumb_path = await asyncio.to_thread(
+                _download_thumb, page_thumb or embed_thumb, os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_thumb.jpg")
+            )
+            if thumb_path:
+                result["thumb"] = thumb_path
+                result["artist"] = title
+
+        log.info(
+            "RetroTube sukses | title=%r size=%.2fMB kind=%s fmt=%s",
+            title, os.path.getsize(final_path) / 1024 / 1024, kind, fmt_key,
+        )
+        return result
+    except FileSizeLimitExceeded:
+        if final_path and os.path.exists(final_path):
+            try:
+                os.remove(final_path)
+            except OSError:
+                pass
+        raise
+    except Exception:
+        if final_path and os.path.exists(final_path):
+            try:
+                os.remove(final_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)

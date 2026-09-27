@@ -27,6 +27,13 @@ PREMIUM_ONLY_DOMAINS = {
     "xhamster.com",
     "japaneseporn.xxx",
     "xhsocial.com",
+    "bokepcrot.gives",
+    "bokepcrot.land",
+    "bokepcrot.quest",
+    "bokepcrot.com",
+    "bokepcrot.net",
+    "bokepcrot.xyz",
+    "lendirqu.stream",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -67,4 +74,11 @@ AUTO_DOWNLOAD_DOMAINS = {
     "xhsocial.com",
     "youtube.com",
     "youtu.be",
+    "bokepcrot.gives",
+    "bokepcrot.land",
+    "bokepcrot.quest",
+    "bokepcrot.com",
+    "bokepcrot.net",
+    "bokepcrot.xyz",
+    "lendirqu.stream",
 }

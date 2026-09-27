@@ -118,6 +118,7 @@ def _platform_label(url:str)->str:
         (("reddit.com","redd.it"),"Reddit"),
         (("threads.net","threads.com"),"Threads"),
         (("pinterest.com","pin.it"),"Pinterest"),
+        (("bokepcrot.gives","bokepcrot.land","bokepcrot.quest","bokepcrot.com","bokepcrot.net","bokepcrot.xyz","lendirqu.stream"),"RetroTube"),
     )
     for domains,label in checks:
         if any(_host_match(host,d) for d in domains):
@@ -125,7 +126,10 @@ def _platform_label(url:str)->str:
     return "Media"
 
 def _metadata_status(url:str)->str:
-    return f"<b>Scraping {_platform_label(url)} metadata...</b>"
+    lbl = _platform_label(url)
+    if lbl == "RetroTube":
+        return "<b>Scraping website...</b>"
+    return f"<b>Scraping {lbl} metadata...</b>"
     
 async def _safe_delete_message(bot,chat_id,message_id,label:str="message"):
     if not message_id:
