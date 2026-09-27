@@ -34,6 +34,7 @@ PREMIUM_ONLY_DOMAINS = {
     "bokepcrot.net",
     "bokepcrot.xyz",
     "lendirqu.stream",
+    "lendirqu.wtf",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -81,4 +82,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "bokepcrot.net",
     "bokepcrot.xyz",
     "lendirqu.stream",
+    "lendirqu.wtf",
 }

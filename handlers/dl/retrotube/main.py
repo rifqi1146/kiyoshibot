@@ -43,6 +43,7 @@ RETROTUBE_DOMAINS = (
     "bokepcrot.net",
     "bokepcrot.xyz",
     "lendirqu.stream",
+    "lendirqu.wtf",
 )
 
 # Host yang embed-nya berupa JW Player lulustream (packer + m3u8). Diprioritaskan.
