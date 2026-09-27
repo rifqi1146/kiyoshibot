@@ -48,8 +48,11 @@ RETROTUBE_DOMAINS = (
     "bokepcrot.xyz",
     "lendirqu.stream",
     "lendirqu.wtf",
+    "lendirqu.com",
     "bokepindoh.design",
     "bokepindoh.xxx",
+    "bokepinfo.today",
+    "bokepinfo.info",
 )
 
 # Host yang embed-nya didukung khusus (lulustream, mumu). Diprioritaskan.
@@ -58,12 +61,10 @@ _PREFERRED_HOSTS = ("lulust.com", "lulustream.com", "luluvdo.com", "luluvid.com"
 # Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
 _DECOY_HOSTS = ("test-videos.co.uk",)
 
-# Grup domain mirror: situs yang sama di beberapa domain. Dipakai sebagai fallback:
-# kalau embed di domain asal tidak bisa di-resolve (mis. lendirqu.wtf menyajikan
-# embed bysekoze/miaw yang terproteksi, sedangkan lendirqu.stream menyajikan luluvdo),
-# coba post yang sama (path identik) di domain saudaranya.
+# Grup domain mirror: situs yang sama di beberapa domain (isi post & path identik),
+# dipakai sebagai fallback saat embed di domain asal terproteksi/gagal.
 _MIRROR_GROUPS = (
-    ("lendirqu.stream", "lendirqu.wtf"),
+    ("lendirqu.stream", "lendirqu.wtf", "lendirqu.com"),
     (
         "bokepcrot.gives",
         "bokepcrot.land",
@@ -73,6 +74,7 @@ _MIRROR_GROUPS = (
         "bokepcrot.xyz",
     ),
     ("bokepindoh.design", "bokepindoh.xxx"),
+    ("bokepinfo.today", "bokepinfo.info"),
 )
 
 _SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))
