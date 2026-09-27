@@ -143,13 +143,14 @@ async def asupan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_to_message_id=update.message.message_id,
             reply_markup=asupan_keyboard(user.id),
         )
-        state.ASUPAN_MESSAGE_KEYWORD[sent.message_id] = keyword
+        state.ASUPAN_MESSAGE_KEYWORD[(chat.id, sent.message_id)] = keyword
         if should_use_autodel(chat):
             reset_asupan_delete_job(context, chat.id, sent.message_id, update.message.message_id)
         await msg.delete()
-        context.application.create_task(warm_asupan_cache(context.bot))
         if keyword:
             context.application.create_task(warm_keyword_asupan_cache(context.bot, keyword))
+        else:
+            context.application.create_task(warm_asupan_cache(context.bot))
     except Exception as e:
         await msg.edit_text(f"❌ Gagal: {e}")
 
@@ -178,8 +179,8 @@ async def asupan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     try:
         msg_id = q.message.message_id
-        keyword = state.ASUPAN_MESSAGE_KEYWORD.get(msg_id)
-        clear_asupan_delete_job(msg_id)
+        keyword = state.ASUPAN_MESSAGE_KEYWORD.get((q.message.chat_id, msg_id))
+        clear_asupan_delete_job(q.message.chat_id, msg_id)
         data = await get_asupan_fast(context.bot, keyword)
         await q.message.edit_media(
             media=InputMediaVideo(media=data["file_id"]),
@@ -188,7 +189,7 @@ async def asupan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to = q.message.reply_to_message.message_id if q.message.reply_to_message else None
         if should_use_autodel(q.message.chat):
             reset_asupan_delete_job(context, q.message.chat_id, msg_id, reply_to)
-        state.ASUPAN_MESSAGE_KEYWORD[msg_id] = keyword
+        state.ASUPAN_MESSAGE_KEYWORD[(q.message.chat_id, msg_id)] = keyword
         if keyword:
             context.application.create_task(warm_keyword_asupan_cache(context.bot, keyword))
         else:

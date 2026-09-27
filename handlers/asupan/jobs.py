@@ -21,7 +21,7 @@ async def _expire_asupan_job(context: ContextTypes.DEFAULT_TYPE):
     asupan_msg_id = job.data["asupan_msg_id"]
     reply_to = job.data["reply_to"]
 
-    if state.ASUPAN_DELETE_JOBS.get(asupan_msg_id) is not job:
+    if state.ASUPAN_DELETE_JOBS.get((chat_id, asupan_msg_id)) is not job:
         return
 
     try:
@@ -47,12 +47,12 @@ async def _expire_asupan_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         log.exception("[ASUPAN EXPIRE] Error")
 
-    state.ASUPAN_DELETE_JOBS.pop(asupan_msg_id, None)
-    state.ASUPAN_MESSAGE_KEYWORD.pop(asupan_msg_id, None)
+    state.ASUPAN_DELETE_JOBS.pop((chat_id, asupan_msg_id), None)
+    state.ASUPAN_MESSAGE_KEYWORD.pop((chat_id, asupan_msg_id), None)
 
 
 def reset_asupan_delete_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, asupan_msg_id: int, reply_to: int | None):
-    old_job = state.ASUPAN_DELETE_JOBS.pop(asupan_msg_id, None)
+    old_job = state.ASUPAN_DELETE_JOBS.pop((chat_id, asupan_msg_id), None)
     if old_job:
         old_job.schedule_removal()
 
@@ -65,14 +65,14 @@ def reset_asupan_delete_job(context: ContextTypes.DEFAULT_TYPE, chat_id: int, as
             "reply_to": reply_to,
         },
     )
-    state.ASUPAN_DELETE_JOBS[asupan_msg_id] = job
+    state.ASUPAN_DELETE_JOBS[(chat_id, asupan_msg_id)] = job
 
 
-def clear_asupan_delete_job(asupan_msg_id: int):
-    old_job = state.ASUPAN_DELETE_JOBS.get(asupan_msg_id)
+def clear_asupan_delete_job(chat_id: int, asupan_msg_id: int):
+    old_job = state.ASUPAN_DELETE_JOBS.get((chat_id, asupan_msg_id))
     if old_job:
         old_job.schedule_removal()
-        state.ASUPAN_DELETE_JOBS.pop(asupan_msg_id, None)
+        state.ASUPAN_DELETE_JOBS.pop((chat_id, asupan_msg_id), None)
 
 
 def should_use_autodel(chat) -> bool:

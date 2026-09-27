@@ -15,6 +15,7 @@ __pycache__/
 data/*.db
 data/cookies.txt
 data/upload_engine.json
+data/tikwm_cf.json
 downloads/
 tgdata/
 
