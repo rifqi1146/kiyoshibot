@@ -44,6 +44,7 @@ BOT_COMMANDS=[
     ("manga","Read manga"),
     ("ask","Ask Gemini AI"),
     ("music","Search music"),
+    ("nekopoi","Search & download from Nekopoi"),
     ("caca","Chat with Caca"),
     ("groq","Ask Groq AI"),
     ("gsearch","Google search"),

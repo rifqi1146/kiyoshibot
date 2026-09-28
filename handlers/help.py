@@ -136,6 +136,7 @@ HELP_TEXT = {
         "- `/kurs` — Currency conversion\n"
         "- `/lendirqu` — Search & download from LendirQu\n"
         "- `/music` — Search music\n"
+        "- `/nekopoi` — Search & download from Nekopoi\n"
         "- `/nobg` — Remove image background\n"
         "- `/q [N] [r] [color]` — Quote sticker; `N` pesan ke depan, `-N` ke belakang, `r` tampilkan reply, `color` nama/hex/gradient\n"
         "- `/qi [N] [r] [color]` — Quote bergambar wallpaper\n"

@@ -24,6 +24,7 @@ from handlers.networking import whoisdomain_cmd, ip_cmd, domain_cmd, net_cmd
 from handlers.nobg import nobg_cmd
 from handlers.nsfw import nsfw_cmd
 from handlers.retrotubesearch import lendirqu_cmd, becekku_cmd
+from handlers.nekopoisearch import nekopoi_cmd
 from handlers.susunkata import susunkata_cmd
 from handlers.ping import ping_cmd
 from handlers.dl.tiktok.livetiktok import recordlive_cmd, stoprecord_cmd, statusrecord_cmd
@@ -122,6 +123,7 @@ COMMAND_HANDLERS = [
     ("manga", manga_cmd, False),
     ("lendirqu", lendirqu_cmd, False),
     ("becekku", becekku_cmd, False),
+    ("nekopoi", nekopoi_cmd, False),
     ("menu", help_cmd, True),
     ("mode", mode_cmd, False),
     ("moderation", moderation_cmd, False),

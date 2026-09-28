@@ -40,7 +40,7 @@ SITES = {
 }
 _PREFIX_TO_SITE = {cfg["prefix"]: key for key, cfg in SITES.items()}
 
-MAX_RESULTS = 15
+MAX_RESULTS = 30
 PER_PAGE = 5
 CACHE_TTL = 3600  # detik
 
