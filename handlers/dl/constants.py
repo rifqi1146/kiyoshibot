@@ -59,6 +59,8 @@ PREMIUM_ONLY_DOMAINS = {
     "bokepindonesia.me",
     "viralbocil.lol",
     "pawchive.pw",
+    "nekopoi.care",
+    "nekopoi.best",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -131,4 +133,6 @@ AUTO_DOWNLOAD_DOMAINS = {
     "bokepindonesia.me",
     "viralbocil.lol",
     "pawchive.pw",
+    "nekopoi.care",
+    "nekopoi.best",
 }

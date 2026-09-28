@@ -39,8 +39,13 @@ def supports_ytdlp_resolution(url: str) -> bool:
     host = _host(url)
     return any(_host_match(host, d) for d in YTDLP_RESOLUTION_DOMAINS)
 
+def supports_nekopoi_resolution(url: str) -> bool:
+    # Nekopoi punya picker resolusi sendiri (HLS), tanpa yt-dlp.
+    host = _host(url)
+    return host in ("nekopoi.care", "nekopoi.best", "nekopoi.pw", "nekopoi.win")
+
 def supports_resolution_picker(url: str) -> bool:
-    return supports_ytdlp_resolution(url)
+    return supports_ytdlp_resolution(url) or supports_nekopoi_resolution(url)
 
 def supports_both_resolution_engines(url: str) -> bool:
     return False
@@ -262,8 +267,20 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
 
 
 async def get_resolutions(url: str, engine: str | None = None) -> list[dict]:
-    chosen = (engine or "ytdlp").strip().lower()
-    if chosen != "ytdlp":
+    chosen = (engine or "").strip().lower()
+
+    # Nekopoi: engine="nekopoi" dari router, atau deteksi otomatis via host.
+    if chosen == "nekopoi" or (not chosen and supports_nekopoi_resolution(url)):
+        try:
+            from .nekopoi.main import probe_nekopoi
+            probe = await asyncio.to_thread(probe_nekopoi, url)
+            return probe.get("res_list") or []
+        except Exception as e:
+            log.warning("Nekopoi probe failed | url=%s err=%r", url, e)
+            return []
+
+    # Jalur lama: engine ytdlp. Nekopoi tidak pernah lewat sini.
+    if chosen and chosen != "ytdlp":
         log.warning("Unsupported resolution engine ignored | url=%s engine=%s", url, chosen)
     if not supports_ytdlp_resolution(url):
         return []
