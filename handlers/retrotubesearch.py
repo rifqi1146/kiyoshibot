@@ -50,6 +50,25 @@ _SEARCH_CACHE = {}
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
+def _article_stat(article, class_name: str) -> str | None:
+    element = article.find("span", class_=class_name)
+    if not element:
+        return None
+    # Ikon Font Awesome ikut berada di dalam span; ambil teks yang terlihat saja.
+    value = element.get_text(" ", strip=True)
+    return " ".join(value.split()) or None
+
+
+def _article_thumbnail(article, link_tag) -> str | None:
+    thumb = article.get("data-main-thumb")
+    if thumb:
+        return thumb
+    image = article.find("img")
+    if image:
+        return image.get("src") or image.get("data-src") or image.get("data-lazy-src")
+    return None
+
+
 def _do_search_sync(site_key: str, query: str):
     site = SITES[site_key]
     url = f"{site['search_base']}?s={quote_plus(query)}"
@@ -64,11 +83,26 @@ def _do_search_sync(site_key: str, query: str):
             title = a_tag.get("title") or a_tag.get_text(strip=True) or "Unknown title"
             link = a_tag.get("href")
             if link:
-                results.append({"title": title, "url": link})
+                results.append({
+                    "title": title,
+                    "url": link,
+                    "thumbnail": _article_thumbnail(art, a_tag),
+                    "duration": _article_stat(art, "duration"),
+                    "views": _article_stat(art, "views"),
+                })
         return results[:MAX_RESULTS]
     except Exception as e:
         log.warning("Search failed | site=%s q=%r err=%r", site_key, query, e)
         return []
+
+
+def _result_meta(item: dict) -> str:
+    parts = []
+    if item.get("duration"):
+        parts.append(html.escape(item["duration"]))
+    if item.get("views"):
+        parts.append(f"{html.escape(item['views'])} views")
+    return "  ·  ".join(parts) if parts else ""
 
 
 async def _do_search(site_key: str, query: str):
@@ -86,22 +120,32 @@ def _render_page(site_key: str, search_id: str, data: dict):
     start = page * PER_PAGE
     chunk = results[start:start + PER_PAGE]
 
+    # NBSP (U+00A0) dipakai supaya indentasi tetap terlihat di Telegram.
+    indent = "\u00a0\u00a0\u00a0"
+    separator = "─" * 24
+
     text = (
-        f"🔍 <b>{site['label']} Search</b>\n"
-        f"Query: <code>{html.escape(data['query'])}</code>\n\n"
+        f"<b>{site['label']} Search</b>\n"
+        f"<code>{html.escape(data['query'])}</code>\n\n"
     )
     if not results:
         text += "<i>No results found.</i>"
         return text, None
 
+    blocks = []
     for i, item in enumerate(chunk):
         idx = start + i + 1
-        text += (
+        meta = _result_meta(item)
+        block = (
             f"<b>{idx}.</b> "
-            f"<a href=\"{html.escape(item['url'], quote=True)}\">{html.escape(item['title'])}</a>\n"
+            f"<a href=\"{html.escape(item['url'], quote=True)}\">{html.escape(item['title'])}</a>"
         )
+        if meta:
+            block += f"\n{indent}└─ {meta}"
+        blocks.append(block)
 
-    text += f"\n<i>Page {page + 1} of {max_page}</i>"
+    text += "\n\n".join(blocks)
+    text += f"\n\n{separator}\n<i>Page {page + 1} of {max_page}</i>"
 
     keyboard = []
     row_nums = [
@@ -113,10 +157,10 @@ def _render_page(site_key: str, search_id: str, data: dict):
 
     row_nav = []
     if page > 0:
-        row_nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{prefix}:nav:{search_id}:{page - 1}"))
-    row_nav.append(InlineKeyboardButton("❌ Close", callback_data=f"{prefix}:close:{search_id}:0"))
+        row_nav.append(InlineKeyboardButton("Prev", callback_data=f"{prefix}:nav:{search_id}:{page - 1}"))
+    row_nav.append(InlineKeyboardButton("Close", callback_data=f"{prefix}:close:{search_id}:0"))
     if page < max_page - 1:
-        row_nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{prefix}:nav:{search_id}:{page + 1}"))
+        row_nav.append(InlineKeyboardButton("Next", callback_data=f"{prefix}:nav:{search_id}:{page + 1}"))
     keyboard.append(row_nav)
 
     return text, InlineKeyboardMarkup(keyboard)
