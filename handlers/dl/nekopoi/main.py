@@ -39,10 +39,12 @@ import uuid
 import shutil
 import logging
 import asyncio
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from handlers.dl.utils import sanitize_filename, FileSizeLimitExceeded
+
+from .constants import EMBED_HOST_STREAMPOI
 
 log = logging.getLogger(__name__)
 
@@ -125,8 +127,16 @@ def probe_nekopoi(raw_url: str) -> dict:
     if not embeds:
         raise RuntimeError("Tidak ada stream embed di halaman Nekopoi")
 
+    # Hanya host embed yang benar-benar jalur HLS mandiri (streampoi) yang
+    # errornya layak disurface ke user. Embed lain (playmogo/DoodStream butuh
+    # Turnstile, widget discord, dsb.) selalu gagal dengan pesan "packer tidak
+    # ditemukan" yang menyesatkan -> jangan dipakai sebagai pesan akhir.
+    primary_err = None
+    primary_host = None
     last_err = None
     for emb in embeds:
+        emb_host = (urlsplit(emb).hostname or "").lower()
+        is_primary = any(emb_host == d or emb_host.endswith("." + d) for d in EMBED_HOST_STREAMPOI)
         try:
             master = ext.probe_stream(emb, referer=raw_url)
             variants = _dedup_by_height(ext.list_resolutions(master))
@@ -154,8 +164,10 @@ def probe_nekopoi(raw_url: str) -> dict:
         except RuntimeError as e:
             log.warning("Nekopoi embed gagal | embed=%s err=%r", emb, e)
             last_err = e
+            if is_primary and primary_err is None:
+                primary_err, primary_host = e, emb_host
             continue
-    raise last_err or RuntimeError("Gagal mengambil stream Nekopoi dari semua embed")
+    raise primary_err or last_err or RuntimeError("Gagal mengambil stream Nekopoi dari semua embed")
 
 
 def _pick_variant(variants: list, format_id: str | None) -> dict:

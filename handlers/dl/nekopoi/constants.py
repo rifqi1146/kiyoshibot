@@ -16,6 +16,14 @@ UA = (
 )
 _HTTP_TIMEOUT = 45
 
+# Streampoi membangkitkan token `i=<ip>` dari alamat IP yang MELIHAT embed.
+# CDN streamruby.net hanya punya record A (IPv4) di beberapa node -> kalau
+# request embed keluar via IPv6 tetapi request playlist/CDN dipaksa IPv4,
+# token `i=` tidak cocok dengan IP koneksi -> 403 Forbidden.
+# Karena itu SEMUA request (post, embed, playlist, segmen) dikunci ke IPv4
+# supaya token & koneksi selalu satu alamat IP.
+FORCE_IPV4 = os.getenv("NEKOPOI_FORCE_IPV4", "1").strip().lower() in ("1", "true", "on", "yes")
+
 DEBUG_NEKOPOI = os.getenv("NEKOPOI_DEBUG", "0").strip().lower() in ("1", "true", "on", "yes")
 
 # Host halaman post Nekopoi (juga dipakai AUTO_DOWNLOAD_DOMAINS).

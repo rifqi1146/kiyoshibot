@@ -42,6 +42,7 @@ import logging
 from urllib.parse import urljoin, urlsplit
 
 from curl_cffi import requests as curl_requests
+from curl_cffi import CurlOpt
 
 from handlers.dl.utils import sanitize_filename, progress_bar, format_size, format_speed, format_eta
 from handlers.dl.retrotube.packer import _PACKER_RE, _unpack_eval
@@ -50,6 +51,7 @@ from .constants import (
     UA,
     _HTTP_TIMEOUT,
     DEBUG_NEKOPOI,
+    FORCE_IPV4,
     EMBED_HOST_STREAMPOI,
     SEG_CONCURRENCY,
     SEG_RETRIES,
@@ -63,6 +65,25 @@ from .constants import (
 )
 
 log = logging.getLogger(__name__)
+
+# Satu session bersama (thread-local curl handle) dengan IPRESOLVE_V4.
+# Kunci IPv4 wajib: token streampoi memuat `i=<ip>` yang harus sama dengan IP
+# koneksi ke CDN streamruby (lihat catatan di constants.FORCE_IPV4).
+_session = None
+
+
+def _http():
+    """Session curl_cffi terkunci IPv4 (kalau FORCE_IPV4 aktif)."""
+    global _session
+    if _session is None:
+        if FORCE_IPV4:
+            _session = curl_requests.Session(
+                impersonate="chrome",
+                curl_options={CurlOpt.IPRESOLVE: 1},  # CURL_IPRESOLVE_V4
+            )
+        else:
+            _session = curl_requests.Session(impersonate="chrome")
+    return _session
 
 
 def _dbg(msg, *args):
@@ -138,7 +159,7 @@ def _collect_embeds(html_text: str) -> list:
 
 def scrape_post(url: str) -> dict:
     """-> {title, thumbnail, embeds:[url]}"""
-    r = curl_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+    r = _http().get(url, headers={"User-Agent": UA}, timeout=_HTTP_TIMEOUT)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} saat mengambil halaman Nekopoi")
     html_text = r.text
@@ -159,7 +180,7 @@ def _get(url: str, referer: str = "") -> str:
     last = None
     for attempt in range(3):
         try:
-            r = curl_requests.get(url, headers=headers, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+            r = _http().get(url, headers=headers, timeout=_HTTP_TIMEOUT)
             if r.status_code == 200:
                 return r.text
             last = f"HTTP {r.status_code}"
@@ -285,7 +306,7 @@ def _download_segment(url: str, referer: str, out_path: str) -> int:
     last = None
     for attempt in range(SEG_RETRIES):
         try:
-            r = curl_requests.get(url, headers=headers, impersonate="chrome", timeout=SEG_TIMEOUT)
+            r = _http().get(url, headers=headers, timeout=SEG_TIMEOUT)
             if r.status_code == 200 and r.content:
                 with open(out_path, "wb") as f:
                     f.write(r.content)
@@ -452,11 +473,8 @@ async def download_variant(
         concat_path, _ = await _download_segments(
             seg_urls, seg_dir, referer, bot, chat_id, status_msg_id, title, label
         )
-        await safe_edit_status(
-            bot, chat_id, status_msg_id,
-            _progress_text(title, len(seg_urls), len(seg_urls), 0, 0, 0.0, None,
-                           (f"{label} · " if label else "") + "Muxing..."),
-        )
+        # Tidak ada edit "Muxing..." di sini: ffmpeg -c copy cuma beberapa
+        # detik, status langsung berlanjut ke "Uploading" oleh worker.
         await asyncio.to_thread(_run_ffmpeg, [
             "ffmpeg", "-y", "-loglevel", "error",
             "-f", "concat", "-safe", "0", "-i", concat_path,
@@ -515,7 +533,7 @@ def download_thumb(url: str, out_path: str) -> str | None:
     if not url:
         return None
     try:
-        r = curl_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome", timeout=_HTTP_TIMEOUT)
+        r = _http().get(url, headers={"User-Agent": UA}, timeout=_HTTP_TIMEOUT)
         if r.status_code == 200 and r.content:
             with open(out_path, "wb") as f:
                 f.write(r.content)
