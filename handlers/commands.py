@@ -23,6 +23,7 @@ from handlers.music import music_cmd
 from handlers.networking import whoisdomain_cmd, ip_cmd, domain_cmd, net_cmd
 from handlers.nobg import nobg_cmd
 from handlers.nsfw import nsfw_cmd
+from handlers.lendirqu import lendirqu_cmd
 from handlers.susunkata import susunkata_cmd
 from handlers.ping import ping_cmd
 from handlers.dl.tiktok.livetiktok import recordlive_cmd, stoprecord_cmd, statusrecord_cmd
@@ -119,6 +120,7 @@ COMMAND_HANDLERS = [
     ("kick", kick_cmd, False),
     ("kurs", kurs_cmd, False),
     ("manga", manga_cmd, False),
+    ("lendirqu", lendirqu_cmd, False),
     ("menu", help_cmd, True),
     ("mode", mode_cmd, False),
     ("moderation", moderation_cmd, False),

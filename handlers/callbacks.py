@@ -12,6 +12,7 @@ from handlers.quiz import quiz_callback
 from handlers.broadcast import broadcast_callback
 from handlers.setting import setting_callback
 from handlers.manga import manga_callback
+from handlers.lendirqu import lendirqu_callback
 from handlers.blacklist import blacklist_callback_gate
 from handlers.welcome import verify_method_callback
 
@@ -39,6 +40,7 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(setting_callback, pattern=r"^setting:"))
     app.add_handler(CallbackQueryHandler(manga_callback, pattern="^(readmanga_|switchch_|nav_|msearch_|detailmanga_|ignore|close_manga|nhsearch_|nhdetail_|nhread_|nhnav_|maiddet_|maidread_|maidnav_)"))
     app.add_handler(CallbackQueryHandler(dlengine_callback, pattern=r"^dlengine:"))
+    app.add_handler(CallbackQueryHandler(lendirqu_callback, pattern=r"^lq:"))
     app.add_handler(CallbackQueryHandler(verify_method_callback, pattern=r"^vmethod:"))
 
     
