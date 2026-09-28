@@ -129,7 +129,8 @@ def _platform_label(url:str)->str:
             "becekku.live",
             "lordbokep.com", "bokepnoz.co", "bokepbrut.co", "bokepcluk.com",
             "bokepjret.net", "bokeplik.com", "bokeplot.com", "bokepmun.com",
-            "bokeprit.in", "bokepsut.in", "bokeptod.pro", "bokepud.in", "growbokep.co"
+            "bokeprit.in", "bokepsut.in", "bokeptod.pro", "bokepud.in", "growbokep.co",
+            "videobokep.vip", "bokepindonesia.me", "viralbocil.lol"
         ), "RetroTube"),
     )
     for domains,label in checks:

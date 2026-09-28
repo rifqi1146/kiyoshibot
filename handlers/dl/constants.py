@@ -62,6 +62,9 @@ PREMIUM_ONLY_DOMAINS = {
     "bokeptod.pro",
     "bokepud.in",
     "growbokep.co",
+    "videobokep.vip",
+    "bokepindonesia.me",
+    "viralbocil.lol",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -137,4 +140,7 @@ AUTO_DOWNLOAD_DOMAINS = {
     "bokeptod.pro",
     "bokepud.in",
     "growbokep.co",
+    "videobokep.vip",
+    "bokepindonesia.me",
+    "viralbocil.lol",
 }
