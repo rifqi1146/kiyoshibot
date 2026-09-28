@@ -180,6 +180,7 @@ def _platform_label(url:str)->str:
         (("pinterest.com","pin.it"),"Pinterest"),
         (("pawchive.pw",),"Pawchive"),
         (("nekopoi.care","nekopoi.best"),"Nekopoi"),
+        (("punishworld.com",),"PunishWorld"),
         ((
             "bokepcrot.*",
             "lendirqu.*",

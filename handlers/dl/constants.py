@@ -61,6 +61,7 @@ PREMIUM_ONLY_DOMAINS = {
     "pawchive.pw",
     "nekopoi.care",
     "nekopoi.best",
+    "punishworld.com",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -135,4 +136,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "pawchive.pw",
     "nekopoi.care",
     "nekopoi.best",
+    "punishworld.com",
 }
