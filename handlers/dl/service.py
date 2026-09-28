@@ -21,6 +21,7 @@ from .twitter.main import is_x_url,twitter_download
 from .reddit.main import is_reddit_url,reddit_download
 from .pinterest.main import is_pinterest_url,pinterest_download
 from .retrotube.main import is_retrotube_url,retrotube_download
+from .pawchive.main import is_pawchive_url,pawchive_download
 from .remux import video_meta,make_video_thumbnail
 from .mtproto_uploader import try_send_video_via_mtproto
 from .pyrogram_uploader import try_send_video_via_pyrogram
@@ -760,6 +761,11 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
         t0=time.monotonic()
         result=await retrotube_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
         stage("scrape+download:retrotube",t0,job=raw_url)
+        return result
+    if is_pawchive_url(raw_url):
+        t0=time.monotonic()
+        result=await pawchive_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
+        stage("scrape+download:pawchive",t0,job=raw_url)
         return result
     if re.search(r'(?:pixiv\.net|pixiv\.me)', raw_url, re.I):
         log.info("Pixiv URL detected, routing directly to gallery-dl | url=%s", raw_url)

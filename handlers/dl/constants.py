@@ -58,6 +58,7 @@ PREMIUM_ONLY_DOMAINS = {
     "videobokep.vip",
     "bokepindonesia.me",
     "viralbocil.lol",
+    "pawchive.pw",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -129,4 +130,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "videobokep.vip",
     "bokepindonesia.me",
     "viralbocil.lol",
+    "pawchive.pw",
 }

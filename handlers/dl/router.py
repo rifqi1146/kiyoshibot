@@ -177,6 +177,7 @@ def _platform_label(url:str)->str:
         (("reddit.com","redd.it"),"Reddit"),
         (("threads.net","threads.com"),"Threads"),
         (("pinterest.com","pin.it"),"Pinterest"),
+        (("pawchive.pw",),"Pawchive"),
         ((
             "bokepcrot.*",
             "lendirqu.*",

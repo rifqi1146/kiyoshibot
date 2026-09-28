@@ -12,6 +12,39 @@ def progress_bar(percent: float, length: int = 10) -> str:
     empty = length - filled
     return f"[{'■' * filled}{'□' * empty}] {p:.1f}%"
 
+def format_size(num: float) -> str:
+    try:
+        value = float(num or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+def format_speed(bytes_per_sec: float) -> str:
+    if not bytes_per_sec or bytes_per_sec <= 0:
+        return "0 B/s"
+    return f"{format_size(bytes_per_sec)}/s"
+
+def format_eta(seconds: float) -> str:
+    try:
+        total = int(seconds)
+    except (TypeError, ValueError):
+        return "?"
+    if total < 0:
+        return "?"
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
 def fix_surrogates(name: str) -> str:
     name = str(name or "")
     name = re.sub(
