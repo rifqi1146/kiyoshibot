@@ -193,6 +193,46 @@ def _prepare_single_path(file_path:str)->str:
         return file_path
     return remux_video_for_telegram(file_path)
 
+async def download_hls_aes_ffmpeg(
+    playlist_url: str,
+    referer: str,
+    out_path: str,
+    user_agent: str = "",
+    audio_only: bool = False,
+) -> str:
+    """Download HLS AES-128 via ffmpeg (ffmpeg dekripsi sendiri tanpa dependensi crypto)."""
+    headers = f"User-Agent: {user_agent}\r\nReferer: {referer or playlist_url}\r\n"
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-headers", headers,
+        "-i", playlist_url,
+    ]
+    if audio_only:
+        cmd += ["-vn", "-acodec", "libmp3lame", "-q:a", "2", out_path]
+    else:
+        cmd += ["-c", "copy", "-movflags", "+faststart", out_path]
+
+    log.info("HLS AES-128 ffmpeg start | audio=%s url=%s", audio_only, playlist_url[:80])
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=FFMPEG_REMUX_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"ffmpeg AES HLS timeout setelah {FFMPEG_REMUX_TIMEOUT}s")
+    if proc.returncode != 0:
+        err_msg = (stderr or b"").decode(errors="replace").strip()[-400:]
+        raise RuntimeError(f"ffmpeg AES HLS gagal: {err_msg}")
+    if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
+        raise RuntimeError("ffmpeg AES HLS menghasilkan file kosong")
+    log.info("HLS AES-128 done | size=%.2fMB", os.path.getsize(out_path) / 1024 / 1024)
+    return out_path
+
+
 async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
     if fmt_key=="mp3":
         return result

@@ -97,18 +97,21 @@ def _fetch_segments(master_url: str, referer: str) -> list:
         return best_uri, segs
 
     variant_uri, segs = _parse(master_text, master_url)
-    if "#EXT-X-KEY" in master_text and "AES" in master_text.upper():
-        raise RuntimeError("Playlist HLS terenkripsi (AES), belum didukung")
+    is_encrypted = ("#EXT-X-KEY" in master_text and "AES" in master_text.upper())
 
     if variant_uri:
         variant_url = urljoin(master_url, variant_uri)
         variant_text = _get_playlist(variant_url)
         if "#EXT-X-KEY" in variant_text and "AES" in variant_text.upper():
-            raise RuntimeError("Playlist HLS terenkripsi (AES), belum didukung")
+            is_encrypted = True
         _, segs = _parse(variant_text, variant_url)
         base = variant_url
     else:
         base = master_url
+
+    if is_encrypted:
+        # Jika HLS terenkripsi (AES), kembalikan penanda khusus supaya download dilakukan via ffmpeg
+        return ["__AES_HLS__", base]
 
     urls = []
     for ln in segs:

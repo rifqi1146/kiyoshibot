@@ -118,13 +118,25 @@ async def retrotube_download(
                         shutil.move(raw_file, final_path)
                 elif k == "hls":
                     segments = await asyncio.to_thread(_fetch_segments, mu, cand)
-                    seg_files = await _download_segments(segments, cand, work_dir, bot, chat_id, status_msg_id, title)
-                    if fmt_key == "mp3":
-                        final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp3")
-                        await asyncio.to_thread(_concat, seg_files, final_path, work_dir, True)
+                    if segments and segments[0] == "__AES_HLS__":
+                        # HLS AES fallback path
+                        from handlers.dl.remux import download_hls_aes_ffmpeg
+                        from handlers.dl.retrotube.constants import UA
+                        variant_url = segments[1]
+                        if fmt_key == "mp3":
+                            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp3")
+                            await download_hls_aes_ffmpeg(variant_url, cand, final_path, user_agent=UA, audio_only=True)
+                        else:
+                            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp4")
+                            await download_hls_aes_ffmpeg(variant_url, cand, final_path, user_agent=UA, audio_only=False)
                     else:
-                        final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp4")
-                        await asyncio.to_thread(_concat, seg_files, final_path, work_dir, False)
+                        seg_files = await _download_segments(segments, cand, work_dir, bot, chat_id, status_msg_id, title)
+                        if fmt_key == "mp3":
+                            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp3")
+                            await asyncio.to_thread(_concat, seg_files, final_path, work_dir, True)
+                        else:
+                            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_retrotube.mp4")
+                            await asyncio.to_thread(_concat, seg_files, final_path, work_dir, False)
                 else:
                     raw_file = os.path.join(work_dir, "direct.mp4")
                     await asyncio.to_thread(_download_direct, mu, cand, raw_file)

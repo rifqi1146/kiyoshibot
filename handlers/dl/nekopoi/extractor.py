@@ -227,9 +227,13 @@ def _variant_label(uri: str, bandwidth: int) -> int:
     return 240
 
 
-def _reject_encrypted(text: str, what: str):
-    if "#EXT-X-KEY" in text:
-        raise RuntimeError(f"Playlist {what} HLS terenkripsi (AES), belum didukung")
+def _is_aes_encrypted(text: str) -> bool:
+    """True kalau playlist punya kunci AES-128 (ffmpeg bisa dekripsi sendiri)."""
+    for raw in text.splitlines():
+        ln = raw.strip()
+        if ln.startswith("#EXT-X-KEY") and "AES" in ln.upper() and "METHOD=NONE" not in ln.upper():
+            return True
+    return False
 
 
 def _parse_master(master_url: str, text: str) -> list:
@@ -268,7 +272,6 @@ def _parse_master(master_url: str, text: str) -> list:
 
 def list_resolutions(master_url: str, referer: str = "") -> list:
     text = _get(master_url, referer=referer)
-    _reject_encrypted(text, "master")
     variants = _parse_master(master_url, text)
     if not variants:
         raise RuntimeError("Tidak ada varian resolusi di playlist Nekopoi")
@@ -284,7 +287,8 @@ def _is_decoy_seg(url: str) -> bool:
 def list_variant_segments(variant_url: str, referer: str = "") -> list:
     """Playlist varian -> daftar URL segmen .ts absolut."""
     text = _get(variant_url, referer=referer)
-    _reject_encrypted(text, "variant")
+    if _is_aes_encrypted(text):
+        return ["__AES_HLS__", variant_url]
     segs = []
     for raw in text.splitlines():
         ln = raw.strip()
@@ -469,6 +473,13 @@ async def download_variant(
     os.makedirs(seg_dir, exist_ok=True)
     try:
         seg_urls = await asyncio.to_thread(list_variant_segments, variant_url, referer)
+        if len(seg_urls) == 2 and seg_urls[0] == "__AES_HLS__":
+            _dbg("AES-128 detected, delegating to ffmpeg")
+            from handlers.dl.remux import download_hls_aes_ffmpeg
+            await download_hls_aes_ffmpeg(variant_url, referer, out_path, user_agent=UA, audio_only=False)
+            if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
+                raise RuntimeError("Gagal merangkai video Nekopoi via AES ffmpeg (file kosong)")
+            return os.path.getsize(out_path)
         _dbg("segments | %s", len(seg_urls))
         concat_path, _ = await _download_segments(
             seg_urls, seg_dir, referer, bot, chat_id, status_msg_id, title, label
@@ -504,6 +515,14 @@ async def download_audio(
     tmp_ts = out_path + ".src.ts"
     try:
         seg_urls = await asyncio.to_thread(list_variant_segments, variant_url, referer)
+        if len(seg_urls) == 2 and seg_urls[0] == "__AES_HLS__":
+            _dbg("AES-128 audio detected, delegating to ffmpeg")
+            from handlers.dl.remux import download_hls_aes_ffmpeg
+            await download_hls_aes_ffmpeg(variant_url, referer, out_path, user_agent=UA, audio_only=True)
+            if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
+                raise RuntimeError("Gagal membuat MP3 dari Nekopoi via AES ffmpeg")
+            return os.path.getsize(out_path)
+            
         concat_path, _ = await _download_segments(
             seg_urls, seg_dir, referer, bot, chat_id, status_msg_id, title, label
         )
