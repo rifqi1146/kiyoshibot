@@ -5,15 +5,8 @@ DEBUG_RETROTUBE = os.getenv("RETROTUBE_DEBUG", "0").strip().lower() in ("1", "tr
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 RETROTUBE_DOMAINS = (
-    "bokepcrot.gives",
-    "bokepcrot.land",
-    "bokepcrot.quest",
-    "bokepcrot.com",
-    "bokepcrot.net",
-    "bokepcrot.xyz",
-    "lendirqu.stream",
-    "lendirqu.wtf",
-    "lendirqu.com",
+    "bokepcrot.*",
+    "lendirqu.*",
     "bokepindoh.design",
     "bokepindoh.xxx",
     "bokepinfo.today",
@@ -46,6 +39,35 @@ RETROTUBE_DOMAINS = (
     "viralbocil.lol",
 )
 
+def _host_match(host: str, domain: str) -> bool:
+    host = (host or "").lower().split(":", 1)[0]
+    domain = (domain or "").lower()
+    if not host or not domain:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    # Wildcard TLD: "lendirqu.*" cocok untuk lendirqu.pics, lendirqu.hair, dst.
+    if domain.endswith(".*"):
+        base = domain[:-1]  # "lendirqu."
+        return host.startswith(base) and "." not in host[len(base):]
+    return host == domain or host.endswith("." + domain)
+
+
+def is_retrotube_domain(host: str) -> bool:
+    return any(_host_match(host, d) for d in RETROTUBE_DOMAINS)
+
+
+def mirror_domains_for(host: str) -> tuple:
+    """Kembalikan daftar domain dalam grup mirror yang sama (termasuk domain asal)."""
+    host = (host or "").lower().split(":", 1)[0]
+    if host.startswith("www."):
+        host = host[4:]
+    for group in _MIRROR_GROUPS:
+        if any(_host_match(host, g) for g in group):
+            return group
+    return ()
+
+
 # Host yang embed-nya didukung khusus. Diprioritaskan.
 _PREFERRED_HOSTS = (
     "lulust.com",
@@ -77,15 +99,8 @@ _DECOY_HOSTS = ("test-videos.co.uk",)
 
 # Grup domain mirror: situs yang sama di beberapa domain (isi post & path identik)
 _MIRROR_GROUPS = (
-    ("lendirqu.stream", "lendirqu.wtf", "lendirqu.com"),
-    (
-        "bokepcrot.gives",
-        "bokepcrot.land",
-        "bokepcrot.quest",
-        "bokepcrot.com",
-        "bokepcrot.net",
-        "bokepcrot.xyz",
-    ),
+    ("lendirqu.*",),
+    ("bokepcrot.*",),
     ("bokepindoh.design", "bokepindoh.xxx"),
     ("bokepinfo.today", "bokepinfo.info"),
     (
@@ -99,6 +114,11 @@ _MIRROR_GROUPS = (
         "pemburubokep.com",
     ),
 )
+
+_MIRROR_EXTRA_HOSTS = {
+    "lendirqu.*": ("lendirqu.stream", "lendirqu.wtf", "lendirqu.com", "lendirqu.pics", "lendirqu.hair"),
+    "bokepcrot.*": ("bokepcrot.gives", "bokepcrot.land", "bokepcrot.quest", "bokepcrot.com", "bokepcrot.net", "bokepcrot.xyz"),
+}
 
 _SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))
 _SEG_RETRIES = int(os.getenv("RETROTUBE_SEG_RETRIES", "3"))

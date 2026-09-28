@@ -79,6 +79,15 @@ def is_premium_required(url: str, premium_domains: set[str]) -> bool:
         return False
     for d in premium_domains:
         d = d.lower()
+        # Wildcard TLD: "lendirqu.*" cocok untuk lendirqu.pics, lendirqu.hair, dst.
+        if d.endswith(".*"):
+            base = d[:-1]  # "lendirqu."
+            clean = host.split(":", 1)[0]
+            if clean.startswith("www."):
+                clean = clean[4:]
+            if clean.startswith(base) and "." not in clean[len(base):]:
+                return True
+            continue
         if host == d or host.endswith("." + d):
             return True
     return False

@@ -10,7 +10,9 @@ from .constants import (
     _PREFERRED_HOSTS,
     _DECOY_HOSTS,
     _MIRROR_GROUPS,
+    _MIRROR_EXTRA_HOSTS,
     DEBUG_RETROTUBE,
+    mirror_domains_for,
 )
 from .packer import _PACKER_RE, _unpack_eval, _deobfuscate_voe_json
 
@@ -106,22 +108,42 @@ def _scrape_post(url: str, _depth: int = 0) -> tuple:
 
 
 def _mirror_urls(raw_url: str) -> list:
-    """Kembalikan URL post yang sama di domain mirror (path identik), tanpa domain asal."""
+    """Kembalikan URL post yang sama di domain mirror (path identik), tanpa domain asal.
+
+    Domain wildcard (mis. "lendirqu.*") tidak bisa dipakai sebagai host, jadi
+    untuk grup tersebut hanya dipakai domain yang terdaftar eksplisit di
+    _MIRROR_EXTRA_HOSTS + domain asal.
+    """
     try:
         parts = urlsplit(raw_url)
     except Exception:
         return []
-    host = (parts.netloc or "").lower()
+    host = (parts.netloc or "").lower().split(":", 1)[0]
     if not host:
         return []
-    for group in _MIRROR_GROUPS:
-        if any(host == g or host.endswith("." + g) for g in group):
-            return [
-                urlunsplit((parts.scheme, g, parts.path, parts.query, parts.fragment))
-                for g in group
-                if g != host
-            ]
-    return []
+
+    group = mirror_domains_for(host)
+    if not group:
+        return []
+
+    hosts = []
+    for g in group:
+        if g.endswith(".*"):
+            # Wildcard: pakai host yang sudah terverifikasi aktif untuk prefix ini.
+            hosts.extend(_MIRROR_EXTRA_HOSTS.get(g, ()))
+        else:
+            hosts.append(g)
+
+    out = []
+    seen = {host}
+    if host.startswith("www."):
+        seen.add(host[4:])
+    for g in hosts:
+        if g in seen:
+            continue
+        seen.add(g)
+        out.append(urlunsplit((parts.scheme, g, parts.path, parts.query, parts.fragment)))
+    return out
 
 
 def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):

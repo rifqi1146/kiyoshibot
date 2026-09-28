@@ -6,7 +6,7 @@ import asyncio
 
 from handlers.dl.constants import TMP_DIR
 from handlers.dl.utils import sanitize_filename, FileSizeLimitExceeded
-from .constants import RETROTUBE_DOMAINS, _PREFERRED_HOSTS, DEBUG_RETROTUBE
+from .constants import RETROTUBE_DOMAINS, _PREFERRED_HOSTS, DEBUG_RETROTUBE, is_retrotube_domain
 from .extractor import _scrape_post, _mirror_urls, _resolve_embed, _host
 from .download import (
     _fetch_segments,
@@ -31,7 +31,7 @@ def is_retrotube_url(url: str) -> bool:
     host = _host(url)
     if not host:
         return False
-    return any(host == d or host.endswith("." + d) for d in RETROTUBE_DOMAINS)
+    return is_retrotube_domain(host)
 
 
 async def retrotube_download(

@@ -15,6 +15,7 @@ from .constants import TMP_DIR,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOMAINS
 from .stages import stage
 from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
+from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
 from .probe import get_resolutions,supports_resolution_picker,supports_ytdlp_resolution
@@ -26,6 +27,10 @@ from .youtube.main import is_youtube_url, is_youtube_shorts_url, is_youtube_post
 
 log=logging.getLogger(__name__)
 os.makedirs(TMP_DIR,exist_ok=True)
+try:
+    nsfw_db_init()
+except Exception as e:
+    log.warning("NSFW DB init from downloader router failed | err=%r",e)
 TIKTOK_LOCK=asyncio.Semaphore(3)
 YTDLP_SEM=asyncio.Semaphore(4)
 _MAX_FLOOD_RETRY=2
@@ -70,7 +75,61 @@ def _host(url:str)->str:
 def _host_match(host:str,domain:str)->bool:
     host=(host or "").lower()
     domain=(domain or "").lower()
+    if not host or not domain:
+        return False
+    # Wildcard TLD: "lendirqu.*" cocok untuk lendirqu.pics, lendirqu.hair, dst.
+    if domain.endswith(".*"):
+        base = domain[:-1]  # "lendirqu."
+        clean = host.split(":", 1)[0]
+        if clean.startswith("www."):
+            clean = clean[4:]
+        if clean.startswith(base) and "." not in clean[len(base):]:
+            return True
+        return False
     return host==domain or host.endswith("."+domain)
+
+def _premium_link_allowed(url:str,user_id:int,chat_id:int,chat_type:str)->tuple[bool, str]:
+    """Cek apakah link dari domain premium-only boleh diunduh.
+
+    Syarat ganda untuk domain premium:
+      1. User HARUS premium.
+      2. Tempat HARUS aman (private chat ATAU grup yang mengaktifkan NSFW).
+      
+    Returns: (is_allowed, error_reason_type)
+    """
+    if not is_premium_required(url,PREMIUM_ONLY_DOMAINS):
+        return True, ""
+        
+    if not is_premium_user(user_id):
+        return False, "not_premium"
+        
+    if chat_type == "private":
+        return True, ""
+        
+    try:
+        if is_nsfw_allowed(chat_id,chat_type):
+            return True, ""
+    except Exception as e:
+        log.warning("NSFW check failed | chat_id=%r chat_type=%r err=%r",chat_id,chat_type,e)
+        
+    return False, "not_nsfw"
+
+def _premium_link_block_text(kind:str, reason:str)->str:
+    head="🔞 <b>Premium-only website</b>\n\n"
+    if kind=="batch":
+        head="🔞 <b>One of these links is from a premium-only website</b>\n\n"
+        
+    if reason == "not_premium":
+        return head + "This website is restricted to <b>Premium Users</b> only."
+        
+    return (
+        head
+        + "<b>NSFW is disabled in this group!</b>\n\n"
+        + "Even as a premium user, you can only download from this site if:\n"
+        + "• You use the bot in a <b>private chat</b>, or\n"
+        + "• <b>NSFW</b> is enabled in this group (<code>/nsfw enable</code>)."
+    )
+
 
 def is_supported_platform(url:str)->bool:
     host=_host(url)
@@ -119,8 +178,8 @@ def _platform_label(url:str)->str:
         (("threads.net","threads.com"),"Threads"),
         (("pinterest.com","pin.it"),"Pinterest"),
         ((
-            "bokepcrot.gives", "bokepcrot.land", "bokepcrot.quest", "bokepcrot.com", "bokepcrot.net", "bokepcrot.xyz",
-            "lendirqu.stream", "lendirqu.wtf", "lendirqu.com",
+            "bokepcrot.*",
+            "lendirqu.*",
             "bokepindoh.design", "bokepindoh.xxx",
             "bokepinfo.today", "bokepinfo.info",
             "indobocil.com",
@@ -215,6 +274,7 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
             metadata_ready=status_ready,
             user_id=data.get("user"),
             known_size=known_size,
+            chat_type=data.get("chat_type", "private"),
         )
     )
 
@@ -378,8 +438,9 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
             return
         user_id=update.effective_user.id
         for u in batch_urls:
-            if is_premium_required(u,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
-                return await msg.reply_text("🔞 One of these links can only be downloaded by premium users.")
+            ok,reason=_premium_link_allowed(u,user_id,chat.id,chat.type)
+            if not ok:
+                return await msg.reply_text(_premium_link_block_text("batch",reason),parse_mode="HTML")
         wait_time=_check_and_consume_limit(user_id)
         if wait_time>0:
             return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
@@ -389,7 +450,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         silent_mode=bool(settings.get("silent_download")) and fmt_key=="video"
         status_msg=None
         if not silent_mode:
-            status_msg=await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(batch_urls)}</code> selesai",parse_mode="HTML")
+            status_msg=await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(batch_urls)}</code> done",parse_mode="HTML")
         else:
             try: await msg.set_reaction("😍")
             except Exception: pass
@@ -419,8 +480,9 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return
         
     user_id = update.effective_user.id
-    if is_premium_required(text,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
-        return await msg.reply_text("🔞 This link can only be downloaded by premium users.")
+    ok,reason=_premium_link_allowed(text,user_id,chat.id,chat.type)
+    if not ok:
+        return await msg.reply_text(_premium_link_block_text("single",reason),parse_mode="HTML")
         
     wait_time = _check_and_consume_limit(user_id)
     if wait_time > 0:
@@ -431,6 +493,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         "url":text,
         "user":user_id,
         "chat_id":chat.id,
+        "chat_type":chat.type,
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
         "ts":time.time(),
@@ -483,6 +546,12 @@ async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text("Request expired.")
     if q.from_user.id!=data["user"]:
         return await q.answer("This request does not belong to you.",show_alert=True)
+        
+    ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
+    if not ok:
+        DL_CACHE.pop(dl_id, None)
+        return await q.edit_message_text(_premium_link_block_text("single", reason), parse_mode="HTML")
+        
     if action=="close":
         DL_CACHE.pop(dl_id,None)
         return await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"download request menu")
@@ -517,7 +586,23 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
         parse_mode="HTML",
     )
     
-async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0):
+async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0,chat_type:str=""):
+    # Gate terakhir: jangan pernah unduh domain premium-only tanpa izin,
+    # walau request datang dari worker/cache lama.
+    if user_id is not None:
+        if not chat_type:
+            try:
+                chat_type=str((await app.get_chat(chat_id)).type or "")
+            except Exception as e:
+                log.debug("Failed to resolve chat type for premium gate | chat_id=%r err=%r",chat_id,e)
+                chat_type=""
+        _ok,_reason=_premium_link_allowed(raw_url,int(user_id),int(chat_id),chat_type)
+        if not _ok:
+            log.warning("Download worker blocked premium-only URL | url=%s user=%s chat=%s reason=%s",raw_url,user_id,chat_id,_reason)
+            if status_msg_id:
+                await _safe_edit_error(app.bot,chat_id,status_msg_id,_premium_link_block_text("single",_reason))
+            return
+
     bot=app.bot
     path=None
     t_detect=time.monotonic()
@@ -647,6 +732,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                 user_id=user_id,
                 _flood_retry=_flood_retry+1,
                 known_size=known_size,
+                chat_type=chat_type,
             )
         log.warning("Download worker failed | chat_id=%s url=%s err=%r",chat_id,raw_url,e)
         await _cleanup_download_result(path)
@@ -756,16 +842,18 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     all_batch_urls = [u for u in extract_all_urls(" ".join(context.args), limit=5) if is_supported_platform(u)]
     user_id = update.effective_user.id
     if len(all_batch_urls) > 1:
+        chat = msg.chat
         for u in all_batch_urls:
-            if is_premium_required(u, PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
-                return await msg.reply_text("🔞 One of these links can only be downloaded by premium users.")
+            ok,reason=_premium_link_allowed(u, user_id, chat.id, chat.type)
+            if not ok:
+                return await msg.reply_text(_premium_link_block_text("batch",reason), parse_mode="HTML")
         wait_time = _check_and_consume_limit(user_id)
         if wait_time > 0:
             return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
         settings = get_user_settings(user_id)
         auto_choice = str(settings.get("autodl_format") or "video").lower()
         fmt_key = "mp3" if auto_choice == "mp3" else "video"
-        status_msg = await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(all_batch_urls)}</code> selesai", parse_mode="HTML")
+        status_msg = await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(all_batch_urls)}</code> done", parse_mode="HTML")
         context.application.create_task(
             _batch_dl_worker(
                 app=context.application,
@@ -782,8 +870,9 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
     url=context.args[0]
     
-    if is_premium_required(url,PREMIUM_ONLY_DOMAINS) and not is_premium_user(user_id):
-        return await msg.reply_text("🔞 Download from this website is for premium users only.")
+    ok,reason=_premium_link_allowed(url, user_id, msg.chat.id, msg.chat.type)
+    if not ok:
+        return await msg.reply_text(_premium_link_block_text("single",reason), parse_mode="HTML")
         
     wait_time = _check_and_consume_limit(user_id)
     if wait_time > 0:
@@ -794,6 +883,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
         "url":url,
         "user":user_id,
         "chat_id":msg.chat.id,
+        "chat_type":msg.chat.type,
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
         "ts":time.time(),
@@ -839,6 +929,12 @@ async def dlengine_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text("Request expired.")
     if q.from_user.id!=data["user"]:
         return await q.answer("This request does not belong to you.",show_alert=True)
+    
+    ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
+    if not ok:
+        DL_CACHE.pop(dl_id, None)
+        return await q.edit_message_text(_premium_link_block_text("single", reason), parse_mode="HTML")
+        
     data["engine"]="ytdlp"
     log.info("Engine callback selected | url=%s engine=ytdlp",data.get("url"))
     await q.edit_message_text("<b>Fetching video formats...</b>",parse_mode="HTML")
@@ -857,6 +953,12 @@ async def dl_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return await q.edit_message_text("Data expired.")
     if q.from_user.id!=data["user"]:
         return await q.answer("This request does not belong to you.",show_alert=True)
+    
+    ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
+    if not ok:
+        DL_CACHE.pop(dl_id, None)
+        return await q.edit_message_text(_premium_link_block_text("single", reason), parse_mode="HTML")
+        
     if choice=="cancel":
         DL_CACHE.pop(dl_id,None)
         return await q.edit_message_text("Cancelled.")
@@ -914,6 +1016,11 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         
     if q.from_user.id!=data["user"]:
         return await q.answer("This request does not belong to you.",show_alert=True)
+        
+    ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
+    if not ok:
+        DL_CACHE.pop(dl_id, None)
+        return await q.edit_message_text(_premium_link_block_text("single", reason), parse_mode="HTML")
         
     try:
         height=int(height_raw)
