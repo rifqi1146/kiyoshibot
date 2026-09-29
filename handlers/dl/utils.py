@@ -79,7 +79,7 @@ def detect_media_type(path: str) -> str:
     ext = os.path.splitext(path.lower())[1]
     if ext in (".jpg", ".jpeg", ".png", ".webp"):
         return "photo"
-    if ext in (".mp4", ".mkv", ".webm"):
+    if ext in (".mp4", ".mkv", ".webm", ".mov", ".m4v"):
         return "video"
     return "unknown"
 

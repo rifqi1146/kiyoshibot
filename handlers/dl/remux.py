@@ -201,9 +201,38 @@ async def remux_and_thumbnail_parallel(src_path:str)->tuple[str, str|None, dict]
         
     return remuxed_path, thumb_path, meta
 
+def convert_gif_to_mp4(src_path:str, delete_src:bool=True)->str:
+    """Konversi animasi GIF ke MP4 (H.264/yuv420p) agar kompatibel dengan Telegram video/album."""
+    if not src_path or not os.path.exists(src_path):
+        return src_path
+    out_path = f"{TMP_DIR}/{uuid.uuid4().hex}_gif.mp4"
+    try:
+        _run_cmd([
+            "ffmpeg", "-y",
+            "-i", src_path,
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-pix_fmt", "yuv420p",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-movflags", "faststart",
+            out_path,
+        ], timeout=FFMPEG_REMUX_TIMEOUT)
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            if delete_src and out_path != src_path:
+                _delete_file(src_path, "original gif after conversion")
+            return out_path
+    except Exception as e:
+        log.warning("GIF to MP4 conversion failed | src=%s err=%s", os.path.basename(src_path), e)
+        _delete_file(out_path, "failed gif conversion")
+    return src_path
+
+
 def _prepare_single_path(file_path:str)->str:
     if not file_path or not os.path.exists(file_path):
         return file_path
+    if file_path.lower().endswith(".gif"):
+        file_path = convert_gif_to_mp4(file_path)
     if detect_media_type(file_path)!="video":
         return file_path
     return remux_video_for_telegram(file_path)
@@ -256,7 +285,12 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
         p = item.get("path")
         if not p or not os.path.exists(p):
             return item
+        was_gif = p.lower().endswith(".gif")
+        if was_gif:
+            p = await asyncio.to_thread(convert_gif_to_mp4, p)
+            item["path"] = p
         if detect_media_type(p) == "video":
+            item["type"] = "animation" if was_gif else "video"
             new_path, thumb_path, meta = await remux_and_thumbnail_parallel(p)
             item["path"] = new_path
             if thumb_path:
@@ -275,6 +309,12 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
     if isinstance(result,dict):
         p=result.get("path")
         if p and os.path.exists(p):
+            was_gif = p.lower().endswith(".gif")
+            if was_gif:
+                p = await asyncio.to_thread(convert_gif_to_mp4, p)
+                result["path"] = p
+                result["type"] = "animation"
+                result["is_animation"] = True
             if detect_media_type(p)=="video":
                 new_path,thumb_path,meta=await remux_and_thumbnail_parallel(p)
                 result["path"]=new_path

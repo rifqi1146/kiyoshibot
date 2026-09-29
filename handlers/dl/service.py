@@ -426,6 +426,43 @@ async def _send_video_with_fallback(bot,chat_id,video,caption,reply_to=None,mess
             log.exception("Failed to send video | chat_id=%s",chat_id)
             raise
 
+async def _send_animation_with_fallback(bot,chat_id,animation,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumbnail=None):
+    kwargs={
+        "chat_id":chat_id,
+        "animation":animation,
+        "caption":caption,
+        "parse_mode":"HTML",
+        "reply_to_message_id":reply_to,
+        "message_thread_id":message_thread_id,
+        "disable_notification":True,
+    }
+    if duration:
+        kwargs["duration"]=int(duration)
+    if width:
+        kwargs["width"]=int(width)
+    if height:
+        kwargs["height"]=int(height)
+    if thumbnail:
+        kwargs["thumbnail"]=thumbnail
+    while True:
+        try:
+            started=time.monotonic()
+            result=await bot.send_animation(**kwargs)
+            log.info("Telegram send done | chat_id=%s func=send_animation elapsed=%.2fs",chat_id,time.monotonic()-started)
+            return result
+        except RetryAfter as e:
+            retry_after=max(int(getattr(e,"retry_after",3)),1)
+            log.warning("RetryAfter send_animation | chat_id=%s wait=%s",chat_id,retry_after)
+            await asyncio.sleep(retry_after+1)
+        except Exception as e:
+            if kwargs.get("reply_to_message_id") and _is_reply_not_found_error(e):
+                _safe_seek(animation,"animation",chat_id)
+                _safe_seek(thumbnail,"thumbnail",chat_id)
+                kwargs.pop("reply_to_message_id",None)
+                continue
+            log.exception("Failed to send animation | chat_id=%s",chat_id)
+            raise
+
 async def _send_audio_with_fallback(bot,chat_id,audio,title,performer,filename,reply_to=None,message_thread_id=None,thumbnail=None):
     kwargs={
         "chat_id":chat_id,
@@ -486,6 +523,10 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
                 item_parse_mode="HTML" if is_first else None
                 if file_path and os.path.exists(file_path):
                     detected=detect_media_type(file_path)
+                    if file_path.lower().endswith(".gif"):
+                        # GIF harus sudah dikonversi ke MP4 sebelum tahap ini.
+                        log.warning("Skipping unconverted GIF in album | chat_id=%s path=%s",chat_id,os.path.basename(file_path))
+                        continue
                     if detected == "photo":
                         await _ensure_photo_size(file_path)
                     fh=open(file_path,"rb")
@@ -629,23 +670,79 @@ async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key
 
 async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,message_thread_id=None):
     if isinstance(path,dict) and path.get("items"):
-        items=path.get("items") or []
-        first=items[0] if items else {}
-        first_path=first.get("path")
-        first_type=str(first.get("type") or "").strip().lower()
-        if first_path and os.path.exists(first_path):
-            first_type=detect_media_type(first_path)
-        await _set_uploading_status(bot,chat_id,status_msg_id,"album" if len(items)>1 else ("video" if first_type=="video" else "photo"))
-        try:
-            # Coba kirim via Rich Slideshow jika semua item adalah foto
-            sent = await _try_send_rich_slideshow(
+        all_items=path.get("items") or []
+        album_items=[it for it in all_items if it.get("type")!="animation"]
+        anim_items=[it for it in all_items if it.get("type")=="animation"]
+
+        # 1. Kirim album foto/video (tanpa animasi GIF)
+        if len(album_items) == 1:
+            it = album_items[0]
+            single_payload = {
+                "path": it.get("path"),
+                "title": path.get("title"),
+                "thumb": it.get("thumb"),
+                "meta": it.get("meta"),
+            }
+            await send_downloaded_media(
                 bot=bot, chat_id=chat_id, reply_to=reply_to,
-                result=path, fmt_key=fmt_key, message_thread_id=message_thread_id,
+                status_msg_id=status_msg_id, path=single_payload,
+                fmt_key=fmt_key, message_thread_id=message_thread_id,
             )
-            if not sent:
-                await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=path,message_thread_id=message_thread_id)
-        finally:
-            await _cleanup_album_files(items)
+        elif len(album_items) > 1:
+            path["items"]=album_items
+            first=album_items[0]
+            first_path=first.get("path")
+            first_type=str(first.get("type") or "").strip().lower()
+            if first_path and os.path.exists(first_path):
+                first_type=detect_media_type(first_path)
+            await _set_uploading_status(bot,chat_id,status_msg_id,"album")
+            try:
+                # Coba kirim via Rich Slideshow jika semua item adalah foto
+                sent = await _try_send_rich_slideshow(
+                    bot=bot, chat_id=chat_id, reply_to=reply_to,
+                    result=path, fmt_key=fmt_key, message_thread_id=message_thread_id,
+                )
+                if not sent:
+                    await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=path,message_thread_id=message_thread_id)
+            finally:
+                await _cleanup_album_files(album_items)
+
+        # 2. Kirim animasi GIF sebagai pesan animasi terpisah
+        if anim_items:
+            bot_name=await _get_bot_name(bot)
+            title=(path.get("title") or "Animation").strip() or "Animation"
+            caption=_build_safe_caption(title,bot_name)
+            for anim in anim_items:
+                anim_path=anim.get("path")
+                if not anim_path or not os.path.exists(anim_path):
+                    continue
+                thumb_path=anim.get("thumb")
+                meta=anim.get("meta") or {}
+                anim_fh=None
+                thumb_fh=None
+                try:
+                    await _set_uploading_status(bot,chat_id,status_msg_id,"video")
+                    anim_fh=open(anim_path,"rb")
+                    if thumb_path and os.path.exists(thumb_path):
+                        thumb_fh=open(thumb_path,"rb")
+                    await _send_animation_with_fallback(
+                        bot=bot,
+                        chat_id=chat_id,
+                        animation=anim_fh,
+                        caption=caption,
+                        reply_to=reply_to,
+                        message_thread_id=message_thread_id,
+                        duration=meta.get("duration"),
+                        width=meta.get("width"),
+                        height=meta.get("height"),
+                        thumbnail=thumb_fh,
+                    )
+                finally:
+                    _safe_close(anim_fh,"animation",chat_id)
+                    _safe_close(thumb_fh,"animation thumb",chat_id)
+                    await _delete_file(anim_path,"animation")
+                    if thumb_path:
+                        await _delete_file(thumb_path,"animation thumb")
         return
 
     meta=path if isinstance(path,dict) else {"path":path,"title":None}
@@ -704,6 +801,23 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                         asyncio.to_thread(make_video_thumbnail,file_path),
                     )
                 caption=_build_safe_caption(caption_text,bot_name)
+                if isinstance(meta,dict) and meta.get("is_animation"):
+                    # GIF yang dikonversi ke MP4 -> kirim sebagai animasi terpisah
+                    video_fh=open(file_path,"rb")
+                    thumb_fh=open(thumb_path,"rb") if thumb_path and os.path.exists(thumb_path) else None
+                    await _send_animation_with_fallback(
+                        bot=bot,
+                        chat_id=chat_id,
+                        animation=video_fh,
+                        caption=caption,
+                        reply_to=reply_to,
+                        message_thread_id=message_thread_id,
+                        duration=meta_video.get("duration"),
+                        width=meta_video.get("width"),
+                        height=meta_video.get("height"),
+                        thumbnail=thumb_fh,
+                    )
+                    return
                 sent=await _try_send_video_via_upload_engine(
                     bot=bot,
                     chat_id=chat_id,
@@ -862,6 +976,7 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
     setelah album supaya tetap rapi.
     """
     album_items:list[dict]=[]
+    anim_items:list[dict]=[]
     audio_entries:list[dict]=[]
     extra_files:list[str]=[]
 
@@ -872,6 +987,14 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
             for it in res.get("items") or []:
                 p=it.get("path")
                 if p and os.path.exists(p):
+                    if it.get("type")=="animation":
+                        entry = {"path": p, "type": "animation"}
+                        if it.get("thumb"):
+                            entry["thumb"] = it.get("thumb")
+                        if it.get("meta"):
+                            entry["meta"] = it.get("meta")
+                        anim_items.append(entry)
+                        continue
                     entry = {"path": p, "type": detect_media_type(p)}
                     if it.get("thumb"):
                         entry["thumb"] = it.get("thumb")
@@ -885,10 +1008,12 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
             continue
         if str(meta.get("kind") or "").lower()=="audio" or detect_media_type(p)=="unknown" and p.lower().endswith((".mp3",".flac")):
             audio_entries.append(meta)
+        elif meta.get("type")=="animation" or meta.get("is_animation"):
+            anim_items.append({"path":p,"type":"animation","thumb":meta.get("thumb"),"meta":meta.get("meta")})
         else:
             album_items.append({"path":p,"type":detect_media_type(p)})
 
-    log.info("Batch send | chat_id=%s album=%s audio=%s",chat_id,len(album_items),len(audio_entries))
+    log.info("Batch send | chat_id=%s album=%s anim=%s audio=%s",chat_id,len(album_items),len(anim_items),len(audio_entries))
 
     if album_items:
         payload={"items":album_items,"title":"Batch Download"}
@@ -903,6 +1028,17 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
                     log.warning("Batch item send failed | path=%s err=%r",it["path"],e2)
         finally:
             await _cleanup_album_files(album_items)
+
+    for anim in anim_items:
+        try:
+            await send_downloaded_media(
+                bot=bot, chat_id=chat_id, reply_to=reply_to, status_msg_id=status_msg_id,
+                path={"items":[anim],"title":"Batch Download"},
+                fmt_key="mp4", message_thread_id=message_thread_id,
+            )
+        except Exception as e:
+            log.warning("Batch animation send failed | path=%s err=%r",anim.get("path"),e)
+            await _cleanup_album_files([anim])
 
     for meta in audio_entries:
         p=meta.get("path")
