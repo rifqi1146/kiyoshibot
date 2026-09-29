@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import logging
+import shutil
 
 from .constants import TMP_DIR
 
@@ -23,15 +24,18 @@ def sweep_downloads_once(ttl_sec: int | None = None) -> int:
     for name in names:
         path = os.path.join(TMP_DIR, name)
         try:
-            if not os.path.isfile(path):
+            if os.path.islink(path):
                 continue
             if now - os.path.getmtime(path) >= ttl:
-                os.remove(path)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
                 removed += 1
         except OSError as e:
             log.warning("Downloads sweep failed to remove | path=%s err=%r", path, e)
     if removed:
-        log.info("Downloads sweep removed %s stale file(s) | dir=%s ttl=%ss", removed, TMP_DIR, ttl)
+        log.info("Downloads sweep removed %s stale item(s) | dir=%s ttl=%ss", removed, TMP_DIR, ttl)
     return removed
 
 
