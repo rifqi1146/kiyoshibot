@@ -7,11 +7,19 @@ import json
 import logging
 import subprocess
 from urllib.parse import urlparse
-from telegram.error import RetryAfter
 from .instagram.main import is_instagram_url
 from .youtube.community import is_youtube_shorts_url
 from .constants import COOKIES_PATH, TMP_DIR, MAX_TG_SIZE
-from .utils import progress_bar, check_media_size_limit
+from .utils import check_media_size_limit
+from .progress import (
+    render_progress_text,
+    edit_status,
+    parse_size_str,
+    parse_speed_str,
+    parse_eta_str,
+    TransferStats,
+    PROGRESS_EDIT_INTERVAL,
+)
 from .stages import stage
 
 _SIZE_100MB = 100 * 1024 * 1024
@@ -26,12 +34,6 @@ YT_SAFE_EXTRACTOR_ARGS = [
     "youtube:player_client=default,web_embedded;player_skip=tv,tv_downgraded"
 ]
 
-def _format_dl_value(value: str) -> str:
-    value = str(value or "").strip()
-    if not value or value.lower() in ("n/a", "na", "unknown", "none", "null", "-"):
-        return "?"
-    return value
-
 def _clean_percent(value: str) -> float:
     text = str(value or "").replace("%", "").strip()
     try:
@@ -40,16 +42,15 @@ def _clean_percent(value: str) -> float:
         return 0.0
 
 def _format_download_status(pct: float, downloaded: str = "", total: str = "", speed: str = "", eta: str = "") -> str:
-    downloaded = _format_dl_value(downloaded)
-    total = _format_dl_value(total)
-    speed = _format_dl_value(speed)
-    eta = _format_dl_value(eta)
-    lines = ["<b>Downloading...</b>", "", f"<code>{progress_bar(pct)}</code>", f"<code>{downloaded}/{total}</code>"]
-    if speed != "?":
-        lines.append(f"<code>Speed: {speed}</code>")
-    if eta != "?":
-        lines.append(f"<code>ETA: {eta}</code>")
-    return "\n".join(lines)
+    downloaded_bytes = parse_size_str(downloaded)
+    total_bytes = parse_size_str(total)
+    return render_progress_text(
+        "Downloading...",
+        downloaded=downloaded_bytes,
+        total=total_bytes,
+        speed_bps=parse_speed_str(speed),
+        eta_seconds=parse_eta_str(eta),
+    )
 
 def _extract_title_from_path(path: str, prefix: str) -> str:
     base = os.path.splitext(os.path.basename(path))[0]
@@ -214,18 +215,7 @@ def _build_ytdlp_format(format_id: str | None, has_audio: bool = False) -> str:
     return f"{fid}+bestaudio[ext=m4a]/{fid}+bestaudio"
 
 async def _safe_edit_status(bot, chat_id, message_id, text: str):
-    if not message_id: 
-        return
-    try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="HTML")
-    except RetryAfter as e:
-        wait = int(getattr(e, "retry_after", 1))
-        log.warning("Progress edit RetryAfter | chat_id=%s wait=%s", chat_id, wait)
-        await asyncio.sleep(wait + 1)
-    except Exception as e:
-        if "message is not modified" in str(e).lower():
-            return
-        log.warning("Failed to edit status message | chat_id=%s message_id=%s err=%s", chat_id, message_id, e)
+    await edit_status(bot, chat_id, message_id, text, min_interval=PROGRESS_EDIT_INTERVAL, label="yt-dlp")
 
 async def _kill_proc(proc, label: str, job_id: str):
     if proc.returncode is not None:
@@ -477,13 +467,13 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         log.info("Running yt-dlp | url=%s job_id=%s fmt_key=%s", url, job_id, fmt_key)
         log.debug("yt-dlp command | %s", " ".join(cmd))
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        last_edit = time.time()
         last_pct = -1.0
+        stats = TransferStats()
         stdout_lines = []
         stderr_lines = []
 
         async def read_stdout():
-            nonlocal last_edit, last_pct
+            nonlocal last_pct
             while True:
                 line = await proc.stdout.readline()
                 if not line:
@@ -497,37 +487,26 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
                 if len(parts) < 6:
                     continue
                 pct = _clean_percent(parts[0])
-                downloaded = parts[1] if len(parts) > 1 else ""
-                total_exact = parts[2] if len(parts) > 2 else ""
-                total_est = parts[3] if len(parts) > 3 else ""
-                speed = parts[4] if len(parts) > 4 else ""
-                eta = parts[5] if len(parts) > 5 else ""
-                total = total_exact if _format_dl_value(total_exact) != "?" else total_est
-                now = time.time()
-                # Terminal log: always on (silent mode included), throttled by interval.
-                if pct > last_pct or pct >= 100:
-                    if now - last_edit >= update_interval or pct >= 100:
-                        log.info(
-                            "yt-dlp download progress | job_id=%s %.1f%% %s/%s speed=%s eta=%s",
-                            job_id,
-                            pct,
-                            _format_dl_value(downloaded),
-                            _format_dl_value(total),
-                            _format_dl_value(speed),
-                            _format_dl_value(eta),
-                        )
                 if pct <= last_pct and pct < 100:
                     continue
                 last_pct = pct
-                if now - last_edit >= update_interval or pct >= 100:
-                    if status_msg_id:
-                        await _safe_edit_status(
-                            bot=bot,
-                            chat_id=chat_id,
-                            message_id=status_msg_id,
-                            text=_format_download_status(pct=pct, downloaded=downloaded, total=total, speed=speed, eta=eta),
-                        )
-                    last_edit = now
+                downloaded_bytes = parse_size_str(parts[1] if len(parts) > 1 else "")
+                total_bytes = parse_size_str(parts[2] if len(parts) > 2 else "") or parse_size_str(
+                    parts[3] if len(parts) > 3 else ""
+                )
+                if total_bytes > 0:
+                    stats.total = total_bytes
+                stats.sample(downloaded_bytes)
+                await stats.emit(
+                    bot=bot,
+                    chat_id=chat_id,
+                    status_msg_id=status_msg_id,
+                    title="Downloading...",
+                    kind="yt-dlp download",
+                    label=job_id,
+                    log_interval=update_interval,
+                    edit_interval=update_interval,
+                )
 
         async def read_stderr():
             while True:

@@ -7,6 +7,7 @@ try:
 except Exception:
     BASE_DIR=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from handlers.dl.utils import sanitize_filename,progress_bar,check_media_size_limit,FileSizeLimitExceeded
+from handlers.dl.progress import render_progress_text,edit_status,TransferStats,log_progress,log_done
 from handlers.dl.ytdlp import ytdlp_download
 
 log=logging.getLogger(__name__)
@@ -259,45 +260,11 @@ def _parse_tweet_media(tweet:dict)->dict:
     _dbg("tweet media parsed | count=%s types=%s caption=%s title=%s",len(items),[x.get("type") for x in items],bool(caption),title)
     return {"items":items,"caption":caption,"title":title}
 
-def _format_size(num_bytes:int)->str:
-    if num_bytes<=0: return "0 B"
-    value=float(num_bytes)
-    for unit in ("B","KB","MB","GB","TB"):
-        if value<1024 or unit=="TB": return f"{int(value)} {unit}" if unit=="B" else f"{value:.1f} {unit}"
-        value/=1024
-    return f"{value:.1f} TB"
-
-def _format_speed(bytes_per_sec:float)->str:
-    if bytes_per_sec<=0: return "0 B/s"
-    value=float(bytes_per_sec)
-    for unit in ("B/s","KB/s","MB/s","GB/s"):
-        if value<1024 or unit=="GB/s": return f"{int(value)} {unit}" if unit=="B/s" else f"{value:.1f} {unit}"
-        value/=1024
-    return f"{value:.1f} GB/s"
-
-def _format_eta(seconds:float)->str:
-    if seconds<=0: return "0s"
-    seconds=int(seconds); h,m,s=seconds//3600,(seconds%3600)//60,seconds%60
-    if h>0: return f"{h}h {m}m {s}s"
-    if m>0: return f"{m}m {s}s"
-    return f"{s}s"
-
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
     if not status_msg_id:
         return
-    pct=min(downloaded*100/total,100.0) if total>0 else 0.0
-    lines=[f"<b>{html.escape(title)}</b>",""]
-    if total>0:
-        lines.append(f"<code>{html.escape(progress_bar(pct))}</code>")
-        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))} downloaded</code>")
-    else:
-        lines.append(f"<code>{html.escape(_format_size(downloaded))} downloaded</code>")
-    if speed_bps>0: lines.append(f"<code>Speed: {html.escape(_format_speed(speed_bps))}</code>")
-    if eta_seconds is not None and eta_seconds>=0 and total>0 and speed_bps>0: lines.append(f"<code>ETA: {html.escape(_format_eta(eta_seconds))}</code>")
-    try:
-        await bot.edit_message_text(chat_id=chat_id,message_id=status_msg_id,text="\n".join(lines),parse_mode="HTML",disable_web_page_preview=True)
-    except Exception:
-        pass
+    text=render_progress_text(title,downloaded=downloaded,total=total,speed_bps=speed_bps,eta_seconds=eta_seconds)
+    await edit_status(bot,chat_id,status_msg_id,text,label="X")
 
 async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     total=0
@@ -330,7 +297,7 @@ async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,
     log.info("X aria2c start | url=%s out=%s",media_url,out_path)
     log.debug("X aria2c cmd | %s"," ".join(cmd))
     proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.PIPE)
-    last_edit=-10.0; last_sample_size=0; last_sample_ts=time.time()
+    stats=TransferStats(total)
     while proc.returncode is None:
         await asyncio.sleep(0.7)
         if not os.path.exists(out_path): continue
@@ -341,32 +308,27 @@ async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,
             try: proc.kill()
             except Exception: pass
             raise FileSizeLimitExceeded("X media exceeds 2GB limit. Download canceled.")
-        now=time.time(); elapsed=max(now-last_sample_ts,0.001); speed_bps=max(downloaded-last_sample_size,0)/elapsed
-        eta_seconds=((total-downloaded)/speed_bps) if total>0 and speed_bps>0 and downloaded<=total else None
-        if now-last_edit<3 and last_edit>=0: continue
-        await _safe_edit_progress(bot,chat_id,status_msg_id,title_text,downloaded,total,speed_bps,eta_seconds)
-        last_edit=now; last_sample_size=downloaded; last_sample_ts=now
+        stats.sample(downloaded)
+        await stats.emit(bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,title=title_text,kind="X download",label=os.path.basename(out_path),log_interval=2.5,edit_interval=3.0)
     _,stderr=await proc.communicate()
     stderr_text=stderr.decode(errors="ignore").strip() if stderr else ""
     if stderr_text: log.debug("X aria2c stderr | %s",stderr_text)
     if proc.returncode!=0: raise RuntimeError(stderr_text or f"aria2c exited with code {proc.returncode}")
-    log.info("X aria2c success | out=%s",out_path)
+    stats.log_done("X download",label=os.path.basename(out_path))
 
 async def _aiohttp_download_with_progress(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
     async with session.get(media_url,headers=headers,timeout=aiohttp.ClientTimeout(total=600),allow_redirects=True) as r:
         if r.status>=400: raise RuntimeError(f"Download failed: HTTP {r.status}")
-        total=int(r.headers.get("Content-Length",0) or 0); downloaded=0; last_edit=-10.0; last_sample_size=0; last_sample_ts=time.time()
+        total=int(r.headers.get("Content-Length",0) or 0); downloaded=0; stats=TransferStats(total)
         if total: check_media_size_limit(total,"X media")
         async with aiofiles.open(out_path,"wb") as f:
             async for chunk in r.content.iter_chunked(64*1024):
                 if not chunk: continue
                 await f.write(chunk); downloaded+=len(chunk)
                 if downloaded>MAX_TG_SIZE: raise FileSizeLimitExceeded("X media exceeds 2GB limit. Download canceled.")
-                now=time.time(); elapsed=max(now-last_sample_ts,0.001); speed_bps=max(downloaded-last_sample_size,0)/elapsed
-                eta_seconds=((total-downloaded)/speed_bps) if total>0 and speed_bps>0 and downloaded<=total else None
-                if now-last_edit<3 and last_edit>=0: continue
-                await _safe_edit_progress(bot,chat_id,status_msg_id,title_text,downloaded,total,speed_bps,eta_seconds)
-                last_edit=now; last_sample_size=downloaded; last_sample_ts=now
+                stats.sample(downloaded)
+                await stats.emit(bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,title=title_text,kind="X download",label=os.path.basename(out_path),log_interval=2.5,edit_interval=3.0)
+        stats.log_done("X download",label=os.path.basename(out_path))
 
 async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:int,total:int)->dict:
     media_type=str(item.get("type") or "").strip().lower()

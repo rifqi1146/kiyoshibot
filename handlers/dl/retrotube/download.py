@@ -8,7 +8,8 @@ from urllib.parse import urljoin
 from curl_cffi import requests as curl_requests
 
 from handlers.dl.constants import MAX_TG_SIZE
-from handlers.dl.utils import FileSizeLimitExceeded, progress_bar
+from handlers.dl.progress import PROGRESS_LOG_INTERVAL, TransferStats, render_progress_text
+from handlers.dl.utils import FileSizeLimitExceeded
 from .constants import (
     UA,
     _HTTP_TIMEOUT,
@@ -142,17 +143,6 @@ def _download_one_segment(url: str, referer: str, out_path: str) -> int:
     raise RuntimeError(f"Gagal mengunduh segmen ({last_err})")
 
 
-def _format_speed(bytes_per_sec: float) -> str:
-    if bytes_per_sec <= 0:
-        return "0 B/s"
-    value = float(bytes_per_sec)
-    for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
-        if value < 1024 or unit == "GB/s":
-            return f"{int(value)} {unit}" if unit == "B/s" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} GB/s"
-
-
 async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
     if not status_msg_id:
         return
@@ -175,51 +165,39 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
     total_bytes = 0
     lock = asyncio.Lock()
     emit_lock = asyncio.Lock()
-    last_edit = 0.0
-    last_pct = -1.0
-
-    start_ts = time.monotonic()
-    last_sample_bytes = 0
-    last_sample_ts = start_ts
-    current_speed = 0.0
+    last_edit = -10.0
+    stats = TransferStats()
 
     async def _emit(force: bool = False):
-        nonlocal last_edit, last_pct, last_sample_bytes, last_sample_ts, current_speed
-        if not status_msg_id:
-            return
-
+        nonlocal last_edit
         now = time.monotonic()
-        elapsed_sample = now - last_sample_ts
-        if elapsed_sample >= 1.0:
-            current_speed = (total_bytes - last_sample_bytes) / elapsed_sample
-            last_sample_bytes = total_bytes
-            last_sample_ts = now
-        elif current_speed == 0.0 and now > start_ts:
-            current_speed = total_bytes / (now - start_ts)
+        if stats.total <= 0 and done > 0:
+            stats.total = int(total_bytes / done * total)
+        stats.sample(total_bytes, now=now)
+        interval = _FAST_INTERVAL if stats.speed_bps >= _FAST_SPEED_BPS else _SLOW_INTERVAL
 
-        interval = _FAST_INTERVAL if current_speed >= _FAST_SPEED_BPS else _SLOW_INTERVAL
-
-        if not force and (now - last_edit) < interval:
+        if stats.should_log(PROGRESS_LOG_INTERVAL, now=now):
+            stats.log("RetroTube download", label=title_text)
+        if not status_msg_id or (not force and (now - last_edit) < interval):
             return
 
         last_edit = now
         pct = done * 100.0 / max(1, total)
-        last_pct = pct
-        lines = [
-            f"<b>{title_text}</b>",
-            "",
-            f"<code>{progress_bar(pct)}</code>",
-        ]
-        if current_speed > 0:
-            lines.append(f"<code>Speed: {_format_speed(current_speed)}</code>")
-        await _safe_edit_status(bot, chat_id, status_msg_id, "\n".join(lines))
+        text = render_progress_text(
+            title_text,
+            downloaded=stats.downloaded,
+            total=stats.total,
+            speed_bps=stats.speed_bps,
+            eta_seconds=stats.eta_seconds,
+            pct=pct,
+        )
+        await _safe_edit_status(bot, chat_id, status_msg_id, text)
 
     async def worker(idx: int, seg_url: str) -> str:
         nonlocal done, total_bytes
         seg_path = os.path.join(work_dir, f"seg_{idx:05d}.ts")
         async with sem:
             size = await asyncio.to_thread(_download_one_segment, seg_url, referer, seg_path)
-        exceed = False
         async with lock:
             done += 1
             total_bytes += size
@@ -235,6 +213,7 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
     results = await asyncio.gather(*(worker(i, u) for i, u in enumerate(urls)))
     async with emit_lock:
         await _emit(force=True)
+    stats.log_done("RetroTube download", label=title_text, size=total_bytes)
     return list(results)
 
 

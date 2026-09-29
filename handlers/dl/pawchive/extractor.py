@@ -45,6 +45,15 @@ from handlers.dl.utils import (
     format_eta,
     FileSizeLimitExceeded,
 )
+from handlers.dl.progress import (
+    render_progress_text,
+    edit_status,
+    log_progress,
+    log_done,
+    TransferStats,
+    PROGRESS_EDIT_INTERVAL,
+    PROGRESS_LOG_INTERVAL,
+)
 
 log = logging.getLogger(__name__)
 
@@ -63,22 +72,12 @@ _VARIANT_RE = re.compile(r"normal|low|mid|high|full|light|heavy|mobile|source|æº
 
 
 async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
-    if not status_msg_id:
-        return
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_msg_id,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        return 0.0
-    except Exception as e:
-        wait = _flood_wait(e)
-        if wait:
-            log.warning("Pawchive progress flood control | wait=%.0fs", wait)
-        return wait
+    await edit_status(
+        bot, chat_id, status_msg_id, text,
+        min_interval=PROGRESS_EDIT_INTERVAL,
+        label="Pawchive progress",
+    )
+    return 0.0
 
 
 def _flood_wait(error) -> float:
@@ -94,17 +93,13 @@ def _flood_wait(error) -> float:
 
 
 def _progress_text(title: str, downloaded: int, total: int, speed_bps: float, eta_seconds: float | None) -> str:
-    lines = [f"<b>{html_mod.escape(sanitize_filename(title, 80))}</b>", ""]
-    if total > 0:
-        lines.append(f"<code>{progress_bar(downloaded * 100.0 / total)}</code>")
-        lines.append(f"<code>{format_size(downloaded)}/{format_size(total)} downloaded</code>")
-    else:
-        lines.append(f"<code>{format_size(downloaded)} downloaded</code>")
-    if speed_bps > 0:
-        lines.append(f"<code>Speed: {format_speed(speed_bps)}</code>")
-    if eta_seconds is not None and eta_seconds >= 0 and total > 0 and speed_bps > 0:
-        lines.append(f"<code>ETA: {format_eta(eta_seconds)}</code>")
-    return "\n".join(lines)
+    return render_progress_text(
+        sanitize_filename(title, 80),
+        downloaded=downloaded,
+        total=total,
+        speed_bps=speed_bps,
+        eta_seconds=eta_seconds,
+    )
 
 
 def _ext_of(url: str) -> str:
@@ -370,6 +365,8 @@ async def download_to_file(
         )
 
     status = {"downloaded": 0}
+    stats = TransferStats(total)
+    started = time.monotonic()
 
     def _write():
         with open(out_path, "wb") as f:
@@ -390,33 +387,24 @@ async def download_to_file(
         await _safe_edit_status(bot, chat_id, status_msg_id, _progress_text(title, 0, total, 0.0, None))
 
     write_task = asyncio.ensure_future(asyncio.to_thread(_write))
-    flood_until = 0.0
-    last_edit = -10.0
-    last_sample_size = 0
-    last_sample_ts = time.time()
     try:
         while True:
             await asyncio.sleep(0.7)
+            downloaded = status["downloaded"]
+            if downloaded > 0:
+                stats.sample(downloaded)
+                await stats.emit(
+                    bot=bot if notify else None,
+                    chat_id=chat_id,
+                    status_msg_id=status_msg_id,
+                    title=title,
+                    kind="Pawchive download",
+                    label=os.path.basename(out_path),
+                    log_interval=PROGRESS_LOG_INTERVAL,
+                    edit_interval=interval,
+                )
             if write_task.done():
                 break
-            if not notify:
-                continue
-            downloaded = status["downloaded"]
-            if downloaded <= 0:
-                continue
-            now = time.time()
-            elapsed = max(now - last_sample_ts, 0.001)
-            speed_bps = max(downloaded - last_sample_size, 0) / elapsed
-            eta = ((total - downloaded) / speed_bps) if total > 0 and speed_bps > 0 and downloaded <= total else None
-            if now >= flood_until and (now - last_edit >= interval or last_edit < 0):
-                flood_wait = await _safe_edit_status(
-                    bot, chat_id, status_msg_id, _progress_text(title, downloaded, total, speed_bps, eta)
-                )
-                last_edit = now
-                if flood_wait:
-                    flood_until = now + flood_wait
-            last_sample_size = downloaded
-            last_sample_ts = now
         exc = write_task.exception()
         if exc:
             raise exc
@@ -428,8 +416,19 @@ async def download_to_file(
         raise RuntimeError("Gagal mengunduh file Pawchive (kosong)")
 
     downloaded = os.path.getsize(out_path)
+    stats.sample(downloaded)
+    stats.log_done("Pawchive download", label=os.path.basename(out_path), size=downloaded)
     if notify:
-        await _safe_edit_status(bot, chat_id, status_msg_id, _progress_text(title, downloaded, total, 0.0, None))
+        await stats.emit(
+            bot=bot,
+            chat_id=chat_id,
+            status_msg_id=status_msg_id,
+            title=title,
+            kind="Pawchive download",
+            label=os.path.basename(out_path),
+            log_interval=0,
+            edit_interval=0,
+        )
     return downloaded
 
 

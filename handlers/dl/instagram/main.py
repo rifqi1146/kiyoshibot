@@ -18,6 +18,7 @@ from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from curl_cffi.requests import AsyncSession
 from handlers.dl.utils import progress_bar, check_media_size_limit, FileSizeLimitExceeded
+from handlers.dl.progress import render_progress_text, edit_status, TransferStats, log_progress, log_done
 
 log=logging.getLogger(__name__)
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
@@ -420,37 +421,6 @@ def _build_title(meta:dict,media_type:str,count:int=1)->str:
         base="Instagram Media" if count>1 else ("Instagram Video" if media_type=="video" else "Instagram Post")
     full=f"{base} - {caption}".strip() if caption else base
     return full[:1024].rstrip()
-    
-def _format_size(num_bytes:int)->str:
-    if num_bytes<=0:
-        return "0 B"
-    value=float(num_bytes)
-    for unit in ("B","KB","MB","GB","TB"):
-        if value<1024 or unit=="TB":
-            return f"{int(value)} {unit}" if unit=="B" else f"{value:.1f} {unit}"
-        value/=1024
-    return f"{value:.1f} TB"
-
-def _format_speed(bytes_per_sec:float)->str:
-    if bytes_per_sec<=0:
-        return "0 B/s"
-    value=float(bytes_per_sec)
-    for unit in ("B/s","KB/s","MB/s","GB/s"):
-        if value<1024 or unit=="GB/s":
-            return f"{int(value)} {unit}" if unit=="B/s" else f"{value:.1f} {unit}"
-        value/=1024
-    return f"{value:.1f} GB/s"
-
-def _format_eta(seconds:float)->str:
-    if seconds<=0:
-        return "0s"
-    seconds=int(seconds)
-    h,m,s=seconds//3600,(seconds%3600)//60,seconds%60
-    if h>0:
-        return f"{h}h {m}m {s}s"
-    if m>0:
-        return f"{m}m {s}s"
-    return f"{s}s"
     
 def _safe_title(media_type:str,count:int)->str:
     if count>1:
@@ -880,51 +850,8 @@ async def _safe_edit_status(bot,chat_id,message_id,text:str,min_interval:float=1
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
     if not IG_PROGRESS or not bot or not chat_id or not status_msg_id:
         return
-
-    cache=getattr(bot,"_ig_status_edit_cache",{})
-    key=(int(chat_id),int(status_msg_id))
-    now=time.monotonic()
-    prev=cache.get(key) or {}
-
-    if now - prev.get("ts", 0) < 2.0:
-        return
-
-    lines=[f"<b>{html.escape(title)}</b>",""]
-
-    if total>0:
-        pct=min(downloaded*100/total,100.0)
-        lines.append(f"<code>{html.escape(progress_bar(pct))}</code>")
-        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))}</code>")
-    else:
-        lines.append(f"<code>{html.escape(_format_size(downloaded))} downloaded</code>")
-
-    if speed_bps>0:
-        lines.append(f"<code>Speed: {html.escape(_format_speed(speed_bps))}</code>")
-
-    if eta_seconds is not None and eta_seconds>=0 and total>0 and speed_bps>0:
-        lines.append(f"<code>ETA: {html.escape(_format_eta(eta_seconds))}</code>")
-
-    text = "\n".join(lines)
-    if prev.get("text") == text:
-        return
-
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_msg_id,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        cache[key]={"text":text,"ts":time.monotonic()}
-        setattr(bot,"_ig_status_edit_cache",cache)
-    except RetryAfter as e:
-        wait=max(int(getattr(e,"retry_after",1)),1)
-        log.warning("Instagram progress RetryAfter | chat_id=%s wait=%s",chat_id,wait)
-        await asyncio.sleep(wait+1)
-    except Exception as e:
-        if "message is not modified" not in str(e).lower():
-            log.debug("Instagram progress edit failed | chat_id=%s message_id=%s err=%r",chat_id,status_msg_id,e)
+    text=render_progress_text(title,downloaded=downloaded,total=total,speed_bps=speed_bps,eta_seconds=eta_seconds)
+    await edit_status(bot,chat_id,status_msg_id,text,min_interval=2.0,label="Instagram")
 
                         
 async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,status_msg_id=None,label:str="Downloading Instagram media")->dict:
@@ -979,9 +906,7 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                     if total:
                         check_media_size_limit(total,"Instagram media")
                     written=0
-                    last_edit=-10.0
-                    last_sample_size=0
-                    last_sample_ts=time.time()
+                    stats=TransferStats(total)
                     chunk_size=max(64*1024,int(IG_AIOHTTP_CHUNK_SIZE or 256*1024))
 
                     async with aiofiles.open(out_path,"wb") as f:
@@ -1003,28 +928,12 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                             if not IG_PROGRESS or not bot or not chat_id or not status_msg_id:
                                 continue
 
-                            now=time.time()
-                            elapsed=max(now-last_sample_ts,0.001)
-                            speed_bps=max(written-last_sample_size,0)/elapsed
-                            eta_seconds=((total-written)/speed_bps) if total>0 and speed_bps>0 and written<=total else None
-
-                            if now-last_edit<IG_PROGRESS_INTERVAL and last_edit>=0:
-                                continue
-
-                            await _safe_edit_progress(
-                                bot,
-                                chat_id,
-                                status_msg_id,
-                                label,
-                                written,
-                                total,
-                                speed_bps,
-                                eta_seconds,
-                            )
-                            last_edit,last_sample_size,last_sample_ts=now,written,now
+                            stats.sample(written)
+                            await stats.emit(bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,title=label,kind="Instagram download",label=os.path.basename(out_path),log_interval=2.5,edit_interval=IG_PROGRESS_INTERVAL)
 
                     if written<=0:
                         raise RuntimeError("Downloaded media is empty")
+                    stats.log_done("Instagram download",label=os.path.basename(out_path))
 
                     if sig_type and sig_type!=media_type:
                         log.info(

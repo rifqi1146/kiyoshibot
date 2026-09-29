@@ -4,7 +4,8 @@ import asyncio
 import logging
 from utils.config import BOT_TOKEN
 from telegram.error import RetryAfter
-from .utils import progress_bar
+from .utils import format_size
+from .progress import TransferStats, render_progress_text, log_done
 
 log=logging.getLogger(__name__)
 try:
@@ -43,26 +44,6 @@ def set_pyrofork_max_concurrent_transmissions(value:int)->int:
 
 def get_pyrofork_state()->dict:
     return dict(_PYROFORK_STATE)
-
-def _format_size(num:int|float)->str:
-    value=float(num or 0)
-    for unit in ("B","KB","MB","GB"):
-        if value<1024 or unit=="GB":
-            return f"{int(value)} {unit}" if unit=="B" else f"{value:.1f} {unit}"
-        value/=1024
-    return f"{value:.1f} GB"
-
-def _format_eta(seconds:int|float)->str:
-    seconds=int(max(float(seconds or 0),0))
-    if seconds<=0:
-        return "-"
-    h,rem=divmod(seconds,3600)
-    m,s=divmod(rem,60)
-    if h:
-        return f"{h}h {m}m {s}s"
-    if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
 
 def _progress_interval(file_size:int)->float:
     return _PYROFORK_STATE["progress_small_interval"] if file_size<_PYROFORK_STATE["progress_small_limit"] else _PYROFORK_STATE["progress_large_interval"]
@@ -211,19 +192,18 @@ async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="
         try:
             current=max(int(current or 0),0)
             total=max(int(total or 0),0)
-            percent=(current/total*100) if total else 0
             elapsed=max(time.monotonic()-started,0.001)
             speed=current/elapsed
             remaining=max(total-current,0)
-            eta=(remaining/speed) if speed>0 and total else 0
-            text=(
-                f"<b>{label}...</b>\n\n"
-                f"<code>{progress_bar(percent)}</code>\n"
-                f"<code>{_format_size(current)}/{_format_size(total)}</code>\n"
-                f"<code>Speed: {_format_size(speed)}/s</code>\n"
-                f"<code>ETA: {_format_eta(eta)}</code>"
+            eta=(remaining/speed) if speed>0 and total else None
+            text=render_progress_text(
+                label,
+                downloaded=current,
+                total=total,
+                speed_bps=speed,
+                eta_seconds=eta,
             )
-            await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML")
+            await bot.edit_message_text(chat_id=chat_id,message_id=message_id,text=text,parse_mode="HTML",disable_web_page_preview=True)
         except RetryAfter as e:
             wait=max(int(getattr(e,"retry_after",1)),1)
             log.warning("Pyrofork progress RetryAfter | chat_id=%s wait=%s",chat_id,wait)
@@ -233,7 +213,8 @@ async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="
                 log.warning("Pyrofork upload progress edit failed | chat_id=%s err=%r",chat_id,e)
 
 def _make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_progress,interval,label):
-    state={"last_ts":0.0,"last_pct":-1.0,"last_log_ts":started,"task":None}
+    state={"last_ts":0.0,"last_pct":-1.0,"task":None}
+    stats=TransferStats(file_size,started=started)
     loop=asyncio.get_running_loop()
     def progress_callback(current,total):
         if not total:
@@ -244,13 +225,11 @@ def _make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_pro
         current=max(int(current or 0),0)
         total=max(int(total or 0),0)
         pct=(current/total*100) if total else 0
+        stats.total=total
+        stats.sample(current,now=now)
         # Terminal log: always on (silent mode included), throttled by size-based interval.
-        if pct>=100 or now-state["last_log_ts"]>=interval:
-            state["last_log_ts"]=now
-            elapsed=max(now-started,0.001)
-            speed=current/elapsed
-            eta=(max(total-current,0)/speed) if speed>0 else 0
-            log.info("Pyrofork upload progress | chat_id=%s %.1f%% %s/%s speed=%s/s eta=%s",chat_id,pct,_format_size(current),_format_size(total),_format_size(speed),_format_eta(eta))
+        if stats.should_log(interval,now=now):
+            stats.log("Pyrofork upload",label=label)
         if not show_progress:
             return
         if pct<100 and now-state["last_ts"]<interval:
@@ -331,7 +310,7 @@ async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,captio
             chat_id,
             target_chat_id,
             os.path.basename(file_path),
-            _format_size(file_size),
+            format_size(file_size),
             show_progress,
             interval,
             _PYROFORK_STATE["max_concurrent_transmissions"],
@@ -350,8 +329,8 @@ async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,captio
         # satu round-trip Bot API lebih sedikit per upload, tampilan tidak berubah.
         await _wait_last_progress_task(state)
         elapsed=time.monotonic()-started
-        speed=file_size/max(elapsed,0.001)
-        log.info("Pyrofork send done | chat_id=%s file=%s size=%s elapsed=%.2fs avg_speed=%s/s",chat_id,os.path.basename(file_path),_format_size(file_size),elapsed,_format_size(speed))
+        avg=file_size/max(elapsed,0.001)
+        log_done("Pyrofork upload",label=os.path.basename(file_path),size=file_size,elapsed=elapsed,avg_bps=avg)
         return True
     except Exception as e:
         log.warning("Pyrofork upload failed, fallback to PTB | chat_id=%s file=%s err=%r",chat_id,os.path.basename(file_path),e)

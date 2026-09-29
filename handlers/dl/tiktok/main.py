@@ -16,6 +16,7 @@ from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR,MAX_TG_SIZE
 from handlers.dl.utils import sanitize_filename,is_invalid_video,progress_bar,check_media_size_limit,FileSizeLimitExceeded
+from handlers.dl.progress import render_progress_text,edit_status,TransferStats,log_progress,log_done
 from utils.config import LOG_CHAT_ID
 from .fallback import _tikwm_result
 
@@ -370,62 +371,13 @@ def is_tiktok(url:str)->bool:
 def _is_short_tiktok_url(url:str)->bool:
     return bool(SHORT_TIKTOK_RE.search(url or ""))
 
-def _format_size(num_bytes:int)->str:
-    if num_bytes<=0:
-        return "0 B"
-    value=float(num_bytes)
-    for unit in ("B","KB","MB","GB","TB"):
-        if value<1024 or unit=="TB":
-            return f"{int(value)} {unit}" if unit=="B" else f"{value:.1f} {unit}"
-        value/=1024
-    return f"{value:.1f} TB"
-
-def _format_speed(bytes_per_sec:float)->str:
-    if bytes_per_sec<=0:
-        return "0 B/s"
-    value=float(bytes_per_sec)
-    for unit in ("B/s","KB/s","MB/s","GB/s"):
-        if value<1024 or unit=="GB/s":
-            return f"{int(value)} {unit}" if unit=="B/s" else f"{value:.1f} {unit}"
-        value/=1024
-    return f"{value:.1f} GB/s"
-
-def _format_eta(seconds:float)->str:
-    if seconds<=0:
-        return "0s"
-    seconds=int(seconds)
-    h,m,s=seconds//3600,(seconds%3600)//60,seconds%60
-    if h>0:
-        return f"{h}h {m}m {s}s"
-    if m>0:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
     if not TIKTOK_PROGRESS:
         return
     if not status_msg_id:
-        return    
-    lines=[f"<b>{html.escape(title)}</b>",""]
-    if total>0:
-        pct=min(downloaded*100/total,100.0)
-        lines.append(f"<code>{html.escape(progress_bar(pct))}</code>")
-        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))}</code>")
-    else:
-        lines.append(f"<code>{html.escape(_format_size(downloaded))} downloaded</code>")
-    if speed_bps>0:
-        lines.append(f"<code>Speed: {html.escape(_format_speed(speed_bps))}</code>")
-    if eta_seconds is not None and eta_seconds>=0 and total>0 and speed_bps>0:
-        lines.append(f"<code>ETA: {html.escape(_format_eta(eta_seconds))}</code>")
-    try:
-        await bot.edit_message_text(chat_id=chat_id,message_id=status_msg_id,text="\n".join(lines),parse_mode="HTML")
-    except RetryAfter as e:
-        wait=max(int(getattr(e,"retry_after",1)),1)
-        log.warning("TikTok progress RetryAfter | chat_id=%s wait=%s",chat_id,wait)
-        await asyncio.sleep(wait+1)
-    except Exception as e:
-        if "message is not modified" not in str(e).lower():
-            log.debug("TikTok progress edit failed | chat_id=%s message_id=%s err=%r",chat_id,status_msg_id,e)
+        return
+    text=render_progress_text(title,downloaded=downloaded,total=total,speed_bps=speed_bps,eta_seconds=eta_seconds)
+    await edit_status(bot,chat_id,status_msg_id,text,label="TikTok")
 
 async def _safe_edit_status(bot,chat_id,status_msg_id,text:str,min_interval:float=1.2):
     if not status_msg_id:
@@ -507,7 +459,7 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
             raise RuntimeError(err or f"aria2c exited with code {proc.returncode}")
         return
     started=time.monotonic()
-    last_edit,last_sample_size,last_sample_ts=-10.0,0,time.time()
+    stats=TransferStats(total,started=started)
     while proc.returncode is None:
         if time.monotonic()-started>ARIA2C_TIMEOUT:
             await _kill_process(proc,"aria2c")
@@ -525,20 +477,13 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
         if downloaded>MAX_TG_SIZE:
             await _kill_process(proc,"aria2c")
             raise FileSizeLimitExceeded("TikTok media exceeds 2GB limit. Download canceled.")
-        if not status_msg_id:
-            continue
-        now=time.time()
-        elapsed=max(now-last_sample_ts,0.001)
-        speed_bps=max(downloaded-last_sample_size,0)/elapsed
-        eta_seconds=((total-downloaded)/speed_bps) if total>0 and speed_bps>0 and downloaded<=total else None
-        if now-last_edit<TIKTOK_PROGRESS_INTERVAL and last_edit>=0:
-            continue
-        await _safe_edit_progress(bot,chat_id,status_msg_id,title_text,downloaded,total,speed_bps,eta_seconds)
-        last_edit,last_sample_size,last_sample_ts=now,downloaded,now
+        stats.sample(downloaded)
+        await stats.emit(bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,title=title_text,kind="TikTok download",label=os.path.basename(out_path),log_interval=2.5,edit_interval=TIKTOK_PROGRESS_INTERVAL)
     _,stderr=await proc.communicate()
     if proc.returncode!=0:
         err=stderr.decode(errors="ignore").strip() if stderr else ""
         raise RuntimeError(err or f"aria2c exited with code {proc.returncode}")
+    stats.log_done("TikTok download",label=os.path.basename(out_path))
 
 
 async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
@@ -549,7 +494,7 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
         if total:
             check_media_size_limit(total, "TikTok media")
         downloaded=0
-        last_edit,last_sample_size,last_sample_ts=-10.0,0,time.time()
+        stats=TransferStats(total)
         chunk_size=max(64*1024,int(TIKTOK_AIOHTTP_CHUNK_SIZE or 256*1024))
         async with aiofiles.open(out_path,"wb") as f:
             async for chunk in r.content.iter_chunked(chunk_size):
@@ -559,16 +504,9 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
                 downloaded+=len(chunk)
                 if downloaded>MAX_TG_SIZE:
                     raise FileSizeLimitExceeded("TikTok media exceeds 2GB limit. Download canceled.")
-                if not TIKTOK_PROGRESS or not status_msg_id:
-                    continue
-                now=time.time()
-                elapsed=max(now-last_sample_ts,0.001)
-                speed_bps=max(downloaded-last_sample_size,0)/elapsed
-                eta_seconds=((total-downloaded)/speed_bps) if total>0 and speed_bps>0 and downloaded<=total else None
-                if now-last_edit<TIKTOK_PROGRESS_INTERVAL and last_edit>=0:
-                    continue
-                await _safe_edit_progress(bot,chat_id,status_msg_id,title_text,downloaded,total,speed_bps,eta_seconds)
-                last_edit,last_sample_size,last_sample_ts=now,downloaded,now
+                stats.sample(downloaded)
+                await stats.emit(bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,title=title_text,kind="TikTok download",label=os.path.basename(out_path),log_interval=2.5,edit_interval=TIKTOK_PROGRESS_INTERVAL)
+        stats.log_done("TikTok download",label=os.path.basename(out_path))
 
 async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
     aria2_path=shutil.which("aria2c")

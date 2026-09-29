@@ -22,6 +22,7 @@ from curl_cffi import requests as curl_requests
 from bs4 import BeautifulSoup
 
 from handlers.dl.constants import MAX_TG_SIZE
+from handlers.dl.progress import TransferStats, render_progress_text
 from handlers.dl.utils import (
     sanitize_filename,
     progress_bar,
@@ -72,18 +73,13 @@ def _flood_wait(error) -> float:
 
 
 def _progress_text(title: str, downloaded: int, total: int, speed_bps: float, eta) -> str:
-    label = sanitize_filename(title, 60)
-    pct = (downloaded * 100.0 / total) if total > 0 else 0.0
-    bar = progress_bar(pct)
-    size_str = f"{format_size(downloaded)} / {format_size(total)}" if total else format_size(downloaded)
-    lines = [f"<b>{html_mod.escape(label)}</b>", ""]
-    lines.append(f"<code>{bar}</code>")
-    lines.append(f"<code>{size_str}</code>")
-    if speed_bps and speed_bps > 0:
-        lines.append(f"<code>Speed: {format_speed(speed_bps)}</code>")
-    if eta is not None:
-        lines.append(f"<code>ETA: {format_eta(eta)}</code>")
-    return "\n".join(lines)
+    return render_progress_text(
+        sanitize_filename(title, 60),
+        downloaded=downloaded,
+        total=total,
+        speed_bps=speed_bps,
+        eta_seconds=eta,
+    )
 
 
 def _content_length(resp) -> int:
@@ -205,13 +201,19 @@ async def download_to_file(
         except Exception:
             pass
 
-    await _safe_edit_status(bot, chat_id, status_msg_id, _progress_text(title, 0, total, 0.0, None))
+    stats = TransferStats(total=total)
+    text = render_progress_text(
+        sanitize_filename(title, 60),
+        downloaded=0,
+        total=total,
+        speed_bps=0.0,
+        eta_seconds=None,
+    )
+    await _safe_edit_status(bot, chat_id, status_msg_id, text)
 
     write_task = asyncio.ensure_future(asyncio.to_thread(_write))
     flood_until = 0.0
     last_edit = -10.0
-    last_sample_size = 0
-    last_sample_ts = time.time()
     try:
         while True:
             await asyncio.sleep(0.7)
@@ -220,24 +222,17 @@ async def download_to_file(
             downloaded = status["downloaded"]
             if downloaded <= 0:
                 continue
-            now = time.time()
-            elapsed = max(now - last_sample_ts, 0.001)
-            speed_bps = max(downloaded - last_sample_size, 0) / elapsed
-            eta = (
-                ((total - downloaded) / speed_bps)
-                if total > 0 and speed_bps > 0 and downloaded <= total
-                else None
-            )
-            if now >= flood_until and (now - last_edit >= interval or last_edit < 0):
-                flood_wait = await _safe_edit_status(
-                    bot, chat_id, status_msg_id,
-                    _progress_text(title, downloaded, total, speed_bps, eta),
+            stats.sample(downloaded)
+            now = time.monotonic()
+            if stats.should_edit(interval, now=now):
+                text = stats.telegram_text(
+                    sanitize_filename(title, 60),
+                    extra="",
                 )
+                flood_wait = await _safe_edit_status(bot, chat_id, status_msg_id, text)
                 last_edit = now
                 if flood_wait:
                     flood_until = now + flood_wait
-            last_sample_size = downloaded
-            last_sample_ts = now
         exc = write_task.exception()
         if exc:
             raise exc
@@ -249,10 +244,16 @@ async def download_to_file(
         raise RuntimeError("Gagal mengunduh file PunishWorld (kosong)")
 
     downloaded = os.path.getsize(out_path)
-    await _safe_edit_status(
-        bot, chat_id, status_msg_id,
-        _progress_text(title, downloaded, total, 0.0, None),
+    stats.sample(downloaded)
+    text = render_progress_text(
+        sanitize_filename(title, 60),
+        downloaded=downloaded,
+        total=total,
+        speed_bps=0.0,
+        eta_seconds=None,
     )
+    await _safe_edit_status(bot, chat_id, status_msg_id, text)
+    stats.log_done("PunishWorld download", label=sanitize_filename(title, 40), size=downloaded)
     return downloaded
 
 

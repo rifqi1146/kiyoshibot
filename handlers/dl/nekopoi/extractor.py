@@ -46,6 +46,15 @@ from curl_cffi import CurlOpt
 
 from handlers.dl.utils import sanitize_filename, progress_bar, format_size, format_speed, format_eta
 from handlers.dl.retrotube.packer import _PACKER_RE, _unpack_eval
+from handlers.dl.progress import (
+    render_progress_text,
+    edit_status,
+    log_progress,
+    log_done,
+    TransferStats,
+    PROGRESS_EDIT_INTERVAL,
+    PROGRESS_LOG_INTERVAL,
+)
 
 from .constants import (
     UA,
@@ -326,21 +335,50 @@ def _download_segment(url: str, referer: str, out_path: str) -> int:
 
 def _progress_text(title: str, done_seg: int, total_seg: int, done_bytes: int,
                    total_bytes: int, speed_bps: float, eta_seconds: float | None, extra: str = "") -> str:
-    lines = [f"<b>{html_mod.escape(sanitize_filename(title, 80))}</b>"]
-    if extra:
-        lines.append(f"<code>{html_mod.escape(extra)}</code>")
-    lines.append("")
     pct = (done_seg * 100.0 / total_seg) if total_seg > 0 else 0.0
-    lines.append(f"<code>{progress_bar(pct)}</code>")
-    if total_bytes > 0:
-        lines.append(f"<code>{format_size(done_bytes)} / {format_size(total_bytes)}</code>")
-    elif done_bytes > 0:
-        lines.append(f"<code>{format_size(done_bytes)}</code>")
-    if speed_bps > 0:
-        lines.append(f"<code>Speed: {format_speed(speed_bps)}</code>")
-    if eta_seconds is not None and eta_seconds >= 0 and speed_bps > 0:
-        lines.append(f"<code>ETA: {format_eta(eta_seconds)}</code>")
-    return "\n".join(lines)
+    return render_progress_text(
+        sanitize_filename(title, 80),
+        downloaded=done_bytes,
+        total=total_bytes,
+        speed_bps=speed_bps,
+        eta_seconds=eta_seconds,
+        extra=extra,
+        pct=pct,
+    )
+
+
+def _render_progress_log(kind: str, title: str, downloaded: int, total: int,
+                         speed_bps: float, avg_bps: float, eta_seconds: float | None) -> None:
+    """Terminal progress log with consistent format across all downloaders."""
+    try:
+        downloaded = max(int(downloaded or 0), 0)
+    except (TypeError, ValueError):
+        downloaded = 0
+    try:
+        total = max(int(total or 0), 0)
+    except (TypeError, ValueError):
+        total = 0
+    pct = (downloaded * 100.0 / total) if total > 0 else 0.0
+    size_part = (
+        f"{format_size(downloaded)}/{format_size(total)}"
+        if total > 0
+        else f"{format_size(downloaded)} downloaded"
+    )
+    eta_part = (
+        f" eta={format_eta(eta_seconds)}"
+        if (eta_seconds is not None and eta_seconds >= 0 and total > 0)
+        else ""
+    )
+    log.info(
+        "%s progress | title=%s %.1f%% %s speed=%s avg_speed=%s%s",
+        kind,
+        sanitize_filename(title, 40),
+        pct,
+        size_part,
+        format_speed(speed_bps),
+        format_speed(avg_bps),
+        eta_part,
+    )
 
 
 async def _download_segments(
@@ -373,10 +411,10 @@ async def _download_segments(
 
     flood_until = 0.0
     last_edit = -10.0
-    last_sample_bytes = 0
-    last_sample_ts = time.time()
-    start_ts = time.time()
+    stats = TransferStats()
     extra = f"{label} · " if label else ""
+    clean_extra = extra.rstrip(" · ")
+    status_title = sanitize_filename(title, 80)
 
     # Interval edit ADAPTIF: server Nekopoi lambat & file besar -> jangan
     # spam Telegram (429). Pakai kecepatan RATA-RATA sejak mulai (stabil,
@@ -385,8 +423,8 @@ async def _download_segments(
     # Contoh: durasi 1000s -> 30s/edit (cap); durasi 150s -> 10s/edit;
     # durasi < 75s -> 5s/edit (floor).
     def _interval_for() -> float:
-        total_bytes = state["total_est"] or 0
-        avg_speed = state["bytes"] / max(time.time() - start_ts, 0.001)
+        total_bytes = stats.total or 0
+        avg_speed = stats.avg_bps
         if avg_speed <= 0 or total_bytes <= 0:
             return PROGRESS_MIN_INTERVAL
         est_duration = total_bytes / avg_speed
@@ -396,32 +434,27 @@ async def _download_segments(
     if status_msg_id:
         await safe_edit_status(
             bot, chat_id, status_msg_id,
-            _progress_text(title, 0, total, 0, 0, 0.0, None, extra.rstrip(" · ")),
+            _progress_text(title, 0, total, 0, 0, 0.0, None, clean_extra),
         )
-        last_edit = time.time()
+        last_edit = time.monotonic()
 
     finished_count = 0
     while finished_count < total:
         await asyncio.sleep(PROGRESS_POLL)
         finished_count = sum(1 for t in tasks if t.done())
 
-        now = time.time()
-        elapsed = max(now - last_sample_ts, 0.001)
-        speed_bps = max(state["bytes"] - last_sample_bytes, 0) / elapsed
-        last_sample_bytes = state["bytes"]
-        last_sample_ts = now
-
-        # Tampilkan speed rata-rata (stabil) alih-alih sampling 0.7s,
-        # sementara ETA tetap dari sisa estimasi / rata-rata.
-        avg_speed = state["bytes"] / max(now - start_ts, 0.001)
-        remaining = max(state["total_est"] - state["bytes"], 0)
-        eta = (remaining / avg_speed) if avg_speed > 0 else None
+        now = time.monotonic()
+        if state["total_est"]:
+            stats.total = state["total_est"]
+        stats.sample(state["bytes"], now=now)
+        if stats.should_log(PROGRESS_LOG_INTERVAL, now=now):
+            stats.log("Nekopoi download", label=status_title)
 
         if status_msg_id and now >= flood_until and (now - last_edit >= _interval_for() or last_edit < 0):
             wait = await safe_edit_status(
                 bot, chat_id, status_msg_id,
-                _progress_text(title, state["done"], total, state["bytes"],
-                               state["total_est"], avg_speed, eta, extra.rstrip(" · ")),
+                _progress_text(title, state["done"], total, stats.downloaded,
+                               stats.total, stats.avg_bps, stats.eta_seconds, clean_extra),
             )
             last_edit = now
             if wait:
@@ -430,6 +463,8 @@ async def _download_segments(
     errors = [t.exception() for t in tasks if t.done() and not t.cancelled() and t.exception()]
     if errors:
         raise RuntimeError(str(errors[0]))
+
+    stats.log_done("Nekopoi download", label=status_title, size=state["bytes"])
 
     # Path ditulis sebagai basename karena demuxer concat ffmpeg me-resolve
     # path relatif terhadap lokasi file concat itu sendiri (bukan CWD).

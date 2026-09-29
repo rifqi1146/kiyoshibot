@@ -14,6 +14,7 @@ from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from handlers.dl.utils import check_media_size_limit, FileSizeLimitExceeded
+from handlers.dl.progress import edit_status, TransferStats
 try:
     from handlers.dl.constants import BASE_DIR
 except Exception:
@@ -646,88 +647,7 @@ def _parse_video_from_body(body: bytes, video_id: str) -> dict:
     return data
 
 async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
-    if not status_msg_id:
-        return
-    try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:
-        pass
-
-def _format_size(num_bytes: int) -> str:
-    if num_bytes <= 0:
-        return "0 B"
-    value = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if value < 1024 or unit == "TB":
-            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} TB"
-
-def _format_speed(bytes_per_sec: float) -> str:
-    if bytes_per_sec <= 0:
-        return "0 B/s"
-    value = float(bytes_per_sec)
-    for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
-        if value < 1024 or unit == "GB/s":
-            return f"{int(value)} {unit}" if unit == "B/s" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} GB/s"
-
-def _format_eta(seconds: float) -> str:
-    if seconds <= 0:
-        return "0s"
-    seconds = int(seconds)
-    h, m, s = seconds // 3600, (seconds % 3600) // 60, seconds % 60
-    if h > 0:
-        return f"{h}h {m}m {s}s"
-    if m > 0:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-async def _safe_edit_progress(bot, chat_id, status_msg_id, title: str, downloaded: int, total: int = 0, speed_bps: float = 0.0, eta_seconds: float | None = None):
-    import html
-    from handlers.dl.utils import progress_bar
-    cache = getattr(bot, "_fb_status_edit_cache", {})
-    if not status_msg_id:
-        return
-    key = (int(chat_id), int(status_msg_id))
-    now = time.monotonic()
-    prev = cache.get(key) or {}
-    if now - prev.get("ts", 0) < 2.0:
-        return
-    lines = [f"<b>{html.escape(title)}</b>", ""]
-    if total > 0:
-        pct = min(downloaded * 100 / total, 100.0)
-        lines.append(f"<code>{html.escape(progress_bar(pct))}</code>")
-        lines.append(f"<code>{html.escape(_format_size(downloaded))}/{html.escape(_format_size(total))}</code>")
-    else:
-        lines.append(f"<code>{html.escape(_format_size(downloaded))} downloaded</code>")
-
-    if speed_bps > 0:
-        lines.append(f"<code>Speed: {html.escape(_format_speed(speed_bps))}</code>")
-
-    if eta_seconds is not None and eta_seconds >= 0 and total > 0 and speed_bps > 0:
-        lines.append(f"<code>ETA: {html.escape(_format_eta(eta_seconds))}</code>")
-    text = "\n".join(lines)
-    if prev.get("text") == text:
-        return
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_msg_id,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        cache[key] = {"text": text, "ts": time.monotonic()}
-        setattr(bot, "_fb_status_edit_cache", cache)
-    except RetryAfter as e:
-        wait = max(int(getattr(e, "retry_after", 1)), 1)
-        log.warning("Facebook progress RetryAfter | chat_id=%s wait=%s", chat_id, wait)
-        await asyncio.sleep(wait + 1)
-    except Exception as e:
-        if "message is not modified" not in str(e).lower():
-            log.debug("Facebook progress edit failed | chat_id=%s message_id=%s err=%r", chat_id, status_msg_id, e)
+    await edit_status(bot, chat_id, status_msg_id, text, label="Facebook")
 
 async def _probe_total_bytes(session, url: str, headers: dict | None = None) -> int:
     total = 0
@@ -764,9 +684,7 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
     cmd.append(media_url)
     _dbg("aria2c start | out=%s url=%s", out_path, _clip(media_url, 200))
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-    last_edit = -10.0
-    last_sample_size = 0
-    last_sample_ts = time.time()
+    stats = TransferStats(total)
     while proc.returncode is None:
         await asyncio.sleep(0.7)
         if not os.path.exists(out_path):
@@ -783,21 +701,13 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
             except Exception:
                 pass
             raise FileSizeLimitExceeded("Facebook video exceeds 2GB limit. Download canceled.")
-        now = time.time()
-        elapsed = max(now - last_sample_ts, 0.001)
-        speed_bps = max(downloaded - last_sample_size, 0) / elapsed
-        eta_seconds = ((total - downloaded) / speed_bps) if total > 0 and speed_bps > 0 and downloaded <= total else None
-        if now - last_edit < 3 and last_edit >= 0:
-            continue
-        await _safe_edit_progress(bot, chat_id, status_msg_id, title_text, downloaded, total, speed_bps, eta_seconds)
-        last_edit = now
-        last_sample_size = downloaded
-        last_sample_ts = now
+        await stats.update(downloaded, bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=3.0)
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = stderr.decode(errors="ignore").strip() if stderr else ""
         _dbg("aria2c failed | code=%s err=%s", proc.returncode, _clip(err, 500))
         raise RuntimeError(err or f"aria2c exited with code {proc.returncode}")
+    stats.log_done("Facebook download", label=os.path.basename(out_path), size=os.path.getsize(out_path))
     _dbg("aria2c success | out=%s", out_path)
 
 async def _aiohttp_download_with_progress(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
@@ -810,9 +720,7 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
         if total:
             check_media_size_limit(total, "Facebook video")
         downloaded = 0
-        last_edit = -10.0
-        last_sample_size = 0
-        last_sample_ts = time.time()
+        stats = TransferStats(total)
         async with aiofiles.open(out_path, "wb") as f:
             async for chunk in r.content.iter_chunked(64 * 1024):
                 if not chunk:
@@ -821,16 +729,8 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
                 downloaded += len(chunk)
                 if downloaded > MAX_TG_SIZE:
                     raise FileSizeLimitExceeded("Facebook video exceeds 2GB limit. Download canceled.")
-                now = time.time()
-                elapsed = max(now - last_sample_ts, 0.001)
-                speed_bps = max(downloaded - last_sample_size, 0) / elapsed
-                eta_seconds = ((total - downloaded) / speed_bps) if total > 0 and speed_bps > 0 and downloaded <= total else None
-                if now - last_edit < 3 and last_edit >= 0:
-                    continue
-                await _safe_edit_progress(bot, chat_id, status_msg_id, title_text, downloaded, total, speed_bps, eta_seconds)
-                last_edit = now
-                last_sample_size = downloaded
-                last_sample_ts = now
+                await stats.update(downloaded, bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=3.0)
+    stats.log_done("Facebook download", label=os.path.basename(out_path), size=downloaded)
     _dbg("aiohttp download success | out=%s", out_path)
 
 async def _download_with_best_engine(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
@@ -877,9 +777,7 @@ async def _download_fb_photo(session, media_url: str, out_path: str, bot, chat_i
         if total:
             check_media_size_limit(total, "Facebook photo")
         downloaded = 0
-        last_edit = -10.0
-        last_sample_size = 0
-        last_sample_ts = time.time()
+        stats = TransferStats(total)
         async with aiofiles.open(out_path, "wb") as f:
             async for chunk in r.content.iter_chunked(64 * 1024):
                 if not chunk:
@@ -888,18 +786,10 @@ async def _download_fb_photo(session, media_url: str, out_path: str, bot, chat_i
                 downloaded += len(chunk)
                 if downloaded > MAX_TG_SIZE:
                     raise FileSizeLimitExceeded("Facebook photo exceeds 2GB limit. Download canceled.")
-                now = time.time()
-                elapsed = max(now - last_sample_ts, 0.001)
-                speed_bps = max(downloaded - last_sample_size, 0) / elapsed
-                eta_seconds = ((total - downloaded) / speed_bps) if total > 0 and speed_bps > 0 and downloaded <= total else None
-                if now - last_edit < 3 and last_edit >= 0:
-                    continue
-                await _safe_edit_progress(bot, chat_id, status_msg_id, title_text, downloaded, total, speed_bps, eta_seconds)
-                last_edit = now
-                last_sample_size = downloaded
-                last_sample_ts = now
+                await stats.update(downloaded, bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=3.0)
     if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
         raise RuntimeError("Facebook photo download output empty")
+    stats.log_done("Facebook download", label=os.path.basename(out_path), size=downloaded)
     final_path = _fix_image_ext(out_path)
     _dbg("photo download success | out=%s", final_path)
     return final_path
