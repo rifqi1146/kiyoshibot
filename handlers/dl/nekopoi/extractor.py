@@ -39,12 +39,15 @@ import time
 import html as html_mod
 import asyncio
 import logging
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlparse
 
 from curl_cffi import requests as curl_requests
 from curl_cffi import CurlOpt
 
-from handlers.dl.utils import sanitize_filename, progress_bar, format_size, format_speed, format_eta
+from bs4 import BeautifulSoup
+
+from handlers.dl.utils import sanitize_filename, progress_bar, format_size, format_speed, format_eta, FileSizeLimitExceeded
+from handlers.dl.constants import MAX_TG_SIZE
 from handlers.dl.retrotube.packer import _PACKER_RE, _unpack_eval
 from handlers.dl.progress import (
     render_progress_text,
@@ -179,7 +182,7 @@ def scrape_post(url: str) -> dict:
     thumb = _meta(html_text, "og:image")
     embeds = _collect_embeds(html_text)
     _dbg("post scraped | title=%r embeds=%s", title, len(embeds))
-    return {"title": title, "thumbnail": thumb, "embeds": embeds}
+    return {"title": title, "thumbnail": thumb, "embeds": embeds, "raw_html": html_text}
 
 
 def _get(url: str, referer: str = "") -> str:
@@ -201,10 +204,153 @@ def _get(url: str, referer: str = "") -> str:
     raise RuntimeError(f"Gagal mengambil sumber Nekopoi ({last}) | {urlsplit(url).hostname}")
 
 
+def _probe_direct_size(url: str, headers: dict) -> int:
+    try:
+        r = _http().get(url, headers=headers, stream=True, timeout=_HTTP_TIMEOUT)
+        sz = int(r.headers.get("Content-Length") or 0)
+        r.close()
+        return sz
+    except Exception:
+        return 0
+
+
+async def download_direct_mp4(url: str, out_path: str, bot, chat_id, status_msg_id, title: str, label: str, headers: dict):
+    """Unduh MP4 langsung (HTTP stream) -> out_path. Return ukuran."""
+    def _do():
+        r = _http().get(url, headers=headers, stream=True, timeout=_HTTP_TIMEOUT)
+        if r.status_code not in (200, 206):
+            r.close()
+            raise RuntimeError(f"HTTP {r.status_code} saat mengunduh direct MP4")
+        return r
+
+    resp = await asyncio.to_thread(_do)
+    try:
+        total = int(resp.headers.get("Content-Length") or 0)
+    except Exception:
+        total = 0
+
+    if total > MAX_TG_SIZE:
+        resp.close()
+        raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
+
+    stats = TransferStats(total)
+
+    def _write():
+        with open(out_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 256):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                stats.sample(stats.downloaded + len(chunk))
+                if stats.downloaded > MAX_TG_SIZE:
+                    resp.close()
+                    raise FileSizeLimitExceeded("File exceeds 2GB limit. Download canceled.")
+        resp.close()
+
+    if status_msg_id:
+        await stats.emit(
+            bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
+            title=title, kind="Nekopoi download", label=f"Nekopoi {label}",
+            log_interval=PROGRESS_LOG_INTERVAL, edit_interval=0.0
+        )
+
+    write_task = asyncio.ensure_future(asyncio.to_thread(_write))
+    while not write_task.done():
+        if status_msg_id:
+            await stats.emit(
+                bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
+                title=title, kind="Nekopoi download", label=f"Nekopoi {label}",
+                log_interval=PROGRESS_LOG_INTERVAL, edit_interval=PROGRESS_MAX_INTERVAL
+            )
+        await asyncio.sleep(PROGRESS_POLL)
+
+    await write_task
+    stats.log_done("Nekopoi download", label=f"Nekopoi {label}")
+    return os.path.getsize(out_path)
+
+
+
 def embed_origin(emb_url: str) -> str:
     """https://streampoi.com/embed-x.html -> https://streampoi.com/"""
     p = urlsplit(emb_url)
     return f"{p.scheme}://{p.netloc}/"
+
+
+def _recaptcha_v3() -> str:
+    """Bypass dasar ReCaptcha v3 untuk ouo.io dengan endpoint anchor google."""
+    anchor_url = "https://www.google.com/recaptcha/api2/anchor?ar=1&k=6Lcr1ncUAAAAAH3cghg6cOTPGARa8adOf-y9zv2x&co=aHR0cHM6Ly9vdW8ucHJlc3M6NDQz&hl=en&v=pCoGBhjs9s8EhFOHJFe8cqis&size=invisible&cb=ahgyd1gkfkhe"
+    url_base = "https://www.google.com/recaptcha/"
+    
+    sess = curl_requests.Session(impersonate="chrome")
+    matches = re.findall(r"([api2|enterprise]+)/anchor\?(.*)", anchor_url)[0]
+    url_base += matches[0] + "/"
+    params = dict(pair.split("=") for pair in matches[1].split("&"))
+    
+    try:
+        res = sess.get(url_base + "anchor", params=params, timeout=15)
+        token = re.findall(r'"recaptcha-token" value="(.*?)"', res.text)[0]
+        post_data = f'v={params["v"]}&reason=q&c={token}&k={params["k"]}&co={params["co"]}'
+        res = sess.post(
+            url_base + "reload",
+            params=f'k={params["k"]}',
+            data=post_data,
+            headers={"content-type": "application/x-www-form-urlencoded"},
+            timeout=15
+        )
+        answer = re.findall(r'"rresp","(.*?)"', res.text)[0]
+        return answer
+    except Exception as e:
+        log.warning("Ouo recaptcha v3 gagal: %s", e)
+        return ""
+
+
+def bypass_ouo(url: str) -> str | None:
+    """Bypass ouo.io/ouo.press -> url asli (mis. pixeldrain/krakenfiles)."""
+    tempurl = url.replace("ouo.press", "ouo.io")
+    p = urlparse(tempurl)
+    oid = tempurl.split('/')[-1]
+    
+    sess = curl_requests.Session(impersonate="chrome")
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+    
+    try:
+        res = sess.get(tempurl, headers=headers, timeout=15)
+        next_url = f"{p.scheme}://{p.hostname}/go/{oid}"
+        
+        for i in range(3):
+            if res.headers.get("Location"):
+                return res.headers.get("Location")
+            
+            soup = BeautifulSoup(res.content, "html.parser")
+            form = soup.form
+            if not form:
+                break
+                
+            inputs = form.find_all("input", {"name": re.compile(r"token$")})
+            data = {inp.get("name"): inp.get("value") for inp in inputs}
+            data["x-token"] = _recaptcha_v3()
+            
+            post_headers = headers.copy()
+            post_headers["content-type"] = "application/x-www-form-urlencoded"
+            post_headers["Referer"] = tempurl
+            
+            res = sess.post(
+                next_url,
+                data=data,
+                headers=post_headers,
+                allow_redirects=False,
+                timeout=15
+            )
+            next_url = f"{p.scheme}://{p.hostname}/xreallcygo/{oid}"
+            
+        return res.headers.get("Location")
+    except Exception as e:
+        log.warning("Gagal bypass ouo.io %s : %s", url, e)
+        return None
 
 
 def probe_stream(emb_url: str, referer: str) -> str:
