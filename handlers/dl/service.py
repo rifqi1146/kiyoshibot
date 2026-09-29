@@ -23,6 +23,7 @@ from .pinterest.main import is_pinterest_url,pinterest_download
 from .retrotube.main import is_retrotube_url,retrotube_download
 from .pawchive.main import is_pawchive_url,pawchive_download
 from .nekopoi.main import is_nekopoi_url,nekopoi_download
+from .cosxplay.main import is_cosxplay_url,cosxplay_download
 from .punishworld.main import is_punishworld_url,punishworld_download
 from .remux import video_meta,make_video_thumbnail
 from .mtproto_uploader import try_send_video_via_mtproto
@@ -904,6 +905,21 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
         t0=time.monotonic()
         result=await pawchive_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
         stage("scrape+download:pawchive",t0,job=raw_url)
+        return result
+    if is_cosxplay_url(raw_url):
+        t0=time.monotonic()
+        result=await cosxplay_download(
+            raw_url=raw_url,
+            fmt_key=fmt_key,
+            bot=bot,
+            chat_id=chat_id,
+            status_msg_id=status_msg_id,
+            format_id=format_id,
+            has_audio=has_audio,
+            metadata_ready=metadata_ready,
+            known_size=known_size,
+        )
+        stage("scrape+download:cosxplay",t0,job=raw_url)
         return result
     if is_nekopoi_url(raw_url):
         t0=time.monotonic()

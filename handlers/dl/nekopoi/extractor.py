@@ -276,68 +276,40 @@ def embed_origin(emb_url: str) -> str:
     return f"{p.scheme}://{p.netloc}/"
 
 
-def _recaptcha_v3() -> str:
-    """Bypass dasar ReCaptcha v3 untuk ouo.io dengan endpoint anchor google."""
-    anchor_url = "https://www.google.com/recaptcha/api2/anchor?ar=1&k=6Lcr1ncUAAAAAH3cghg6cOTPGARa8adOf-y9zv2x&co=aHR0cHM6Ly9vdW8ucHJlc3M6NDQz&hl=en&v=pCoGBhjs9s8EhFOHJFe8cqis&size=invisible&cb=ahgyd1gkfkhe"
-    url_base = "https://www.google.com/recaptcha/"
-    
-    sess = curl_requests.Session(impersonate="chrome")
-    matches = re.findall(r"([api2|enterprise]+)/anchor\?(.*)", anchor_url)[0]
-    url_base += matches[0] + "/"
-    params = dict(pair.split("=") for pair in matches[1].split("&"))
-    
-    try:
-        res = sess.get(url_base + "anchor", params=params, timeout=15)
-        token = re.findall(r'"recaptcha-token" value="(.*?)"', res.text)[0]
-        post_data = f'v={params["v"]}&reason=q&c={token}&k={params["k"]}&co={params["co"]}'
-        res = sess.post(
-            url_base + "reload",
-            params=f'k={params["k"]}',
-            data=post_data,
-            headers={"content-type": "application/x-www-form-urlencoded"},
-            timeout=15
-        )
-        answer = re.findall(r'"rresp","(.*?)"', res.text)[0]
-        return answer
-    except Exception as e:
-        log.warning("Ouo recaptcha v3 gagal: %s", e)
-        return ""
-
-
 def bypass_ouo(url: str) -> str | None:
     """Bypass ouo.io/ouo.press -> url asli (mis. pixeldrain/krakenfiles)."""
     tempurl = url.replace("ouo.press", "ouo.io")
     p = urlparse(tempurl)
     oid = tempurl.split('/')[-1]
-    
+
     sess = curl_requests.Session(impersonate="chrome")
     headers = {
         "User-Agent": UA,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
     }
-    
+
     try:
         res = sess.get(tempurl, headers=headers, timeout=15)
         next_url = f"{p.scheme}://{p.hostname}/go/{oid}"
-        
-        for i in range(3):
+
+        for _ in range(3):
             if res.headers.get("Location"):
                 return res.headers.get("Location")
-            
+
             soup = BeautifulSoup(res.content, "html.parser")
             form = soup.form
             if not form:
                 break
-                
+
             inputs = form.find_all("input", {"name": re.compile(r"token$")})
             data = {inp.get("name"): inp.get("value") for inp in inputs}
-            data["x-token"] = _recaptcha_v3()
-            
+            data["x-token"] = ""
+
             post_headers = headers.copy()
             post_headers["content-type"] = "application/x-www-form-urlencoded"
             post_headers["Referer"] = tempurl
-            
+
             res = sess.post(
                 next_url,
                 data=data,
@@ -346,10 +318,10 @@ def bypass_ouo(url: str) -> str | None:
                 timeout=15
             )
             next_url = f"{p.scheme}://{p.hostname}/xreallcygo/{oid}"
-            
+
         return res.headers.get("Location")
     except Exception as e:
-        log.warning("Gagal bypass ouo.io %s : %s", url, e)
+        log.debug("Gagal bypass ouo.io %s : %s", url, e)
         return None
 
 

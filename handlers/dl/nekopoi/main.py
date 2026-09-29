@@ -199,7 +199,7 @@ def probe_nekopoi(raw_url: str) -> dict:
             cache_probe(raw_url, probe)
             return probe
         except RuntimeError as e:
-            log.warning("Nekopoi embed gagal | embed=%s err=%r", emb, e)
+            log.debug("Nekopoi embed gagal | embed=%s err=%r", emb, e)
             last_err = e
             if is_primary and primary_err is None:
                 primary_err, primary_host = e, emb_host
@@ -208,6 +208,7 @@ def probe_nekopoi(raw_url: str) -> dict:
     # Jika HLS gagal, fallback ke download link (Pixeldrain)
     pd_variants = scrape_pixeldrain_variants(post.get("raw_html") or "")
     if pd_variants:
+        log.info("Nekopoi HLS tidak tersedia, fallback ke download link Pixeldrain")
         variants = _dedup_by_height(pd_variants)
         res_list = [
             {

@@ -18,8 +18,9 @@ from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_pr
 from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
-from .probe import get_resolutions,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution
+from .probe import get_resolutions,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution
 from .nekopoi.main import is_nekopoi_url
+from .cosxplay.main import is_cosxplay_url
 from .tiktok.main import is_tiktok,tiktok_download
 from .service import download_non_tiktok,send_downloaded_media,send_batch_downloaded_media
 from database.user_settings_db import get_user_settings
@@ -179,6 +180,7 @@ def _platform_label(url:str)->str:
         (("threads.net","threads.com"),"Threads"),
         (("pinterest.com","pin.it"),"Pinterest"),
         (("pawchive.pw",),"Pawchive"),
+        (("cosxplay.com",),"CosXplay"),
         (("nekopoi.care","nekopoi.best"),"Nekopoi"),
         (("punishworld.com",),"PunishWorld"),
         ((
@@ -363,6 +365,11 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
                 await message.edit_text(_metadata_status(url),parse_mode="HTML")
                 status_ready=True
             return await _show_resolution_picker(context,message,dl_id,data,engine="nekopoi",status_ready=status_ready)
+        if supports_cosxplay_resolution(url):
+            if not status_ready and message:
+                await message.edit_text(_metadata_status(url),parse_mode="HTML")
+                status_ready=True
+            return await _show_resolution_picker(context,message,dl_id,data,engine="cosxplay",status_ready=status_ready)
     DL_CACHE.pop(dl_id,None)
     return await _start_dl_task(context=context,message=message,data=data,fmt_key=choice,format_id=None,has_audio=False,status_ready=status_ready)
 

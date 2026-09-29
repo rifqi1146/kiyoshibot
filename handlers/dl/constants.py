@@ -62,6 +62,7 @@ PREMIUM_ONLY_DOMAINS = {
     "nekopoi.care",
     "nekopoi.best",
     "punishworld.com",
+    "cosxplay.com",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -137,4 +138,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "nekopoi.care",
     "nekopoi.best",
     "punishworld.com",
+    "cosxplay.com",
 }

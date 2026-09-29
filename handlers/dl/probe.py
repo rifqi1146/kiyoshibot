@@ -44,8 +44,14 @@ def supports_nekopoi_resolution(url: str) -> bool:
     host = _host(url)
     return host in ("nekopoi.care", "nekopoi.best", "nekopoi.pw", "nekopoi.win")
 
+def supports_cosxplay_resolution(url: str) -> bool:
+    host = _host(url)
+    if host.startswith("www."):
+        host = host[4:]
+    return host == "cosxplay.com"
+
 def supports_resolution_picker(url: str) -> bool:
-    return supports_ytdlp_resolution(url) or supports_nekopoi_resolution(url)
+    return supports_ytdlp_resolution(url) or supports_nekopoi_resolution(url) or supports_cosxplay_resolution(url)
 
 def supports_both_resolution_engines(url: str) -> bool:
     return False
@@ -277,6 +283,15 @@ async def get_resolutions(url: str, engine: str | None = None) -> list[dict]:
             return probe.get("res_list") or []
         except Exception as e:
             log.warning("Nekopoi probe failed | url=%s err=%r", url, e)
+            return []
+
+    if chosen == "cosxplay" or (not chosen and supports_cosxplay_resolution(url)):
+        try:
+            from .cosxplay.main import probe_cosxplay
+            probe = await asyncio.to_thread(probe_cosxplay, url)
+            return probe.get("res_list") or []
+        except Exception as e:
+            log.warning("CosXplay probe failed | url=%s err=%r", url, e)
             return []
 
     # Jalur lama: engine ytdlp. Nekopoi tidak pernah lewat sini.
