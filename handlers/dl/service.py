@@ -459,6 +459,8 @@ async def _send_audio_with_fallback(bot,chat_id,audio,title,performer,filename,r
 async def _cleanup_album_files(items:list[dict]):
     for item in items:
         await _delete_file(item.get("path"),"download")
+        if item.get("thumb"):
+            await _delete_file(item.get("thumb"),"thumbnail")
 
 async def _cleanup_single_file(path:str|None):
     await _delete_file(path,"download")
@@ -489,7 +491,27 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
                     fh=open(file_path,"rb")
                     handles.append((fh,os.path.basename(file_path)))
                     if detected=="video":
-                        media.append(InputMediaVideo(media=fh,caption=item_caption,parse_mode=item_parse_mode,supports_streaming=True))
+                        vid_kwargs = {
+                            "media": fh,
+                            "caption": item_caption,
+                            "parse_mode": item_parse_mode,
+                            "supports_streaming": True
+                        }
+                        meta = item.get("meta") or {}
+                        if meta.get("duration"):
+                            vid_kwargs["duration"] = int(meta["duration"])
+                        if meta.get("width"):
+                            vid_kwargs["width"] = int(meta["width"])
+                        if meta.get("height"):
+                            vid_kwargs["height"] = int(meta["height"])
+                        
+                        thumb_path = item.get("thumb")
+                        if thumb_path and os.path.exists(thumb_path):
+                            thumb_fh = open(thumb_path, "rb")
+                            handles.append((thumb_fh, os.path.basename(thumb_path)))
+                            vid_kwargs["thumbnail"] = thumb_fh
+
+                        media.append(InputMediaVideo(**vid_kwargs))
                     else:
                         media.append(InputMediaPhoto(media=fh,caption=item_caption,parse_mode=item_parse_mode))
                     continue
@@ -850,7 +872,12 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
             for it in res.get("items") or []:
                 p=it.get("path")
                 if p and os.path.exists(p):
-                    album_items.append({"path":p,"type":detect_media_type(p)})
+                    entry = {"path": p, "type": detect_media_type(p)}
+                    if it.get("thumb"):
+                        entry["thumb"] = it.get("thumb")
+                    if it.get("meta"):
+                        entry["meta"] = it.get("meta")
+                    album_items.append(entry)
             continue
         meta=res if isinstance(res,dict) else {"path":res,"title":None}
         p=meta.get("path")
@@ -864,7 +891,7 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
     log.info("Batch send | chat_id=%s album=%s audio=%s",chat_id,len(album_items),len(audio_entries))
 
     if album_items:
-        payload={"items":[{"path":it["path"],"type":it["type"]} for it in album_items],"title":"Batch Download"}
+        payload={"items":album_items,"title":"Batch Download"}
         try:
             await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=payload,message_thread_id=message_thread_id)
         except Exception as e:

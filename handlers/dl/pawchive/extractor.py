@@ -152,6 +152,37 @@ def _quality_rank(name: str) -> int:
     return 1 if _VARIANT_RE.search(name or "") else 0
 
 
+def resolve_videos(videos: list) -> list:
+    """Mengembalikan daftar video final untuk post ini:
+    - Jika multi-part (video berbeda-beda), kembalikan SEMUA video.
+    - Jika ada varian resolusi, pilih varian terbaik untuk setiap video unik.
+    """
+    if not videos:
+        return []
+    if len(videos) == 1:
+        return [videos[0]]
+
+    # Cek apakah ada label varian (1080p, 720p, dsb)
+    has_variants = any(_VARIANT_RE.search(v.get("name", "")) for v in videos)
+    
+    if not has_variants:
+        # Tidak ada label varian -> semua adalah video berbeda (multi-part)!
+        return videos
+
+    # Jika ada label varian, kelompokkan berdasarkan base name
+    groups = {}
+    for v in videos:
+        name = v.get("name", "")
+        base = _VARIANT_RE.sub("", name).strip()
+        groups.setdefault(base, []).append(v)
+
+    result = []
+    for base, vids in groups.items():
+        ranked = sorted(vids, key=lambda x: _quality_rank(x.get("name", "")), reverse=True)
+        result.append(ranked[0])
+    
+    return result
+
 def pick_best_video(videos: list) -> dict:
     """Pilih video terbaik: resolusi tertinggi dulu, lalu label varian."""
     if not videos:
@@ -445,20 +476,19 @@ def _album_interval(total: int) -> float:
     return 3.0 + 2.0 * (total - 5) / 45.0
 
 
-async def download_album(images: list, title: str, bot, chat_id, status_msg_id, out_dir: str, tag: str = "paw") -> dict:
-    """Unduh semua gambar (post tanpa video) menjadi album.
+async def download_album(medias_list: list, title: str, bot, chat_id, status_msg_id, out_dir: str, tag: str = "paw", media_type: str = "photo", item_label: str = "foto") -> dict:
+    """Unduh semua media (gambar atau video) menjadi album.
 
-    Pesan status hanya menampilkan jumlah foto dan progres (misal '1/30 foto'),
+    Pesan status hanya menampilkan jumlah media dan progres (misal '1/30 foto'),
     diedit sekali per interval `_album_interval(total)` (3-5 detik, menyesuaikan
-    jumlah foto: sedikit foto -> 3s, banyak foto -> 5s) supaya aman dari rate limit.
-    File tiap gambar diunduh senyap (`notify=False`) tanpa edit per chunk/file.
+    jumlah media: sedikit media -> 3s, banyak media -> 5s) supaya aman dari rate limit.
     File diletakkan di `out_dir` (pakai TMP_DIR, bukan work_dir sementara) karena
     folder kerja sementara dihapus di blok `finally` sebelum album dikirim.
     """
-    medias = [img for img in (images or []) if img.get("url")]
+    medias = [m for m in (medias_list or []) if m.get("url")]
     total = len(medias)
     if not total:
-        raise RuntimeError("Tidak ada gambar yang bisa diunduh di post ini")
+        raise RuntimeError("Tidak ada media yang bisa diunduh di post ini")
 
     interval = _album_interval(total)
     escaped_title = html_mod.escape(sanitize_filename(title, 80))
@@ -468,7 +498,7 @@ async def download_album(images: list, title: str, bot, chat_id, status_msg_id, 
         return (
             f"<b>{escaped_title}</b>\n\n"
             f"<code>{progress_bar(pct)}</code>\n"
-            f"<code>{done_count}/{total} foto</code>"
+            f"<code>{done_count}/{total} {item_label}</code>"
         )
 
     flood_until = 0.0
@@ -480,11 +510,17 @@ async def download_album(images: list, title: str, bot, chat_id, status_msg_id, 
             flood_until = last_edit + wait
 
     items = []
-    for idx, img in enumerate(medias, 1):
-        name = f"{tag}_img_{idx:03d}{extension_for(img.get('name'), '.jpg')}"
+    for idx, item in enumerate(medias, 1):
+        m_type = item.get("type", media_type)
+        def_ext = ".mp4" if m_type == "video" else ".jpg"
+        prefix = "vid" if m_type == "video" else "img"
+        name = f"{tag}_{prefix}_{idx:03d}{extension_for(item.get('name'), def_ext)}"
         out = os.path.join(out_dir, name)
-        await download_to_file(img.get("url"), out, bot, chat_id, status_msg_id, title, notify=False)
-        items.append({"path": out, "type": "photo"})
+        
+        # Untuk multiple media, progress bar individu akan mengganggu (rate limit).
+        # Jadi kita panggil download_to_file senyap (notify=False)
+        await download_to_file(item.get("url"), out, bot, chat_id, status_msg_id, title, notify=False)
+        items.append({"path": out, "type": m_type})
         now = time.time()
         if status_msg_id and now >= flood_until and (idx == total or now - last_edit >= interval):
             wait = await _safe_edit_status(bot, chat_id, status_msg_id, _render_album_status(idx))

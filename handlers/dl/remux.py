@@ -149,7 +149,22 @@ def make_video_thumbnail(src_path:str)->str|None:
             "-ss","00:00:01",
             "-i",src_path,
             "-frames:v","1",
-            "-vf","scale=320:-2",
+            "-vf","scale=w=320:h=320:force_original_aspect_ratio=decrease",
+            "-q:v","3",
+            thumb_path,
+        ],timeout=FFMPEG_THUMB_TIMEOUT)
+        if os.path.exists(thumb_path) and os.path.getsize(thumb_path)>0:
+            return thumb_path
+    except Exception:
+        pass
+
+    try:
+        _run_cmd([
+            "ffmpeg","-y",
+            "-ss","00:00:00",
+            "-i",src_path,
+            "-frames:v","1",
+            "-vf","scale=w=320:h=320:force_original_aspect_ratio=decrease",
             "-q:v","3",
             thumb_path,
         ],timeout=FFMPEG_THUMB_TIMEOUT)
@@ -236,14 +251,26 @@ async def download_hls_aes_ffmpeg(
 async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
     if fmt_key=="mp3":
         return result
+
+    async def _prep_item(item):
+        p = item.get("path")
+        if not p or not os.path.exists(p):
+            return item
+        if detect_media_type(p) == "video":
+            new_path, thumb_path, meta = await remux_and_thumbnail_parallel(p)
+            item["path"] = new_path
+            if thumb_path:
+                item["thumb"] = thumb_path
+            if meta:
+                item["meta"] = meta
+        else:
+            item["path"] = await asyncio.to_thread(_prepare_single_path, p)
+        return item
+
     if isinstance(result,dict) and result.get("items"):
         items=result.get("items") or []
-        paths=[i.get("path") for i in items]
-        # Siapkan semua item bersamaan (remux+thumbnail paralel per file).
-        prepped=await asyncio.gather(*(asyncio.to_thread(_prepare_single_path,p) for p in paths))
-        for item,new_path in zip(items,prepped):
-            if new_path:
-                item["path"]=new_path
+        prepped = await asyncio.gather(*(_prep_item(i) for i in items))
+        result["items"] = prepped
         return result
     if isinstance(result,dict):
         p=result.get("path")

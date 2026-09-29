@@ -102,9 +102,25 @@ async def pawchive_download(
         videos = post.get("videos") or []
         images = post.get("images") or []
 
+        if fmt_key != "mp3":
+            # Persiapkan list media gabungan
+            final_videos = ext.resolve_videos(videos) if videos else []
+            all_media = []
+            for v in final_videos:
+                all_media.append({"url": v["url"], "name": v.get("name"), "type": "video"})
+            for img in images:
+                all_media.append({"url": img["url"], "name": img.get("name"), "type": "photo"})
+
+            if len(all_media) > 1:
+                # Jika ada lebih dari 1 media, kirim sebagai album campuran
+                album_tag = uuid.uuid4().hex[:8]
+                return await ext.download_album(
+                    all_media, title, bot, chat_id, status_msg_id, TMP_DIR, album_tag,
+                    item_label="media"
+                )
+
         if not videos and images:
-            # Album disimpan langsung di TMP_DIR (bukan work_dir) karena
-            # work_dir dihapus di blok finally setelah fungsi return.
+            # Fallback jika cuma ada 1 gambar
             album_tag = uuid.uuid4().hex[:8]
             return await ext.download_album(
                 images, title, bot, chat_id, status_msg_id, TMP_DIR, album_tag
