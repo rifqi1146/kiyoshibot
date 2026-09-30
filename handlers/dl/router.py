@@ -183,6 +183,7 @@ def _platform_label(url:str)->str:
         (("cosxplay.com",),"CosXplay"),
         (("nekopoi.care","nekopoi.best"),"Nekopoi"),
         (("punishworld.com",),"PunishWorld"),
+        (("simontok.study",),"Simontok"),
         ((
             "bokepcrot.*",
             "lendirqu.*",

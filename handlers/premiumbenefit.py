@@ -14,6 +14,7 @@ BENEFITS = (
         (
             ("/dl", "Unduhan tanpa limit tiga proses per menit."),
             ("/dl", "Resolusi video Up to 1080p+."),
+            ("/dl", "Download konten dari Simontok (simontok.study)."),
         ),
     ),
     (
