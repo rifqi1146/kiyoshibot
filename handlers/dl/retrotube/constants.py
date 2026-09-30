@@ -19,7 +19,7 @@ RETROTUBE_DOMAINS = (
     "kangencoli.com",
     "ksatriabokep.com",
     "pemburubokep.com",
-    "becekku.live",
+    "becekku.*",
     "lordbokep.com",
     "bokepnoz.co",
     "bokepbrut.co",
@@ -101,6 +101,7 @@ _DECOY_HOSTS = ("test-videos.co.uk",)
 _MIRROR_GROUPS = (
     ("lendirqu.*",),
     ("bokepcrot.*",),
+    ("becekku.*",),
     ("bokepindoh.design", "bokepindoh.xxx"),
     ("bokepinfo.today", "bokepinfo.info"),
     (
@@ -118,6 +119,7 @@ _MIRROR_GROUPS = (
 _MIRROR_EXTRA_HOSTS = {
     "lendirqu.*": ("lendirqu.stream", "lendirqu.wtf", "lendirqu.com", "lendirqu.pics", "lendirqu.hair"),
     "bokepcrot.*": ("bokepcrot.gives", "bokepcrot.land", "bokepcrot.quest", "bokepcrot.com", "bokepcrot.net", "bokepcrot.xyz"),
+    "becekku.*": ("becekku.live", "becekku.club"),
 }
 
 _SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))

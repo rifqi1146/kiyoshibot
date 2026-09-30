@@ -33,8 +33,8 @@ SITES = {
     "becekku": {
         "label": "Becekku",
         "prefix": "bq",
-        "search_base": "https://becekku.live/",
-        "gate_url": "https://becekku.live/",
+        "search_base": "https://becekku.club/",
+        "gate_url": "https://becekku.club/",
         "example": "/becekku bocil",
     },
 }
@@ -201,11 +201,20 @@ def make_site_cmd(site_key: str):
 
         _purge_expired_cache()
 
+        log.info(
+            "Search start | site=%s q=%r chat_id=%s user_id=%s",
+            site_key, query, chat.id, user_id,
+        )
         status = await msg.reply_text(
             f"🔍 Searching <code>{html.escape(query)}</code>...", parse_mode="HTML"
         )
 
+        started = time.monotonic()
         results = await _do_search(site_key, query)
+        log.info(
+            "Search done | site=%s q=%r results=%d elapsed=%.1fs",
+            site_key, query, len(results), time.monotonic() - started,
+        )
         if not results:
             return await status.edit_text(
                 f"❌ No results for <code>{html.escape(query)}</code>.", parse_mode="HTML"

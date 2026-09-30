@@ -171,9 +171,15 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
     async def _emit(force: bool = False):
         nonlocal last_edit
         now = time.monotonic()
-        if stats.total <= 0 and done > 0:
-            stats.total = int(total_bytes / done * total)
         stats.sample(total_bytes, now=now)
+
+        if done > 0 and total > 0:
+            # Proyeksi total byte dari rata-rata segmen yang sudah selesai.
+            # Dijaga agar tidak pernah turun di bawah byte yang sudah terunduh
+            # (monoton naik), supaya bar/persentase tidak loncat-loncat atau >100%.
+            est = int(total_bytes / done * total)
+            stats.total = max(est, total_bytes, 1)
+
         interval = _FAST_INTERVAL if stats.speed_bps >= _FAST_SPEED_BPS else _SLOW_INTERVAL
 
         if stats.should_log(PROGRESS_LOG_INTERVAL, now=now):
@@ -182,7 +188,11 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
             return
 
         last_edit = now
-        pct = done * 100.0 / max(1, total)
+        if done >= total:
+            # Semua segmen selesai: angka final, jangan biarkan >100%.
+            pct = 100.0 if total > 0 else 0.0
+        else:
+            pct = (done * 100.0 / total) if total > 0 else 0.0
         text = render_progress_text(
             title_text,
             downloaded=stats.downloaded,
