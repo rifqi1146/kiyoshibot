@@ -25,6 +25,7 @@ from handlers.nobg import nobg_cmd
 from handlers.nsfw import nsfw_cmd
 from handlers.retrotubesearch import lendirqu_cmd, becekku_cmd
 from handlers.nekopoisearch import nekopoi_cmd
+from handlers.premiumbenefit import premiumbenefit_cmd
 from handlers.punishworldsearch import punish_cmd
 from handlers.susunkata import susunkata_cmd
 from handlers.ping import ping_cmd
@@ -136,6 +137,7 @@ COMMAND_HANDLERS = [
     ("nsfw", nsfw_cmd, False),
     ("ping", ping_cmd, True),
     ("premium", premium_cmd, False),
+    ("premiumbenefit", premiumbenefit_cmd, False),
     ("promote", promote_cmd, False),
     (["q"] + [f"q{i}" for i in range(1, 11)] + ["qr"] + [f"q{i}r" for i in range(1, 11)], q_cmd, False),
     (["qi"] + [f"qi{i}" for i in range(1, 11)] + ["qir"] + [f"qi{i}r" for i in range(1, 11)], qi_cmd, False),

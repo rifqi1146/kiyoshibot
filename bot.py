@@ -41,6 +41,7 @@ BOT_COMMANDS=[
     ("susunkata","Play word arrangement game"),
     ("stats","System statistics"),
     ("dl","Download video"),
+    ("premiumbenefit","List premium features and commands"),
     ("manga","Read manga"),
     ("ask","Ask Gemini AI"),
     ("music","Search music"),

@@ -138,6 +138,7 @@ HELP_TEXT = {
         "- `/music` — Search music\n"
         "- `/nekopoi` — Search & download from Nekopoi\n"
         "- `/nobg` — Remove image background\n"
+        "- `/premiumbenefit` — List commands & features that require premium\n"
         "- `/q [N] [r] [color]` — Quote sticker; `N` pesan ke depan, `-N` ke belakang, `r` tampilkan reply, `color` nama/hex/gradient\n"
         "- `/qi [N] [r] [color]` — Quote bergambar wallpaper\n"
         "- `/qs [N] [r] [color]` — Quote buat stories (9:16)\n"
