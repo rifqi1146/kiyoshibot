@@ -4,7 +4,7 @@ FLOW KONSTANTA
 --------------
 1. UA + timeout untuk request curl_cffi (impersonate Chrome).
 2. Domain simontok.study untuk deteksi URL dan routing download.
-3. Host embed putarin.* (mirror TLD) untuk resolusi HLS.
+3. Host embed putarin.*/puterin.* (ejaan + mirror TLD berrotasi) untuk resolusi HLS.
 4. Concurrency + retry untuk unduhan segmen HLS.
 """
 import os
@@ -20,9 +20,11 @@ FFMPEG_TIMEOUT = int(os.getenv("SIMONTOK_FFMPEG_TIMEOUT", "600"))
 
 SIMONTOK_HOSTS = ("simontok.study", "www.simontok.study")
 
-# Host embed player. TLD putarin berotasi (biz/xyz/...), jadi request selalu
-# memakai origin yang benar-benar ada di iframe post, bukan host yang di-pin.
-EMBED_HOST_MARKERS = ("putarin.",)
+# Host embed player. TLD putarin berotasi (biz/xyz/...) DAN ejaannya bervariasi
+# (`putarin.` / `puterin.`) tergantung post, jadi request selalu memakai origin
+# yang benar-benar ada di iframe post, bukan host yang di-pin. Kedua varian pakai
+# alur identik (window.__PX + /api/hls).
+EMBED_HOST_MARKERS = ("putarin.", "puterin.")
 
 SEG_CONCURRENCY = int(os.getenv("SIMONTOK_SEG_CONCURRENCY", "6"))
 SEG_RETRIES = int(os.getenv("SIMONTOK_SEG_RETRIES", "3"))

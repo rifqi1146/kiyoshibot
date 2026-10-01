@@ -2,7 +2,8 @@
 
 FLOW SCRAPER
 ------------
-1. `scrape_post(url)`: ambil halaman post → judul + URL embed (iframe putarin.*).
+1. `scrape_post(url)`: ambil halaman post → judul + URL embed (iframe
+   putarin.*/puterin.* — ejaan & TLD berrotasi).
 2. `resolve_hls(embed_url)`: halaman embed memuat `window.__PX` = blob terenkripsi
    AES-256-GCM. Kunci TIDAK ada di HTML — diambil sekali-pakai dari
    `<origin>/api/pk?n=<nonce>`. Dekripsi menghasilkan config player JSON
@@ -97,7 +98,7 @@ def scrape_post(url: str) -> dict:
             embed_url = cand
             break
     if not embed_url:
-        raise RuntimeError("Iframe embed putarin tidak ditemukan di halaman post")
+        raise RuntimeError("Iframe embed putarin/puterin tidak ditemukan di halaman post")
 
     return {
         "title": sanitize_filename(title or "Simontok Video", 100),
