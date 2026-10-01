@@ -46,6 +46,7 @@ BOT_COMMANDS=[
     ("ask","Ask Gemini AI"),
     ("music","Search music"),
     ("nekopoi","Search & download from Nekopoi"),
+    ("simontok","Search & download from Simontok"),
     ("caca","Chat with Caca"),
     ("groq","Ask Groq AI"),
     ("gsearch","Google search"),

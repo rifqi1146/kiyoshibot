@@ -27,6 +27,7 @@ from handlers.retrotubesearch import lendirqu_cmd, becekku_cmd
 from handlers.nekopoisearch import nekopoi_cmd
 from handlers.premiumbenefit import premiumbenefit_cmd
 from handlers.punishworldsearch import punish_cmd
+from handlers.simontoksearch import simontok_cmd
 from handlers.susunkata import susunkata_cmd
 from handlers.ping import ping_cmd
 from handlers.dl.tiktok.livetiktok import recordlive_cmd, stoprecord_cmd, statusrecord_cmd
@@ -127,6 +128,7 @@ COMMAND_HANDLERS = [
     ("becekku", becekku_cmd, False),
     ("nekopoi", nekopoi_cmd, False),
     ("punish", punish_cmd, False),
+    ("simontok", simontok_cmd, False),
     ("menu", help_cmd, True),
     ("mode", mode_cmd, False),
     ("moderation", moderation_cmd, False),

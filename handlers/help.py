@@ -147,6 +147,7 @@ HELP_TEXT = {
         "- `/resi` — Track packages, Indonesia expedition only\n"
         "- `/ship` — Choose a couple\n"
         "- `/share` — Share media anonymous\n"
+        "- `/simontok` — Search & download from Simontok\n"
         "- `/susunkata` — Play word arrangement game\n"
         "- `/tr` — Translate text between languages\n"
         "- `/trlist` — List supported languages\n"

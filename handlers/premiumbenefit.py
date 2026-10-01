@@ -24,6 +24,7 @@ BENEFITS = (
             ("/punish", "Cari dan download konten dari PunishWorld."),
             ("/lendirqu", "Cari dan download konten dari LendirQu."),
             ("/becekku", "Cari dan download konten dari Becekku."),
+            ("/simontok", "Cari dan download konten dari Simontok."),
         ),
     ),
     ("Manga", (("/manga nh", "Membaca manga NH / nhentai."),)),

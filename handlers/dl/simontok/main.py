@@ -96,6 +96,14 @@ async def simontok_download(
                 result["artist"] = title
             return result
 
+        # Codec video post ini tak dikenal ffmpeg (stream terbaca `bin_data`) ->
+        # remux audio-only. Tolak lebih dulu, jangan kirim file rusak diam-diam.
+        if not await asyncio.to_thread(ext.has_video_stream, tmp_mp4):
+            raise RuntimeError(
+                "Video tidak didukung: codec-nya tidak dikenal server "
+                "(file ini tidak bisa diremux dengan aman)."
+            )
+
         shutil.move(tmp_mp4, final_path)
         log.info(
             "Simontok sukses | title=%r duration=%ss segs=%d size=%.2fMB",

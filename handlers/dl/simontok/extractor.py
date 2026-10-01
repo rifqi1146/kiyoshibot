@@ -331,6 +331,25 @@ def extract_audio(src_path: str, out_path: str) -> str:
     return out_path
 
 
+def has_video_stream(path: str) -> bool:
+    """True kalau file hasil remux memuat stream video yang dikenal ffmpeg.
+
+    Beberapa post simontok memakai codec video yang tidak dikenal build ffmpeg
+    (stream terbaca sebagai `bin_data`, ffprobe: "Unsupported codec with id").
+    Remux `-c copy` menghasilkan mp4 audio-only. Tanpa cek ini, file rusak
+    dikirim diam-diam ke user.
+    """
+    try:
+        res = subprocess.run(
+            ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60,
+        )
+    except Exception:
+        return True  # ffprobe gagal -> biarkan download lanjut
+    return any(line.strip() for line in (res.stdout or "").splitlines())
+
+
 def download_thumb(url: str, out_path: str) -> str | None:
     if not url:
         return None
