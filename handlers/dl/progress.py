@@ -33,6 +33,10 @@ log = logging.getLogger(__name__)
 PROGRESS_EDIT_INTERVAL = float(os.getenv("DL_PROGRESS_EDIT_INTERVAL", "2.5"))
 PROGRESS_LOG_INTERVAL = float(os.getenv("DL_PROGRESS_LOG_INTERVAL", "2.5"))
 
+# Jendela pengukuran kecepatan TransferStats (detik). Lihat komentar di
+# `TransferStats.sample` — sampling antar-chunk salah membaca buffer soket.
+_SPEED_WINDOW = float(os.getenv("DL_SPEED_WINDOW", "1.0"))
+
 _SIZE_UNITS = {
     "b": 1,
     "kb": 1024,
@@ -274,8 +278,8 @@ class TransferStats:
     __slots__ = (
         "total",
         "started",
-        "_last_ts",
-        "_last_bytes",
+        "_win_ts",
+        "_win_bytes",
         "_last_log_ts",
         "_last_edit_ts",
         "downloaded",
@@ -287,8 +291,9 @@ class TransferStats:
     def __init__(self, total: int = 0, *, started: float | None = None) -> None:
         self.total = max(int(total or 0), 0)
         self.started = started if started is not None else time.monotonic()
-        self._last_ts = self.started
-        self._last_bytes = 0
+        # Jendela pengukuran kecepatan (lihat `sample`).
+        self._win_ts = self.started
+        self._win_bytes = 0
         self._last_log_ts = 0.0
         self._last_edit_ts = -10.0
         self.downloaded = 0
@@ -302,13 +307,32 @@ class TransferStats:
             done = max(int(done or 0), 0)
         except (TypeError, ValueError):
             done = 0
-        dt = max(now - self._last_ts, 0.001)
-        self.speed_bps = max(done - self._last_bytes, 0) / dt
+        self.downloaded = done
+
+        # Kecepatan dihitung dari JENDELA WAKTU (~1.0s), bukan antar-sample.
+        # Sample per-chunk di thread unduh menabrak dua masalah:
+        #   1. `dt` di-floor ke 0.001s, jadi chunk 16KB yang masuk beruntun dari
+        #      buffer soket selalu membaca 16KB/1ms = 15.6 MB/s — angka STAGNAN
+        #      yang bukan kecepatan riil, dan inilah yang tampil di UI Telegram
+        #      walau unduhan jalan ~80 KB/s.
+        #   2. curl menyerahkan isi buffer berlomba, sehingga delta/dt tidak
+        #      pernah mewakili throughput jaringan.
+        # Dengan jendela >= 1s, kelompok chunk berapapun polanya dirata-ratakan
+        # atas durasi jendela, jadi angkanya mengikuti kecepatan nyata.
+        span = now - self._win_ts
         elapsed = max(now - self.started, 0.001)
         self.avg_bps = done / elapsed
-        self.downloaded = done
-        self._last_ts = now
-        self._last_bytes = done
+
+        if span >= _SPEED_WINDOW:
+            gained = done - self._win_bytes
+            self.speed_bps = max(gained, 0) / span
+            self._win_ts = now
+            self._win_bytes = done
+        # Sebelum jendela pertama terbuka `speed_bps` masih 0; jangan isi dengan
+        # delta/dt maupun avg — keduanya sama-sama artefak pada elapsed <1ms
+        # (16KB/1ms = 15.6 MB/s, angka stagnan yang pernah nongol di UI).
+        # Konsumen tampil pakai `speed_bps or avg_bps` (lihat `telegram_text`).
+
         if self.total > 0 and self.speed_bps > 0 and done <= self.total:
             self.eta_seconds = (self.total - done) / self.speed_bps
         else:
@@ -348,24 +372,35 @@ class TransferStats:
         return False
 
     def telegram_text(self, title: str, *, extra: str = "") -> str:
+        # Sebelum jendela pertama (~1s) terbuka, speed_bps masih 0; gunakan
+        # avg_bps sebagai fallback agar bar tidak menampilkan speed kosong.
+        display_speed = self.speed_bps if self.speed_bps > 0 else self.avg_bps
+        display_eta = self.eta_seconds
+        if display_eta is None and display_speed > 0 and self.total > 0 and self.downloaded <= self.total:
+            display_eta = (self.total - self.downloaded) / display_speed
         return render_progress_text(
             title,
             downloaded=self.downloaded,
             total=self.total,
-            speed_bps=self.speed_bps,
-            eta_seconds=self.eta_seconds,
+            speed_bps=display_speed,
+            eta_seconds=display_eta,
             extra=extra,
         )
 
     def log(self, kind: str, *, label: str = "") -> None:
+        # Sama dengan telegram_text: fallback avg_bps sebelum jendela terbuka.
+        display_speed = self.speed_bps if self.speed_bps > 0 else self.avg_bps
+        display_eta = self.eta_seconds
+        if display_eta is None and display_speed > 0 and self.total > 0 and self.downloaded <= self.total:
+            display_eta = (self.total - self.downloaded) / display_speed
         log_progress(
             kind,
             label=label,
             downloaded=self.downloaded,
             total=self.total,
-            speed_bps=self.speed_bps,
+            speed_bps=display_speed,
             avg_bps=self.avg_bps,
-            eta_seconds=self.eta_seconds,
+            eta_seconds=display_eta,
         )
 
     def log_done(self, kind: str, *, label: str = "", size: int | None = None) -> None:
