@@ -1,4 +1,4 @@
-"""Konstanta scraper CosXplay (cosxplay.com) — full mandiri, TANPA yt-dlp.
+"""Konstanta scraper CosXplay (cosxplay.com)
 
 FLOW KONSTANTA
 --------------

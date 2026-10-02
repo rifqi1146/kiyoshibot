@@ -1,4 +1,4 @@
-"""Downloader Simontok (simontok.study) — full mandiri, TANPA yt-dlp.
+"""Downloader Simontok (simontok.study)
 
 FLOW DOWNLOADER
 ---------------

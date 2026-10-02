@@ -1,4 +1,4 @@
-"""Downloader CosXplay (cosxplay.com) — full mandiri, TANPA yt-dlp.
+"""Downloader CosXplay (cosxplay.com)
 
 FLOW DOWNLOADER
 ---------------

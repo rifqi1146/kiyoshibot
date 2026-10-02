@@ -1,4 +1,4 @@
-"""Scraper Bunkr (bunkr.cr / bunkr.ph / ...) — mandiri tanpa yt-dlp.
+"""Scraper Bunkr (bunkr.cr / bunkr.ph / ...)
 
 FLOW SCRAPER
 ------------

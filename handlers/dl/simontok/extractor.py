@@ -1,4 +1,4 @@
-"""Scraper Simontok (simontok.study) — full mandiri, TANPA yt-dlp.
+"""Scraper Simontok (simontok.study)
 
 FLOW SCRAPER
 ------------

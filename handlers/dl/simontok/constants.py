@@ -1,4 +1,4 @@
-"""Konstanta scraper Simontok (simontok.study) — full mandiri, TANPA yt-dlp.
+"""Konstanta scraper Simontok (simontok.study)
 
 FLOW KONSTANTA
 --------------

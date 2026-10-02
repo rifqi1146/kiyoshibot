@@ -1,4 +1,4 @@
-"""Konstanta scraper Bunkr (bunkr.cr dll.) — mandiri tanpa yt-dlp.
+"""Konstanta scraper Bunkr (bunkr.cr dll.)
 
 FLOW KONSTANTA
 --------------

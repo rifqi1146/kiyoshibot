@@ -1,4 +1,4 @@
-"""Downloader Nekopoi (nekopoi.care) — full mandiri, TANPA yt-dlp.
+"""Downloader Nekopoi (nekopoi.care)
 
 FLOW DOWNLOADER
 ---------------
@@ -356,7 +356,7 @@ async def nekopoi_download(
     known_size: int = 0,
     engine: str | None = None,
 ):
-    """Unduh post Nekopoi (HLS streamruby) mandiri tanpa yt-dlp."""
+    """Unduh post Nekopoi (HLS streamruby)."""
     del has_audio, known_size, engine
     ext = _import_extractor()
     work_dir = os.path.join(TMP_DIR, f"neko_{uuid.uuid4().hex[:10]}")

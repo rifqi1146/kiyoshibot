@@ -1,4 +1,4 @@
-"""Konstanta scraper Nekopoi (nekopoi.care) — full mandiri, TANPA yt-dlp.
+"""Konstanta scraper Nekopoi (nekopoi.care)
 
 FLOW KONSTANTA
 --------------

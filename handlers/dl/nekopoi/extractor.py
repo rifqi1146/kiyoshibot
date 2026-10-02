@@ -1,4 +1,4 @@
-"""Scraper Nekopoi (nekopoi.care) — mandiri tanpa yt-dlp.
+"""Scraper Nekopoi (nekopoi.care)
 
 FLOW SCRAPER NEKOPOI
 --------------------
