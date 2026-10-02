@@ -13,11 +13,12 @@ from bs4 import BeautifulSoup
 
 from handlers.join import require_join_or_block
 from handlers.dl.router import (
-    _start_dl_task,
+    _process_choice,
     _premium_link_allowed,
     _premium_link_block_text,
     _metadata_status,
 )
+from handlers.dl.state import DL_CACHE
 from handlers.dl.nekopoi.constants import FORCE_IPV4
 
 log = logging.getLogger(__name__)
@@ -364,11 +365,22 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ts": time.time(),
         }
 
-        await _start_dl_task(
+        # Wajib lewat _process_choice (bukan _start_dl_task langsung): entry
+        # teks kemarin status "Scraping..." lalu worker jalan sendiri dan
+        # _pick_variant(None) diam-diam milih resolusi tertinggi, jadi picker
+        # resolusi TIDAK pernah tampil di Telegram. _process_choice -> branch
+        # supports_nekopoi_resolution() -> _show_resolution_picker(engine=...)
+        # yang mengisi DL_CACHE[dl_id]["res_map"] untuk dlres_callback.
+        dl_id = uuid.uuid4().hex[:8]
+        DL_CACHE[dl_id] = dl_data
+
+        return await _process_choice(
             context=context,
             message=q.message,
+            dl_id=dl_id,
             data=dl_data,
-            fmt_key="video",
+            choice="video",
+            user_id=q.from_user.id,
             status_ready=True,
         )
 
