@@ -63,6 +63,9 @@ PREMIUM_ONLY_DOMAINS = {
     "punishworld.com",
     "cosxplay.com",
     "simontok.study",
+    "bunkr.*",
+    "bunkrr.*",
+    "bunkr.cr",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -140,4 +143,6 @@ AUTO_DOWNLOAD_DOMAINS = {
     "punishworld.com",
     "cosxplay.com",
     "simontok.study",
+    "bunkr.*",
+    "bunkrr.*",
 }

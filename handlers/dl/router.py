@@ -184,6 +184,7 @@ def _platform_label(url:str)->str:
         (("nekopoi.care","nekopoi.best"),"Nekopoi"),
         (("punishworld.com",),"PunishWorld"),
         (("simontok.study",),"Simontok"),
+        (("bunkr.*","bunkrr.*"),"Bunkr"),
         ((
             "bokepcrot.*",
             "lendirqu.*",
