@@ -273,6 +273,17 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
 
 
 async def get_resolutions(url: str, engine: str | None = None) -> list[dict]:
+    res, _ = await get_resolutions_detailed(url, engine=engine)
+    return res
+
+
+async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple[list[dict], str | None]:
+    """Seperti `get_resolutions`, tapi juga mengembalikan alasan kalau kosong.
+
+    `router._show_resolution_picker` memakai alasan ini supaya user melihat
+    kenapa picker-nya tidak muncul (mis. post Nekopoi tanpa jalur yang
+    didukung) alih-alih "No valid resolutions available." yang tidak menjelaskan.
+    """
     chosen = (engine or "").strip().lower()
 
     # Nekopoi: engine="nekopoi" dari router, atau deteksi otomatis via host.
@@ -280,28 +291,28 @@ async def get_resolutions(url: str, engine: str | None = None) -> list[dict]:
         try:
             from .nekopoi.main import probe_nekopoi
             probe = await asyncio.to_thread(probe_nekopoi, url)
-            return probe.get("res_list") or []
+            return (probe.get("res_list") or []), None
         except Exception as e:
             log.warning("Nekopoi probe failed | url=%s err=%r", url, e)
-            return []
+            return [], str(e)
 
     if chosen == "cosxplay" or (not chosen and supports_cosxplay_resolution(url)):
         try:
             from .cosxplay.main import probe_cosxplay
             probe = await asyncio.to_thread(probe_cosxplay, url)
-            return probe.get("res_list") or []
+            return (probe.get("res_list") or []), None
         except Exception as e:
             log.warning("CosXplay probe failed | url=%s err=%r", url, e)
-            return []
+            return [], str(e)
 
     # Jalur lama: engine ytdlp. Nekopoi tidak pernah lewat sini.
     if chosen and chosen != "ytdlp":
         log.warning("Unsupported resolution engine ignored | url=%s engine=%s", url, chosen)
     if not supports_ytdlp_resolution(url):
-        return []
+        return [], None
     try:
         res = await asyncio.to_thread(_probe_resolutions_sync, url)
-        return res or []
+        return (res or []), None
     except Exception as e:
         log.warning("yt-dlp probe failed | url=%s err=%r", url, e)
-        return []
+        return [], str(e)

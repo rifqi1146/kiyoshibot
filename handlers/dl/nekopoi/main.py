@@ -44,7 +44,7 @@ from urllib.parse import urlparse, urlsplit
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from handlers.dl.utils import sanitize_filename, FileSizeLimitExceeded
 
-from .constants import EMBED_HOST_STREAMPOI
+from .constants import EMBED_HOST_STREAMPOI, EMBED_HOST_DOOD
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +113,33 @@ def _dedup_by_height(variants: list) -> list:
     return out
 
 
+def _list_download_hosts(html_text: str) -> list[str]:
+    """Daftar label host unduh di `.nk-download-row` yang BUKAN Pixeldrain.
+
+    Dipakai hanya untuk pesan error yang jujur ketika sebuah post tidak punya
+    jalur yang didukung (tidak ada streampoi, tidak ada Pixeldrain). Contoh post
+    `3d-hentai-...`: Racaty, Googledrive2, Videobin, Gofile, Doodstream,
+    Zippyshare, MC [ouo] — semuanya host yang tidak didukung.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:
+        return []
+    try:
+        soup = BeautifulSoup(html_text or "", "html.parser")
+    except Exception:
+        return []
+    seen: list[str] = []
+    for row in soup.find_all(class_="nk-download-row"):
+        for a in row.find_all("a", href=True):
+            label = a.get_text(strip=True)
+            if not label or "pixel" in label.lower():
+                continue
+            if label not in seen:
+                seen.append(label)
+    return seen
+
+
 def probe_nekopoi(raw_url: str) -> dict:
     """-> {title, thumbnail, variants:[...], res_list:[...]}
 
@@ -139,22 +166,34 @@ def probe_nekopoi(raw_url: str) -> dict:
             elif "720" in name: h = 720
             elif "480" in name: h = 480
             elif "360" in name: h = 360
-            
-            for a in row.find_all("a", href=True):
-                if "pixeldrain" in a.get_text(strip=True).lower():
-                    ouo_url = a["href"]
-                    # parse size if possible or leave 0
-                    out_vars.append({
-                        "height": h or 480,
-                        "bandwidth": h * 1000 if h else 480000,
-                        "url": ouo_url,
-                        "format_id": str(h or 480),
-                        "type": "pixeldrain_ouo"
-                    })
+
+            # Tiap baris punya DUA link Pixeldrain: shortener langsung
+            # (`linkpoi.me/<id>`, teks "PixelDrain") dan versi via ouo
+            # (`ouo.io/<id>`, teks "Pixel[ouo]"). Filter "pixeldrain" TIDAK
+            # menangkap yang ouo (teksnya "Pixel[ouo]"), jadi pakai "pixel"
+            # supaya keduanya masuk, lalu utamakan host ouo.io yang terbukti
+            # tembus (linkpoi sering 500 / butuh JS).
+            hrefs = [a["href"] for a in row.find_all("a", href=True)
+                     if "pixel" in a.get_text(strip=True).lower()]
+            if not hrefs:
+                continue
+
+            def _is_ouo(u: str) -> bool:
+                host = (urlsplit(u).hostname or "").lower()
+                return host.endswith("ouo.io") or host.endswith("ouo.press")
+
+            chosen = next((u for u in hrefs if _is_ouo(u)), hrefs[0])
+            out_vars.append({
+                "height": h or 480,
+                "bandwidth": h * 1000 if h else 480000,
+                "url": chosen,
+                "format_id": str(h or 480),
+                "type": "pixeldrain_ouo",
+            })
         return out_vars
 
     def _resolve_pixeldrain(ouo_url: str) -> tuple[str, int]:
-        bypassed = ext.bypass_ouo(ouo_url)
+        bypassed = ext.resolve_shortener(ouo_url)
         if not bypassed or "pixeldrain.com/u/" not in bypassed:
             return "", 0
         pid = bypassed.split("/u/")[-1].split("?")[0].split("/")[0]
@@ -205,30 +244,96 @@ def probe_nekopoi(raw_url: str) -> dict:
                 primary_err, primary_host = e, emb_host
             continue
 
-    # Jika HLS gagal, fallback ke download link (Pixeldrain)
+    # Fallback 2: kumpulkan varian dari DoodStream (direct MP4) + Pixeldrain (ouo),
+    # lalu GABUNG per tinggi.
+    #
+    # Dulu Pixeldrain dipakai lebih dulu, tapi jalur itu butuh bypass ouo lewat
+    # browser (~16-20s per varian) sementara DoodStream murni 2 request HTTP.
+    # Karena itu DoodStream didahulukan PER TINGGI (tinggi yang sama diambil dari
+    # DoodStream), TAPI varian tinggi yang tidak ada di DoodStream tetap diambil
+    # dari Pixeldrain — kalau tidak, post seperti `furachi-flat-episode-1` yang
+    # punya 1080p di Pixeldrain jadi kehilangan 1080p-nya (regresi).
+    dood_variants: list = []
+    for emb in embeds:
+        emb_host = (urlsplit(emb).hostname or "").lower()
+        is_dood = any(emb_host == d or emb_host.endswith("." + d) for d in EMBED_HOST_DOOD)
+        if not is_dood:
+            continue
+        try:
+            info = ext.probe_doodstream(emb, referer=raw_url)
+        except Exception as e:
+            log.debug("DoodStream embed gagal | embed=%s err=%r", emb, e)
+            continue
+        if info:
+            dood_variants.append(info)
+
     pd_variants = scrape_pixeldrain_variants(post.get("raw_html") or "")
-    if pd_variants:
-        log.info("Nekopoi HLS tidak tersedia, fallback ke download link Pixeldrain")
-        variants = _dedup_by_height(pd_variants)
+
+    merged: list = []
+    seen_heights: set = set()
+    for v in dood_variants:
+        h = int(v.get("height") or 0)
+        if h and h not in seen_heights:
+            seen_heights.add(h)
+            merged.append(v)
+    for v in pd_variants:
+        h = int(v.get("height") or 0)
+        if h and h not in seen_heights:
+            seen_heights.add(h)
+            merged.append(v)
+
+    if merged:
+        if dood_variants and pd_variants:
+            log.info("Nekopoi HLS tidak tersedia, fallback ke DoodStream + Pixeldrain")
+        elif dood_variants:
+            log.info("Nekopoi HLS tidak tersedia, fallback ke embed DoodStream")
+        else:
+            log.info("Nekopoi HLS tidak tersedia, fallback ke download link Pixeldrain")
+
+        variants = _dedup_by_height(merged)
         res_list = [
             {
                 "height": int(v["height"]),
                 "format_id": v["format_id"],
                 "has_audio": True,
                 "filesize": 0,
-                "total_size": 0,
+                "total_size": int(v.get("size") or 0),
             }
             for v in variants
         ]
+        has_dood = any(v.get("type") == "doodstream_direct" for v in variants)
+        has_pd = any(v.get("type") == "pixeldrain_ouo" for v in variants)
+        if has_dood and has_pd:
+            master_tag = "doodstream+pixeldrain_fallback"
+        elif has_dood:
+            master_tag = "doodstream_fallback"
+        else:
+            master_tag = "pixeldrain_fallback"
         probe = {
             "title": title,
             "thumbnail": post.get("thumbnail") or "",
-            "master": "pixeldrain_fallback",
+            "master": master_tag,
             "variants": variants,
             "res_list": res_list,
         }
         cache_probe(raw_url, probe)
         return probe
+
+    # Tidak ada streampoi (primary) dan tidak ada link Pixeldrain.
+    # JANGAN angkat error embed non-utama (playmogo/videobin/discord) —
+    # teksnya "Skrip packer tidak ditemukan di embed" yang menyesatkan dan
+    # bikin seolah parser HLS-nya rusak, padahal parser baik-baik saja: memang
+    # tidak ada satu pun jalur unduh yang didukung di post ini. Sebutkan host
+    # apa saja yang tersedia supaya user tahu ini post yang memang tidak
+    # didukung (host-nya pun sering sudah mati semua).
+    if primary_err is None:
+        hosts = _list_download_hosts(post.get("raw_html") or "")
+        names = ", ".join(hosts) if hosts else "tidak terdeteksi"
+        raise RuntimeError(
+            "Post Nekopoi ini tidak punya jalur unduh yang didukung: "
+            "tidak ada HLS (streampoi), DoodStream (playmogo), ataupun Pixeldrain. "
+            f"Host yang tersedia di post ({names}) belum didukung scraper."
+        )
 
     raise primary_err or last_err or RuntimeError("Gagal mengambil stream Nekopoi dari semua embed & download link")
 
@@ -280,8 +385,57 @@ async def nekopoi_download(
             title, label, fmt_key, format_id, [v.get("height") for v in variants],
         )
 
+        if chosen.get("type") == "doodstream_direct":
+            # Direct MP4 dari CDN DoodStream. Referer WAJIB = halaman embed:
+            # CDN menolak permintaan tanpa referer playmogo.
+            direct_url = chosen["url"]
+            headers = {
+                "User-Agent": ext.UA,
+                "Referer": chosen.get("referer") or "",
+            }
+
+            if fmt_key == "mp3":
+                tmp_mp4 = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_tmp.mp4")
+                final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
+                try:
+                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, headers)
+                    await asyncio.to_thread(ext._run_ffmpeg, [
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        "-i", tmp_mp4, "-vn", "-acodec", "libmp3lame", "-q:a", "2", final_path,
+                    ])
+                finally:
+                    if os.path.exists(tmp_mp4):
+                        try:
+                            os.remove(tmp_mp4)
+                        except OSError:
+                            pass
+                size = os.path.getsize(final_path)
+                if size > MAX_TG_SIZE:
+                    raise FileSizeLimitExceeded("Audio exceeds 2GB limit. Download canceled.")
+                result = {"path": final_path, "title": title}
+                cover = await asyncio.to_thread(
+                    ext.download_thumb,
+                    probe.get("thumbnail"),
+                    os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_thumb.jpg"),
+                )
+                if cover:
+                    result["thumb"] = cover
+                    result["artist"] = title
+                return result
+
+            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp4")
+            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, headers)
+            size = os.path.getsize(final_path)
+            if size > MAX_TG_SIZE:
+                raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
+            log.info("Nekopoi DoodStream sukses | title=%r label=%s size=%.2fMB", title, label, size / 1024 / 1024)
+            return {"path": final_path, "title": title}
+
         if chosen.get("type") == "pixeldrain_ouo":
-            bypassed = ext.bypass_ouo(chosen["url"])
+            # Blocking (bisa ~20s kalau lewat jalur browser) -> jangan tahan event loop.
+            # Pakai `resolve_shortener`: tangani ouo.io maupun shortener lain
+            # (linkpoi.me dsb.) kalau ouo tidak ada.
+            bypassed = await asyncio.to_thread(ext.resolve_shortener, chosen["url"])
             if not bypassed or "pixeldrain.com/u/" not in bypassed:
                 raise RuntimeError("Gagal mem-bypass link Pixeldrain Nekopoi")
             pid = bypassed.split("/u/")[-1].split("?")[0].split("/")[0]

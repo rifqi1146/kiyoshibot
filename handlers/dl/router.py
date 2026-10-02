@@ -18,7 +18,7 @@ from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_pr
 from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
-from .probe import get_resolutions,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution
+from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution
 from .nekopoi.main import is_nekopoi_url
 from .cosxplay.main import is_cosxplay_url
 from .tiktok.main import is_tiktok,tiktok_download
@@ -286,12 +286,18 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
     )
 
 async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str|None=None,status_ready:bool=False):
-    res_list=await get_resolutions(data["url"],engine=engine)
+    res_list,reason=await get_resolutions_detailed(data["url"],engine=engine)
     if not res_list:
         DL_CACHE.pop(dl_id,None)
+        # Tampilkan alasan asli kalau ada (mis. post Nekopoi tanpa jalur unduh
+        # yang didukung), supaya user tahu KENAPA, bukan cuma "tidak ada".
+        if reason:
+            text=f"Unable to get resolutions.\n\n<code>{html.escape(str(reason))}</code>"
+        else:
+            text="No valid resolutions available."
         if message:
-            return await message.edit_text("No valid resolutions available.",parse_mode="HTML")
-        return await context.bot.send_message(chat_id=data["chat_id"], text="No valid resolutions available.", parse_mode="HTML", reply_to_message_id=data["reply_to"])
+            return await message.edit_text(text,parse_mode="HTML")
+        return await context.bot.send_message(chat_id=data["chat_id"], text=text, parse_mode="HTML", reply_to_message_id=data["reply_to"])
         
     res_map={}
     for r in res_list:

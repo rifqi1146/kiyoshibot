@@ -185,22 +185,40 @@ def scrape_post(url: str) -> dict:
     return {"title": title, "thumbnail": thumb, "embeds": embeds, "raw_html": html_text}
 
 
-def _get(url: str, referer: str = "") -> str:
+def _get(
+    url: str,
+    referer: str = "",
+    attempts: int = 3,
+    timeout: float | None = None,
+) -> str:
+    """Ambil halaman (curl_cffi, impersonate Chrome, terkunci IPv4).
+
+    `attempts`/`timeout` bisa diturunkan untuk jalur probe: embed streampoi yang
+    origin-nya mati membalas HTTP 522 SETELAH ~40 detik tunggu Cloudflare, jadi
+    default 3 percobaan x 45s = ~120 detik cuma buat nunggu host yang jelas
+    sedang down (lihat `probe_stream`).
+    """
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer
+    to = _HTTP_TIMEOUT if timeout is None else timeout
     last = None
-    for attempt in range(3):
+    for attempt in range(max(1, attempts)):
         try:
-            r = _http().get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+            r = _http().get(url, headers=headers, timeout=to)
             if r.status_code == 200:
                 return r.text
             last = f"HTTP {r.status_code}"
             if r.status_code in (403, 404):
                 break
+            # 5xx (522/520/524) = Cloudflare/origin mati, deterministik: retry
+            # cuma mengulang tunggu ~40s. Berhenti di percobaan pertama.
+            if r.status_code >= 500:
+                break
         except Exception as e:
             last = repr(e)
-        time.sleep(1.0)
+        if attempt < attempts - 1:
+            time.sleep(1.0)
     raise RuntimeError(f"Gagal mengambil sumber Nekopoi ({last}) | {urlsplit(url).hostname}")
 
 
@@ -247,11 +265,13 @@ async def download_direct_mp4(url: str, out_path: str, bot, chat_id, status_msg_
                     raise FileSizeLimitExceeded("File exceeds 2GB limit. Download canceled.")
         resp.close()
 
+    # Edit pertama: paksa tampilkan 0% ke Telegram segera setelah Content-Length
+    # diketahui, agar user langsung melihat progress bar (bukan diam di status lama).
     if status_msg_id:
         await stats.emit(
             bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
             title=title, kind="Nekopoi download", label=f"Nekopoi {label}",
-            log_interval=PROGRESS_LOG_INTERVAL, edit_interval=0.0
+            log_interval=0.0, edit_interval=0.0,
         )
 
     write_task = asyncio.ensure_future(asyncio.to_thread(_write))
@@ -260,14 +280,48 @@ async def download_direct_mp4(url: str, out_path: str, bot, chat_id, status_msg_
             await stats.emit(
                 bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
                 title=title, kind="Nekopoi download", label=f"Nekopoi {label}",
-                log_interval=PROGRESS_LOG_INTERVAL, edit_interval=PROGRESS_MAX_INTERVAL
+                log_interval=PROGRESS_LOG_INTERVAL,
+                edit_interval=_adaptive_edit_interval(stats),
             )
         await asyncio.sleep(PROGRESS_POLL)
 
     await write_task
+
+    # Edit terakhir: paksa 100% tampil ke Telegram sebelum pindah ke tahap remux/upload.
+    if status_msg_id:
+        await stats.emit(
+            bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
+            title=title, kind="Nekopoi download", label=f"Nekopoi {label}",
+            log_interval=0.0, edit_interval=0.0,
+        )
+
     stats.log_done("Nekopoi download", label=f"Nekopoi {label}")
     return os.path.getsize(out_path)
 
+
+
+def _adaptive_edit_interval(stats: "TransferStats") -> float:
+    """Interval edit ADAPTIF bersama untuk semua jalur Nekopoi.
+
+    Interval = clamp(estimasi_durasi_total / PROGRESS_TARGET_EDITS, min, max)
+    memakai kecepatan RATA-RATA sejak mulai (stabil, tidak loncat-loncat).
+    Contoh: durasi 1000s -> 30s (cap); 150s -> 10s; <75s -> 5s (floor).
+
+    PENTING: `PROGRESS_MAX_INTERVAL` adalah CAP dari interval adaptif, BUKAN
+    interval tetap. Memakainya sebagai `edit_interval` langsung (bug lama di
+    `download_direct_mp4`) membuat unduhan Pixeldrain yang selesai ~8 detik
+    TIDAK PERNAH mengedit pesan status sama sekali -> progress bar di Telegram
+    tidak bergerak walau log terminal jalan.
+    """
+    total_bytes = stats.total or 0
+    avg_speed = stats.avg_bps
+    if avg_speed <= 0 or total_bytes <= 0:
+        return PROGRESS_MIN_INTERVAL
+    est_duration = total_bytes / avg_speed
+    return max(
+        PROGRESS_MIN_INTERVAL,
+        min(PROGRESS_MAX_INTERVAL, est_duration / max(PROGRESS_TARGET_EDITS, 1)),
+    )
 
 
 def embed_origin(emb_url: str) -> str:
@@ -276,8 +330,13 @@ def embed_origin(emb_url: str) -> str:
     return f"{p.scheme}://{p.netloc}/"
 
 
-def bypass_ouo(url: str) -> str | None:
-    """Bypass ouo.io/ouo.press -> url asli (mis. pixeldrain/krakenfiles)."""
+def _bypass_ouo_form(url: str) -> str | None:
+    """Jalur lama: ambil token dari form lalu POST /go/<id> -> /xreallcygo/<id>.
+
+    Sudah tidak jalan sejak ouo.io memasang Cloudflare Turnstile (GET 403
+    "Just a moment...", tidak ada form). Tetap dicoba dulu karena murah dan
+    akan jalan lagi kalau challenge-nya dilepas.
+    """
     tempurl = url.replace("ouo.press", "ouo.io")
     p = urlparse(tempurl)
     oid = tempurl.split('/')[-1]
@@ -321,13 +380,267 @@ def bypass_ouo(url: str) -> str | None:
 
         return res.headers.get("Location")
     except Exception as e:
-        log.debug("Gagal bypass ouo.io %s : %s", url, e)
+        log.debug("Gagal bypass ouo.io (form) %s : %s", url, e)
         return None
 
 
+def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
+    """Buka shortener di browser stealth Scrapling dan klik sampai redirect.
+
+    Dipakai dua konteks:
+    - `ouo.io`/`ouo.press` — menembus Cloudflare Turnstile. Alur halaman:
+      `#btn-main` ("I'M A HUMAN") di `<id>` -> `/go/<id>` ("GET LINK") ->
+      redirect ke host tujuan. Kedua tombol menunggu Turnstile selesai (class
+      `disabled` dilepas), jadi tunggu sampai aktif lalu klik.
+    - shortener lain (`linkpoi.me`, dsb.) — markupnya tak diketahui; klik
+      kandidat tombol/link pertama yang aktif lalu lihat apakah URL pindah.
+    `block_ads=True` wajib: tanpa itu klik bisa mendarat di redirect iklan
+    (mis. sgkk8.info) alih-alih host tujuan.
+    """
+    try:
+        from scrapling import StealthyFetcher
+    except Exception as e:
+        log.debug("Scrapling tidak tersedia untuk bypass ouo: %r", e)
+        return None
+
+    start_host = (urlsplit(url).hostname or "").lower()
+    result = {"url": None}
+    deadline = time.time() + timeout_ms / 1000.0
+
+    def _reached_target(u: str) -> bool:
+        """Sukses HANYA kalau sudah keluar dari semua host shortener.
+
+        Jangan pakai `h != start_host`: ouo.io nge-redirect otomatis ke
+        ouo.press (sekeluarga) SEBELUM halaman termuat, jadi begitu halaman
+        kebuka page.url sudah `ouo.press` padahal tombolnya belum diklik sama
+        sekali. Akibatnya URL shortener dikira hasil akhir -> diteruskan ke
+        pengecekan pixeldrain di main.py -> "Gagal mem-bypass link Pixeldrain".
+        """
+        h = (urlsplit(u or "").hostname or "").lower()
+        if not h:
+            return False
+        if h == start_host:
+            return False
+        return _is_final_target(u)
+
+    def _auto(page):
+        page.on("popup", lambda p: p.close())
+
+        def _click_first_available(locator, limit=4):
+            n = locator.count()
+            for i in range(min(n, limit)):
+                el = locator.nth(i)
+                try:
+                    if not el.is_visible():
+                        continue
+                    if not el.is_enabled():
+                        continue
+                    if "disabled" in (el.get_attribute("class") or ""):
+                        continue
+                except Exception:
+                    continue
+                try:
+                    el.click(force=True)
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        def _click_main():
+            loc = page.locator("#btn-main")
+            if loc.count() == 0:
+                return False
+            # Tombol ouo nunggu Turnstile selesai -> polling sampai aktif.
+            for _ in range(25):
+                try:
+                    el = loc.first
+                    if el.is_enabled() and "disabled" not in (el.get_attribute("class") or ""):
+                        break
+                except Exception:
+                    break
+                page.wait_for_timeout(300)
+            try:
+                loc.first.click(force=True)
+            except Exception:
+                pass
+            return True
+
+        try:
+            page.wait_for_timeout(2000)
+            for step in range(5):
+                if time.time() > deadline:
+                    break
+                u = page.url
+                if _reached_target(u):
+                    result["url"] = u
+                    return
+
+                clicked = _click_main()
+                if not clicked:
+                    # Bukan halaman ouo -> coba tombol/link generik.
+                    clicked = _click_first_available(
+                        page.locator(
+                            "#continue, .btn-main, .btn-continue, "
+                            "a.btn, button"
+                        )
+                    )
+                if not clicked:
+                    break
+
+                # Polling: tunggu redirect selesai sebelum klik lagi, supaya
+                # tidak ikut mengeklik elemen di halaman tujuan.
+                for _ in range(20):
+                    if time.time() > deadline:
+                        break
+                    page.wait_for_timeout(300)
+                    if _reached_target(page.url):
+                        result["url"] = page.url
+                        return
+                page.wait_for_timeout(1500)
+
+            u = page.url
+            if _reached_target(u):
+                result["url"] = u
+        except Exception as e:
+            log.debug("Aksi stealth shortener gagal %s : %r", url, e)
+
+    try:
+        StealthyFetcher.fetch(
+            url, headless=True, timeout=timeout_ms,
+            block_ads=True, page_action=_auto,
+        )
+    except Exception as e:
+        log.debug("Stealth fetcher gagal untuk %s : %r", url, e)
+        return None
+    return result["url"]
+
+
+def bypass_ouo(url: str) -> str | None:
+    """Bypass ouo.io/ouo.press -> url asli (mis. pixeldrain/krakenfiles).
+
+    ouo.io sejak 2026 penuh Cloudflare Turnstile, jadi jalur form murah
+    hampir selalu gagal -> fallback browser stealth Scrapling yang benar-benar
+    mengklik tombol sampai redirect. Fungsi ini blocking (~20s) kalau lewat
+    jalur browser; panggil dari thread (`asyncio.to_thread`).
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    if not (host.endswith("ouo.io") or host.endswith("ouo.press")):
+        log.debug("bypass_ouo dipanggil untuk host non-ouo (%s) -> tolak", url)
+        return None
+
+    target = _bypass_ouo_form(url)
+    if not target:
+        log.debug("Jalur form ouo gagal, fallback ke Scrapling | %s", url)
+        target = _bypass_ouo_stealth(url)
+    if target:
+        log.info("Bypass ouo.io sukses | %s -> %s", url, target)
+    else:
+        log.debug("Gagal bypass ouo.io | %s", url)
+    return target
+
+
+def _is_pixeldrain(url: str) -> bool:
+    h = (urlsplit(url).hostname or "").lower()
+    return h == "pixeldrain.com" or h.endswith(".pixeldrain.com")
+
+
+# Host shortener Nekopoi yang harus "dilewati" sebelum sampai file asli.
+_SHORTENER_HOSTS = ("ouo.io", "ouo.press", "ouo.cx", "ouo.com", "linkpoi.me")
+
+
+def _is_final_target(url: str) -> bool:
+    """URL sudah keluar dari host shortener (bukan ouo/linkpoi lagi)."""
+    h = (urlsplit(url).hostname or "").lower()
+    if not h:
+        return False
+    return not any(h == s or h.endswith("." + s) for s in _SHORTENER_HOSTS)
+
+
+def _follow_http_redirects(url: str, hops: int = 5) -> str | None:
+    """Ikuti redirect satu-per-satu (tanpa auto) + meta-refresh + JS location.
+
+    Untuk shortener non-ouo (mis. `linkpoi.me`) yang cuma melempar Location /
+    meta refresh. Return url tujuan kalau berbeda, else None.
+    """
+    headers = {"User-Agent": UA, "Referer": url}
+    cur = url
+    for _ in range(hops):
+        try:
+            r = _http().get(cur, headers=headers, timeout=_HTTP_TIMEOUT, allow_redirects=False)
+        except Exception as e:
+            log.debug("redirect follow gagal | %s : %r", cur, e)
+            return None
+        loc = r.headers.get("Location") or r.headers.get("location")
+        if loc:
+            nxt = urljoin(cur, loc)
+            if nxt != cur:
+                cur = nxt
+                if _is_final_target(cur):
+                    return cur
+                continue
+        if r.status_code in (200, 301, 302, 303, 307, 308):
+            text = r.text or ""
+            for pat in (
+                r'http-equiv\s*=\s*["\']?refresh["\']?[^>]*?url\s*=\s*["\']?([^"\'>\s]+)',
+                r'(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+                r'href\s*=\s*["\'](https?://[^"\']+)["\']',
+            ):
+                m = re.search(pat, text, re.I)
+                if m:
+                    nxt = urljoin(cur, m.group(1))
+                    if nxt != cur and _is_final_target(nxt):
+                        return nxt
+        break
+    return cur if cur != url else None
+
+
+def resolve_shortener(url: str) -> str | None:
+    """Resolusi shortener Nekopoi -> URL final (pixeldrain / tujuan lain).
+
+    - `ouo.io` / `ouo.press` -> `bypass_ouo` (form lama, lalu browser stealth).
+    - shortener lain (`linkpoi.me`, dsb.) -> ikuti redirect HTTP / meta refresh;
+      kalau masih mentok, pakai browser stealth generik.
+    Blocking (bisa ~20-40s) -> panggil dari thread.
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    if host.endswith("ouo.io") or host.endswith("ouo.press"):
+        return bypass_ouo(url)
+
+    got = _follow_http_redirects(url)
+    if got and _is_final_target(got):
+        log.info("Shortener terresolusi via redirect | %s -> %s", url, got)
+        return got
+
+    log.debug("Redirect HTTP shortener mentok, fallback ke browser | %s", url)
+    target = _bypass_ouo_stealth(url)
+    if target and _is_final_target(target):
+        log.info("Shortener terresolusi via browser | %s -> %s", url, target)
+        return target
+    log.debug("Gagal resolusi shortener | %s", url)
+    return None
+
+
+# Batas waktu jalur PROBE (buka embed -> packer -> master.m3u8 -> daftar varian).
+# Probe hanya butuh halaman kecil, jadi timeout ketat: host yang origin-nya mati
+# (streampoi balas HTTP 522 setelah Cloudflare nunggu ~40 detik) harus gagal
+# cepat supaya fallback Pixeldrain tidak bikin user nunggu 2 menit.
+PROBE_TIMEOUT = float(os.getenv("NEKOPOI_PROBE_TIMEOUT", "8"))
+PROBE_ATTEMPTS = int(os.getenv("NEKOPOI_PROBE_ATTEMPTS", "1"))
+
+
 def probe_stream(emb_url: str, referer: str) -> str:
-    """Buka embed -> unpack packer -> URL master.m3u8."""
-    text = _get(emb_url, referer=referer)
+    """Buka embed -> unpack packer -> URL master.m3u8.
+
+    Sengaja timeout ketat + percobaan sedikit (lihat `PROBE_TIMEOUT`): embed yang
+    hidup balas <1 detik, sedangkan embed yang mati butuh ~40 detik per percobaan
+    cuma buat dapet error — terlalu mahal kalau probe ini di path user-facing.
+    """
+    text = _get(
+        emb_url,
+        referer=referer,
+        attempts=PROBE_ATTEMPTS,
+        timeout=PROBE_TIMEOUT,
+    )
     m = _PACKER_RE.search(text)
     if not m:
         raise RuntimeError("Skrip packer tidak ditemukan di embed")
@@ -338,6 +651,174 @@ def probe_stream(emb_url: str, referer: str) -> str:
     master = fm.group(1)
     _dbg("master found | %s", master)
     return master
+
+
+def _dood_variant_from_html(embed_url: str, html: str, title_hint: str = "") -> dict | None:
+    """HTML embed DoodStream -> dict varian direct MP4 (atau None).
+
+    Memakai path `/pass_md5/...` yang ada di HTML. Dipakai oleh jalur HTTP
+    murni maupun jalur browser (setelah Turnstile selesai, halaman memuat
+    pass_md5 dan fungsi ini bisa dipakai ulang dengan `page.content()`).
+    """
+    origin = embed_origin(embed_url).rstrip("/")
+    m_pass = re.search(r"/pass_md5/[^\"'\s<>,)]+", html)
+    if not m_pass:
+        return None
+
+    pass_url = origin + m_pass.group(0)
+    try:
+        rp = _http().get(
+            pass_url, headers={"User-Agent": UA, "Referer": embed_url},
+            timeout=PROBE_TIMEOUT,
+        )
+    except Exception as e:
+        log.debug("DoodStream pass_md5 GET gagal | %s : %r", pass_url, e)
+        return None
+    if rp.status_code != 200:
+        return None
+    base_video = (rp.text or "").strip()
+    if not base_video.startswith("http"):
+        log.debug("DoodStream base URL tidak valid | %r", base_video[:60])
+        return None
+
+    m_tok = re.search(r"token=([A-Za-z0-9]+)", html)
+    token = m_tok.group(1) if m_tok else "x"
+    direct_url = base_video + "?token=" + token
+
+    title_m = re.search(r"<title>([^<]+)</title>", html, re.I)
+    t_raw = title_m.group(1) if title_m else title_hint
+    h = 0
+    for cand in (1080, 720, 480, 360):
+        if str(cand) in t_raw:
+            h = cand
+            break
+    if not h:
+        h = 480
+
+    sz = 0
+    try:
+        rv = _http().get(
+            direct_url,
+            headers={"User-Agent": UA, "Referer": embed_url},
+            stream=True,
+            timeout=PROBE_TIMEOUT,
+        )
+        sz = int(rv.headers.get("Content-Length") or 0)
+        rv.close()
+    except Exception:
+        sz = 0
+
+    return {
+        "height": h,
+        "bandwidth": h * 1000,
+        "url": direct_url,
+        "format_id": str(h),
+        "type": "doodstream_direct",
+        "referer": embed_url,
+        "size": sz,
+        "title": t_raw,
+    }
+
+
+def _probe_doodstream_browser(embed_url: str, title_hint: str = "") -> dict | None:
+    """Fallback browser: DoodStream kadang menuntut Cloudflare Turnstile.
+
+    Kalau Turnstile aktif, HTML awal cuma wrapper captcha (~5KB, tanpa
+    `pass_md5`); `pass_md5` baru muncul setelah captcha tervalidasi
+    (`turnstile.render(... callback -> /dood?op=validate&gc_response=... -> reload)`).
+    Browser stealth menyelesaikan Turnstile lalu klik tombol play, baru
+    `page.content()` memuat pass_md5. Blocking -> panggil dari thread.
+    """
+    try:
+        from scrapling import StealthyFetcher
+    except Exception as e:
+        log.debug("Scrapling tidak tersedia untuk DoodStream: %r", e)
+        return None
+
+    holder = {"html": ""}
+
+    def _auto(page):
+        try:
+            page.wait_for_timeout(2500)
+            # Klik tombol play (memicu Turnstile) lalu tunggu halaman reload.
+            for _ in range(12):
+                try:
+                    btn = page.locator("button.vjs-big-play-button, .captcha_l, .vjs-big-play-button")
+                    if btn.count() > 0:
+                        btn.first.click(force=True)
+                except Exception:
+                    pass
+                page.wait_for_timeout(1200)
+                c = page.content()
+                if "/pass_md5/" in c:
+                    holder["html"] = c
+                    return
+            holder["html"] = page.content()
+        except Exception as e:
+            log.debug("DoodStream browser aksi gagal | %s : %r", embed_url, e)
+
+    try:
+        StealthyFetcher.fetch(
+            embed_url, headless=True, timeout=60000,
+            block_ads=True, page_action=_auto,
+        )
+    except Exception as e:
+        log.debug("DoodStream browser fetch gagal | %s : %r", embed_url, e)
+        return None
+
+    html = holder["html"]
+    if not html or "/pass_md5/" not in html:
+        return None
+    return _dood_variant_from_html(embed_url, html, title_hint)
+
+
+def probe_doodstream(embed_url: str, referer: str = "") -> dict | None:
+    """Ekstrak direct MP4 dari embed DoodStream / Playmogo.
+
+    Dua jalur:
+    - **HTTP murni (cepat, ~2 request):** GET embed -> baca `<title>` + cari
+      `/pass_md5/<hash>/<token>` -> GET pass_md5 (Referer = embed) -> dapat URL
+      video dasar -> URL final = `base + "?token=" + token` (tanpa `?token=`
+      host CDN redirect ke dood.video yang menolak koneksi).
+    - **Browser stealth (fallback):** dipakai HANYA kalau HTML murni tidak
+      memuat `pass_md5` karena DoodStream menuntut Cloudflare Turnstile
+      (halaman ~5KB tanpa pass_md5). Lihat `_probe_doodstream_browser`.
+
+    Return `{height, bandwidth, url, format_id, type="doodstream_direct",
+    referer, title, size}` atau None.
+    """
+    headers = {"User-Agent": UA}
+    if referer:
+        headers["Referer"] = referer
+
+    html = ""
+    try:
+        r = _http().get(embed_url, headers=headers, timeout=PROBE_TIMEOUT)
+        if r.status_code == 200:
+            html = r.text or ""
+    except Exception as e:
+        log.debug("DoodStream embed GET gagal | %s : %r", embed_url, e)
+
+    # Urutan PENTING: cari pass_md5 DULU. String "video you are looking for is
+    # not found" selalu ada di template JS player doodstream (jadi fallback
+    # message), jadi kalau dicek duluan semua embed dianggap "file dihapus" —
+    # padahal file-nya ada (false positive yang pernah terjadi di post 3D).
+    if html and "/pass_md5/" in html:
+        info = _dood_variant_from_html(embed_url, html)
+        if info:
+            return info
+
+    # HTML murni tidak punya pass_md5 -> kemungkinan Turnstile. Coba browser.
+    if html and ("turnstile" in html.lower() or "challenges.cloudflare.com" in html):
+        log.debug("DoodStream butuh Turnstile, fallback browser | %s", embed_url)
+    else:
+        low = html.lower()
+        if "video you are looking for is not found" in low or "file was deleted" in low:
+            log.debug("DoodStream file sudah dihapus | %s", embed_url)
+            return None
+        log.debug("DoodStream pass_md5 tidak ada di HTML murni | %s", embed_url)
+
+    return _probe_doodstream_browser(embed_url)
 
 
 def _variant_label(uri: str, bandwidth: int) -> int:
@@ -398,7 +879,8 @@ def _parse_master(master_url: str, text: str) -> list:
 
 
 def list_resolutions(master_url: str, referer: str = "") -> list:
-    text = _get(master_url, referer=referer)
+    # Jalur probe -> timeout ketat (lihat komentar PROBE_TIMEOUT).
+    text = _get(master_url, referer=referer, attempts=PROBE_ATTEMPTS, timeout=PROBE_TIMEOUT)
     variants = _parse_master(master_url, text)
     if not variants:
         raise RuntimeError("Tidak ada varian resolusi di playlist Nekopoi")
@@ -534,20 +1016,9 @@ async def _download_segments(
     clean_extra = extra.rstrip(" · ")
     status_title = sanitize_filename(title, 80)
 
-    # Interval edit ADAPTIF: server Nekopoi lambat & file besar -> jangan
-    # spam Telegram (429). Pakai kecepatan RATA-RATA sejak mulai (stabil,
-    # tidak loncat-loncat kayak sampling 0.7s):
-    #   interval = clamp(estimasi_durasi_total / TARGET_EDITS, min, max)
-    # Contoh: durasi 1000s -> 30s/edit (cap); durasi 150s -> 10s/edit;
-    # durasi < 75s -> 5s/edit (floor).
-    def _interval_for() -> float:
-        total_bytes = stats.total or 0
-        avg_speed = stats.avg_bps
-        if avg_speed <= 0 or total_bytes <= 0:
-            return PROGRESS_MIN_INTERVAL
-        est_duration = total_bytes / avg_speed
-        return max(PROGRESS_MIN_INTERVAL, min(PROGRESS_MAX_INTERVAL,
-                                              est_duration / max(PROGRESS_TARGET_EDITS, 1)))
+    # Interval edit adaptif (helper bersama, lihat `_adaptive_edit_interval`):
+    # server Nekopoi lambat & file besar -> jangan spam Telegram (429).
+    _interval_for = lambda: _adaptive_edit_interval(stats)  # noqa: E731
 
     if status_msg_id:
         await safe_edit_status(
@@ -581,6 +1052,14 @@ async def _download_segments(
     errors = [t.exception() for t in tasks if t.done() and not t.cancelled() and t.exception()]
     if errors:
         raise RuntimeError(str(errors[0]))
+
+    # Edit terakhir: paksa bar 100% tampil sebelum lanjut ke ffmpeg/upload.
+    if status_msg_id:
+        await safe_edit_status(
+            bot, chat_id, status_msg_id,
+            _progress_text(title, total, total, stats.downloaded,
+                           stats.total or stats.downloaded, stats.avg_bps, 0.0, clean_extra),
+        )
 
     stats.log_done("Nekopoi download", label=status_title, size=state["bytes"])
 
