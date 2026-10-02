@@ -66,6 +66,7 @@ PREMIUM_ONLY_DOMAINS = {
     "bunkr.*",
     "bunkrr.*",
     "bunkr.cr",
+    "darknessporn.com",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -145,4 +146,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "simontok.study",
     "bunkr.*",
     "bunkrr.*",
+    "darknessporn.com",
 }
