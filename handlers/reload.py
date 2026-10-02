@@ -76,10 +76,13 @@ def _register_all(app):
     from handlers.commands import register_commands
     from handlers.messages import register_messages
     from handlers.callbacks import register_callbacks
+    from handlers.join import register_join_handlers
     app.handlers.clear()
+    app._join_handlers_registered = False
     register_commands(app)
     register_messages(app)
     register_callbacks(app)
+    register_join_handlers(app)
 
 async def _refresh_caca_cache():
     try:
