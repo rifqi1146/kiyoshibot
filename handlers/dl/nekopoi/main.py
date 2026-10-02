@@ -247,12 +247,10 @@ def probe_nekopoi(raw_url: str) -> dict:
     # Fallback 2: kumpulkan varian dari DoodStream (direct MP4) + Pixeldrain (ouo),
     # lalu GABUNG per tinggi.
     #
-    # Dulu Pixeldrain dipakai lebih dulu, tapi jalur itu butuh bypass ouo lewat
-    # browser (~16-20s per varian) sementara DoodStream murni 2 request HTTP.
-    # Karena itu DoodStream didahulukan PER TINGGI (tinggi yang sama diambil dari
-    # DoodStream), TAPI varian tinggi yang tidak ada di DoodStream tetap diambil
-    # dari Pixeldrain — kalau tidak, post seperti `furachi-flat-episode-1` yang
-    # punya 1080p di Pixeldrain jadi kehilangan 1080p-nya (regresi).
+    # Pixeldrain didahulukan PER TINGGI: delay bypass ouo (~16-20s) jauh lebih
+    # murah daripada throttle CDN DoodStream (~81 KB/s setelah burst awal).
+    # DoodStream hanya mengisi tinggi yang tidak tersedia di Pixeldrain,
+    # sehingga semua resolusi tetap tersedia, termasuk post tanpa Pixeldrain.
     dood_variants: list = []
     for emb in embeds:
         emb_host = (urlsplit(emb).hostname or "").lower()
@@ -271,25 +269,19 @@ def probe_nekopoi(raw_url: str) -> dict:
 
     merged: list = []
     seen_heights: set = set()
-    for v in dood_variants:
+    # Pixeldrain dulu (62-100 MB/s), baru DoodStream untuk tinggi yang absen.
+    for v in pd_variants:
         h = int(v.get("height") or 0)
         if h and h not in seen_heights:
             seen_heights.add(h)
             merged.append(v)
-    for v in pd_variants:
+    for v in dood_variants:
         h = int(v.get("height") or 0)
         if h and h not in seen_heights:
             seen_heights.add(h)
             merged.append(v)
 
     if merged:
-        if dood_variants and pd_variants:
-            log.info("Nekopoi HLS tidak tersedia, fallback ke DoodStream + Pixeldrain")
-        elif dood_variants:
-            log.info("Nekopoi HLS tidak tersedia, fallback ke embed DoodStream")
-        else:
-            log.info("Nekopoi HLS tidak tersedia, fallback ke download link Pixeldrain")
-
         variants = _dedup_by_height(merged)
         res_list = [
             {
@@ -304,11 +296,14 @@ def probe_nekopoi(raw_url: str) -> dict:
         has_dood = any(v.get("type") == "doodstream_direct" for v in variants)
         has_pd = any(v.get("type") == "pixeldrain_ouo" for v in variants)
         if has_dood and has_pd:
-            master_tag = "doodstream+pixeldrain_fallback"
-        elif has_dood:
-            master_tag = "doodstream_fallback"
-        else:
+            master_tag = "pixeldrain+doodstream_fallback"
+            log.info("Nekopoi HLS tidak tersedia, fallback ke Pixeldrain + DoodStream")
+        elif has_pd:
             master_tag = "pixeldrain_fallback"
+            log.info("Nekopoi HLS tidak tersedia, fallback ke download link Pixeldrain")
+        else:
+            master_tag = "doodstream_fallback"
+            log.info("Nekopoi HLS tidak tersedia, fallback ke embed DoodStream")
         probe = {
             "title": title,
             "thumbnail": post.get("thumbnail") or "",
