@@ -114,12 +114,11 @@ def _dedup_by_height(variants: list) -> list:
 
 
 def _list_download_hosts(html_text: str) -> list[str]:
-    """Daftar label host unduh di `.nk-download-row` yang BUKAN Pixeldrain.
+    """Daftar label host unduh di `.nk-download-row` yang BUKAN Pixeldrain / Mp4Upload.
 
     Dipakai hanya untuk pesan error yang jujur ketika sebuah post tidak punya
-    jalur yang didukung (tidak ada streampoi, tidak ada Pixeldrain). Contoh post
-    `3d-hentai-...`: Racaty, Googledrive2, Videobin, Gofile, Doodstream,
-    Zippyshare, MC [ouo] — semuanya host yang tidak didukung.
+    jalur yang didukung (tidak ada streampoi, tidak ada Pixeldrain, tidak ada
+    Mp4Upload).
     """
     try:
         from bs4 import BeautifulSoup
@@ -133,7 +132,8 @@ def _list_download_hosts(html_text: str) -> list[str]:
     for row in soup.find_all(class_="nk-download-row"):
         for a in row.find_all("a", href=True):
             label = a.get_text(strip=True)
-            if not label or "pixel" in label.lower():
+            low = label.lower()
+            if not label or "pixel" in low or "mp4upload" in low:
                 continue
             if label not in seen:
                 seen.append(label)
@@ -175,21 +175,46 @@ def probe_nekopoi(raw_url: str) -> dict:
             # tembus (linkpoi sering 500 / butuh JS).
             hrefs = [a["href"] for a in row.find_all("a", href=True)
                      if "pixel" in a.get_text(strip=True).lower()]
-            if not hrefs:
+
+            # Juga kumpulkan link Mp4Upload (teks label "Mp4Upload" -> "mp4")
+            # sebagai cadangan per tinggi ketika Pixeldrain gagal di-bypass.
+            mp4_hrefs = [a["href"] for a in row.find_all("a", href=True)
+                         if "mp4upload" in a.get_text(strip=True).lower()]
+
+            if not hrefs and not mp4_hrefs:
                 continue
 
             def _is_ouo(u: str) -> bool:
                 host = (urlsplit(u).hostname or "").lower()
                 return host.endswith("ouo.io") or host.endswith("ouo.press")
 
-            chosen = next((u for u in hrefs if _is_ouo(u)), hrefs[0])
-            out_vars.append({
-                "height": h or 480,
-                "bandwidth": h * 1000 if h else 480000,
-                "url": chosen,
-                "format_id": str(h or 480),
-                "type": "pixeldrain_ouo",
-            })
+            chosen_pd = ""
+            if hrefs:
+                chosen_pd = next((u for u in hrefs if _is_ouo(u)), hrefs[0])
+            chosen_mp4 = ""
+            if mp4_hrefs:
+                chosen_mp4 = next((u for u in mp4_hrefs if _is_ouo(u)), mp4_hrefs[0])
+
+            # Baris tanpa Pixeldrain tapi ada Mp4Upload -> Mp4Upload jadi
+            # varian utama tinggi itu (post tetap terunduh).
+            if chosen_pd:
+                out_vars.append({
+                    "height": h or 480,
+                    "bandwidth": h * 1000 if h else 480000,
+                    "url": chosen_pd,
+                    "alt_url": chosen_mp4,
+                    "alt_type": "mp4upload_ouo" if chosen_mp4 else "",
+                    "format_id": str(h or 480),
+                    "type": "pixeldrain_ouo",
+                })
+            else:
+                out_vars.append({
+                    "height": h or 480,
+                    "bandwidth": h * 1000 if h else 480000,
+                    "url": chosen_mp4,
+                    "format_id": str(h or 480),
+                    "type": "mp4upload_ouo",
+                })
         return out_vars
 
     def _resolve_pixeldrain(ouo_url: str) -> tuple[str, int]:
@@ -213,6 +238,9 @@ def probe_nekopoi(raw_url: str) -> dict:
     for emb in embeds:
         emb_host = (urlsplit(emb).hostname or "").lower()
         is_primary = any(emb_host == d or emb_host.endswith("." + d) for d in EMBED_HOST_STREAMPOI)
+        if not is_primary:
+            continue
+        log.info("Nekopoi try HLS | embed=%s", emb)
         try:
             master = ext.probe_stream(emb, referer=raw_url)
             variants = _dedup_by_height(ext.list_resolutions(master))
@@ -236,9 +264,10 @@ def probe_nekopoi(raw_url: str) -> dict:
                 "res_list": res_list,
             }
             cache_probe(raw_url, probe)
+            log.info("Nekopoi HLS ready | master=%s", master)
             return probe
         except RuntimeError as e:
-            log.debug("Nekopoi embed gagal | embed=%s err=%r", emb, e)
+            log.info("Nekopoi HLS failed | embed=%s err=%s", emb_host, e)
             last_err = e
             if is_primary and primary_err is None:
                 primary_err, primary_host = e, emb_host
@@ -326,7 +355,7 @@ def probe_nekopoi(raw_url: str) -> dict:
         names = ", ".join(hosts) if hosts else "tidak terdeteksi"
         raise RuntimeError(
             "Post Nekopoi ini tidak punya jalur unduh yang didukung: "
-            "tidak ada HLS (streampoi), DoodStream (playmogo), ataupun Pixeldrain. "
+            "tidak ada HLS (streampoi), DoodStream (playmogo), Pixeldrain, ataupun Mp4Upload. "
             f"Host yang tersedia di post ({names}) belum didukung scraper."
         )
 
@@ -376,8 +405,8 @@ async def nekopoi_download(
         title = sanitize_filename(probe.get("title") or "Nekopoi", 100)
         label = f"{int(chosen.get('height') or 0)}p"
         log.info(
-            "Nekopoi download start | title=%r label=%s fmt=%s format_id=%s variants=%s",
-            title, label, fmt_key, format_id, [v.get("height") for v in variants],
+            "Nekopoi download start | title=%r label=%s fmt=%s format_id=%s variants=%s src=%s",
+            title, label, fmt_key, format_id, [v.get("height") for v in variants], chosen.get("type"),
         )
 
         if chosen.get("type") == "doodstream_direct":
@@ -426,22 +455,69 @@ async def nekopoi_download(
             log.info("Nekopoi DoodStream sukses | title=%r label=%s size=%.2fMB", title, label, size / 1024 / 1024)
             return {"path": final_path, "title": title}
 
-        if chosen.get("type") == "pixeldrain_ouo":
-            # Blocking (bisa ~20s kalau lewat jalur browser) -> jangan tahan event loop.
-            # Pakai `resolve_shortener`: tangani ouo.io maupun shortener lain
-            # (linkpoi.me dsb.) kalau ouo tidak ada.
-            bypassed = await asyncio.to_thread(ext.resolve_shortener, chosen["url"])
-            if not bypassed or "pixeldrain.com/u/" not in bypassed:
+        if chosen.get("type") in ("pixeldrain_ouo", "mp4upload_ouo"):
+            # Urutan sumber per tinggi:
+            #   1. Pixeldrain (kalau baris punya) — CDN 62-100 MB/s.
+            #   2. Mp4Upload (kolom `alt_url`, atau varian utama bila baris tak
+            #      punya Pixeldrain) — cadangan saat bypass ouo Pixeldrain gagal
+            #      atau file Pixeldrain sudah mati. CDN mp4upload stabil & cepat.
+            # Semua lewat shortener ouo.io, jadi bypass-nya blocking -> thread.
+            srcs: list[tuple[str, str]] = []
+            if chosen.get("type") == "pixeldrain_ouo" and chosen.get("url"):
+                srcs.append(("pixeldrain", chosen["url"]))
+            if chosen.get("alt_url"):
+                srcs.append(("mp4upload", chosen["alt_url"]))
+            if chosen.get("type") == "mp4upload_ouo" and chosen.get("url"):
+                srcs.append(("mp4upload", chosen["url"]))
+
+            if not srcs:
+                raise RuntimeError("Tidak ada sumber unduh yang tersedia untuk resolusi ini")
+
+            direct_url = ""
+            src_headers: dict = {"User-Agent": ext.UA}
+            src_kind = ""
+            last_src_err: Exception | None = None
+            for kind, ouo_url in srcs:
+                label_kind = "Pixeldrain" if kind == "pixeldrain" else "Mp4Upload"
+                log.info("Nekopoi try %s | url=%s", label_kind, ouo_url)
+                try:
+                    bypassed = await asyncio.to_thread(ext.resolve_shortener, ouo_url)
+                    if kind == "pixeldrain":
+                        if bypassed and "pixeldrain.com/u/" in bypassed:
+                            pid = bypassed.split("/u/")[-1].split("?")[0].split("/")[0]
+                            direct_url = f"https://pixeldrain.com/api/file/{pid}"
+                            src_headers = {"User-Agent": ext.UA}
+                            src_kind = "Pixeldrain"
+                            log.info("Nekopoi Pixeldrain ready | pid=%s url=%s", pid, direct_url)
+                            break
+                        log.info("Nekopoi Pixeldrain failed (%s), fallback ke Mp4Upload", bypassed)
+                    else:
+                        if bypassed and "mp4upload.com" in bypassed:
+                            cdn, _sz = await asyncio.to_thread(ext.mp4upload_to_direct_cdn, bypassed)
+                            if cdn:
+                                direct_url = cdn
+                                src_headers = {"User-Agent": ext.UA, "Referer": "https://www.mp4upload.com/"}
+                                src_kind = "Mp4Upload"
+                                log.info("Nekopoi Mp4Upload ready | cdn=%s size=%s", cdn, _sz)
+                                break
+                        log.info("Nekopoi Mp4Upload failed | url=%s", ouo_url)
+                except Exception as e:
+                    last_src_err = e
+                    log.info("Nekopoi try %s failed | err=%r", label_kind, e)
+
+            if not direct_url:
+                if last_src_err and chosen.get("type") == "mp4upload_ouo":
+                    raise RuntimeError("Gagal mem-bypass link Mp4Upload Nekopoi") from last_src_err
                 raise RuntimeError("Gagal mem-bypass link Pixeldrain Nekopoi")
-            pid = bypassed.split("/u/")[-1].split("?")[0].split("/")[0]
-            direct_url = f"https://pixeldrain.com/api/file/{pid}"
-            headers = {"User-Agent": ext.UA}
+
+            if src_kind == "Mp4Upload":
+                log.info("Nekopoi Mp4Upload sukses | title=%r label=%s", title, label)
 
             if fmt_key == "mp3":
                 tmp_mp4 = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_tmp.mp4")
                 final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
                 try:
-                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, headers)
+                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, src_headers)
                     await asyncio.to_thread(ext._run_ffmpeg, [
                         "ffmpeg", "-y", "-loglevel", "error",
                         "-i", tmp_mp4, "-vn", "-acodec", "libmp3lame", "-q:a", "2", final_path,
@@ -467,11 +543,11 @@ async def nekopoi_download(
                 return result
 
             final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp4")
-            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, headers)
+            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, src_headers)
             size = os.path.getsize(final_path)
             if size > MAX_TG_SIZE:
                 raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
-            log.info("Nekopoi Pixeldrain sukses | title=%r label=%s size=%.2fMB", title, label, size / 1024 / 1024)
+            log.info("Nekopoi %s sukses | title=%r label=%s size=%.2fMB", src_kind, title, label, size / 1024 / 1024)
             return {"path": final_path, "title": title}
 
         if fmt_key == "mp3":

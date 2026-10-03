@@ -426,77 +426,83 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
     def _auto(page):
         page.on("popup", lambda p: p.close())
 
-        def _click_first_available(locator, limit=4):
-            n = locator.count()
-            for i in range(min(n, limit)):
-                el = locator.nth(i)
+        def _solve_cf():
+            ifr = page.locator('iframe[src*="challenges.cloudflare.com"]')
+            if ifr.count():
                 try:
-                    if not el.is_visible():
-                        continue
-                    if not el.is_enabled():
-                        continue
-                    if "disabled" in (el.get_attribute("class") or ""):
-                        continue
+                    fr = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
+                    cb = fr.locator('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage')
+                    if cb.count():
+                        cb.first.click(timeout=2000)
                 except Exception:
-                    continue
-                try:
-                    el.click(force=True)
-                    return True
-                except Exception:
-                    continue
-            return False
-
-        def _click_main():
-            loc = page.locator("#btn-main")
-            if loc.count() == 0:
-                return False
-            # Tombol ouo nunggu Turnstile selesai -> polling sampai aktif.
-            for _ in range(25):
-                try:
-                    el = loc.first
-                    if el.is_enabled() and "disabled" not in (el.get_attribute("class") or ""):
-                        break
-                except Exception:
-                    break
-                page.wait_for_timeout(300)
-            try:
-                loc.first.click(force=True)
-            except Exception:
-                pass
-            return True
+                    pass
 
         try:
-            page.wait_for_timeout(2000)
-            for step in range(5):
+            # 1. Halaman tahap 1: /<id> -> tunggu dan klik #btn-main
+            _solve_cf()
+            btn1 = page.locator("#btn-main")
+            for _ in range(35):
+                if time.time() > deadline:
+                    break
+                if btn1.count() and not btn1.first.is_disabled() and "disabled" not in (btn1.first.get_attribute("class") or ""):
+                    break
+                _solve_cf()
+                page.wait_for_timeout(300)
+
+            if btn1.count():
+                try:
+                    btn1.first.click(force=True)
+                except Exception:
+                    pass
+
+            # Tunggu redirect internal ke /go/<id>
+            for _ in range(35):
+                if time.time() > deadline or "/go/" in page.url:
+                    break
+                page.wait_for_timeout(300)
+
+            # 2. Halaman tahap 2: /go/<id> -> tunggu countdown 3 detik sampai 'Get Link' aktif
+            _solve_cf()
+            btn2 = page.locator("#btn-main")
+            for _ in range(45):
+                if time.time() > deadline:
+                    break
+                txt = (btn2.first.inner_text() if btn2.count() else "").strip()
+                c = (btn2.first.get_attribute("class") if btn2.count() else "") or ""
+                if "disabled" not in c and "get link" in txt.lower():
+                    break
+                _solve_cf()
+                page.wait_for_timeout(300)
+
+            if btn2.count():
+                try:
+                    btn2.first.click(force=True)
+                except Exception:
+                    pass
+
+            # 3. Tunggu redirect ke target final (keluar dari domain ouo)
+            for _ in range(45):
                 if time.time() > deadline:
                     break
                 u = page.url
                 if _reached_target(u):
                     result["url"] = u
                     return
+                page.wait_for_timeout(300)
 
-                clicked = _click_main()
-                if not clicked:
-                    # Bukan halaman ouo -> coba tombol/link generik.
-                    clicked = _click_first_available(
-                        page.locator(
-                            "#continue, .btn-main, .btn-continue, "
-                            "a.btn, button"
-                        )
-                    )
-                if not clicked:
-                    break
-
-                # Polling: tunggu redirect selesai sebelum klik lagi, supaya
-                # tidak ikut mengeklik elemen di halaman tujuan.
-                for _ in range(20):
-                    if time.time() > deadline:
-                        break
-                    page.wait_for_timeout(300)
-                    if _reached_target(page.url):
-                        result["url"] = page.url
-                        return
-                page.wait_for_timeout(1500)
+            # Fallback untuk shortener non-ouo / markup generik
+            if not _reached_target(page.url):
+                for cand in ("#continue", ".btn-main", ".btn-continue", "a.btn", "button"):
+                    loc = page.locator(cand)
+                    if loc.count() and loc.first.is_visible() and loc.first.is_enabled():
+                        try:
+                            loc.first.click(force=True)
+                            page.wait_for_timeout(2000)
+                            if _reached_target(page.url):
+                                result["url"] = page.url
+                                return
+                        except Exception:
+                            pass
 
             u = page.url
             if _reached_target(u):
@@ -515,12 +521,12 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
     return result["url"]
 
 
-def bypass_ouo(url: str) -> str | None:
-    """Bypass ouo.io/ouo.press -> url asli (mis. pixeldrain/krakenfiles).
+def bypass_ouo(url: str, retries: int = 1) -> str | None:
+    """Bypass ouo.io/ouo.press -> url asli (mis. pixeldrain/mp4upload).
 
     ouo.io sejak 2026 penuh Cloudflare Turnstile, jadi jalur form murah
     hampir selalu gagal -> fallback browser stealth Scrapling yang benar-benar
-    mengklik tombol sampai redirect. Fungsi ini blocking (~20s) kalau lewat
+    mengklik tombol sampai redirect. Fungsi ini blocking (~15-25s) kalau lewat
     jalur browser; panggil dari thread (`asyncio.to_thread`).
     """
     host = (urlsplit(url).hostname or "").lower()
@@ -532,6 +538,11 @@ def bypass_ouo(url: str) -> str | None:
     if not target:
         log.debug("Jalur form ouo gagal, fallback ke Scrapling | %s", url)
         target = _bypass_ouo_stealth(url)
+        # Retry sekali jika attempt pertama miss
+        if not target and retries > 0:
+            log.info("Bypass ouo attempt 1 miss, retry sekali lagi | %s", url)
+            target = _bypass_ouo_stealth(url)
+
     if target:
         log.info("Bypass ouo.io sukses | %s -> %s", url, target)
     else:
@@ -542,6 +553,11 @@ def bypass_ouo(url: str) -> str | None:
 def _is_pixeldrain(url: str) -> bool:
     h = (urlsplit(url).hostname or "").lower()
     return h == "pixeldrain.com" or h.endswith(".pixeldrain.com")
+
+
+def _is_mp4upload(url: str) -> bool:
+    h = (urlsplit(url).hostname or "").lower()
+    return h == "mp4upload.com" or h.endswith(".mp4upload.com")
 
 
 # Host shortener Nekopoi yang harus "dilewati" sebelum sampai file asli.
@@ -618,6 +634,93 @@ def resolve_shortener(url: str) -> str | None:
         return target
     log.debug("Gagal resolusi shortener | %s", url)
     return None
+
+
+def mp4upload_to_direct_cdn(mp4upload_page_url: str) -> tuple[str | None, int]:
+    """2-stage form POST mp4upload -> (URL CDN langsung, content-length).
+
+    Alur: GET halaman mp4upload.com/<id> -> POST op=download1 -> dapat form
+    op=download2 -> POST op=download2 (no redirect) -> Location header berisi
+    URL CDN langsung (mis. https://a2.mp4upload.com:183/d/<token>/<nama>.mp4).
+    Kemudian probe size CDN untuk validasi (harus HTTP 200 + Content-Length).
+
+    Blocking (~1-3s) -> panggil dari thread.
+    """
+    from urllib.parse import quote as _quote
+
+    BASE = "https://www.mp4upload.com"
+    H = {
+        "User-Agent": UA,
+        "Referer": "https://nekopoi.care/",
+        "Origin": BASE,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
+    # 1. GET halaman mp4upload
+    try:
+        r = _http().get(mp4upload_page_url, headers=H, timeout=20)
+        if r.status_code != 200:
+            log.debug("mp4upload halaman gagal | status=%s", r.status_code)
+            return None, 0
+        soup = BeautifulSoup(r.text, "html.parser")
+        f1 = soup.find("form")
+        if not f1:
+            log.debug("mp4upload form tidak ditemukan")
+            return None, 0
+        inputs1 = {i.get("name"): (i.get("value") or "") for i in f1.find_all("input") if i.get("name")}
+    except Exception as e:
+        log.debug("mp4upload GET gagal | %r", e)
+        return None, 0
+
+    # 2. POST stage 1 (op=download1)
+    try:
+        r2 = _http().post(f"{BASE}/", data=inputs1, headers=H, timeout=20)
+        if r2.status_code != 200:
+            log.debug("mp4upload stage1 gagal | status=%s", r2.status_code)
+            return None, 0
+        soup2 = BeautifulSoup(r2.text, "html.parser")
+        f2 = None
+        for f in soup2.find_all("form"):
+            inp = {i.get("name"): i.get("value") for i in f.find_all("input")}
+            if inp.get("op") == "download2":
+                f2 = f
+                break
+        if not f2:
+            log.debug("mp4upload stage2 form tidak ditemukan")
+            return None, 0
+        inputs2 = {i.get("name"): (i.get("value") or "") for i in f2.find_all("input") if i.get("name")}
+    except Exception as e:
+        log.debug("mp4upload stage1 gagal | %r", e)
+        return None, 0
+
+    # 3. POST stage 2 (op=download2, tanpa redirect) -> Location = URL CDN
+    try:
+        r3 = _http().post(f"{BASE}/", data=inputs2, headers=H, timeout=20, allow_redirects=False)
+        loc = r3.headers.get("Location") or r3.headers.get("location")
+        if not loc:
+            log.debug("mp4upload tidak ada Location CDN")
+            return None, 0
+        if not loc.startswith("http"):
+            loc = BASE + loc
+        p = urlsplit(loc)
+        safe_cdn = f"{p.scheme}://{p.netloc}{_quote(p.path)}"
+    except Exception as e:
+        log.debug("mp4upload stage2 gagal | %r", e)
+        return None, 0
+
+    # 4. Probe size CDN untuk validasi
+    try:
+        r_probe = _http().get(safe_cdn, headers={"User-Agent": UA, "Referer": BASE + "/"}, stream=True, timeout=20)
+        if r_probe.status_code != 200:
+            r_probe.close()
+            log.debug("mp4upload CDN probe gagal | status=%s", r_probe.status_code)
+            return None, 0
+        sz = int(r_probe.headers.get("Content-Length") or 0)
+        r_probe.close()
+        return safe_cdn, sz
+    except Exception as e:
+        log.debug("mp4upload CDN probe gagal | %r", e)
+        return None, 0
 
 
 # Batas waktu jalur PROBE (buka embed -> packer -> master.m3u8 -> daftar varian).

@@ -273,9 +273,10 @@ async def _cleanup_download_result(result):
         log.warning("Failed to cleanup download result | err=%r",e)
 
 async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=False,label=None,engine:str|None=None,status_ready:bool=False,known_size:int=0):
+    since_msg = time.time() - float(data.get("msg_date") or data.get("ts") or time.time())
     log.info(
-        "Start download task | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s label=%s status_ready=%s",
-        data.get("url"),fmt_key,format_id,has_audio,engine,label,status_ready,
+        "Start download task | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s label=%s status_ready=%s since_msg=%.2fs",
+        data.get("url"),fmt_key,format_id,has_audio,engine,label,status_ready,since_msg,
     )
     if not status_ready and message:
         await message.edit_text(_metadata_status(data["url"]),parse_mode="HTML")
@@ -300,6 +301,7 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
             user_id=data.get("user"),
             known_size=known_size,
             chat_type=data.get("chat_type", "private"),
+            msg_date=float(data.get("msg_date") or 0.0),
         )
     )
 
@@ -375,6 +377,7 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
     url=data["url"]
     if is_youtube_shorts_url(url):
         log.info("YouTube Shorts detected: skipping resolution picker, downloading best quality | url=%s", url)
+    since_msg = time.time() - float(data.get("msg_date") or data.get("ts") or time.time())
     if choice=="video" and supports_resolution_picker(url):
         DL_CACHE[dl_id]["fmt_key"]="video"
         if supports_ytdlp_resolution(url):
@@ -386,6 +389,10 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
             # Nekopoi: HLS mandiri. Status non-silent diedit
             # dulu ke "Scraping..." sebelum jadi picker; silent (message=None)
             # -> picker dikirim sebagai pesan baru di _show_resolution_picker.
+            log.info(
+                "Resolution probe start | engine=nekopoi url=%s since_msg=%.2fs",
+                url, since_msg,
+            )
             if not status_ready and message:
                 await message.edit_text(_metadata_status(url),parse_mode="HTML")
                 status_ready=True
@@ -520,6 +527,15 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     text=normalize_url(msg.text)
     if not is_supported_platform(text):
         return
+
+    msg_date = msg.date.timestamp() if (msg and getattr(msg, "date", None)) else time.time()
+    delay = max(0.0, time.time() - msg_date)
+    user_id = update.effective_user.id
+    log.info(
+        "Link detected | platform=%s url=%s user_id=%s chat_id=%s delay=%.2fs",
+        _platform_label(text), text, user_id, chat.id, delay,
+    )
+
     settings=get_user_settings(update.effective_user.id)
     if chat.type in ("group","supergroup"):
         groups=load_auto_dl()
@@ -528,7 +544,6 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
         return
         
-    user_id = update.effective_user.id
     ok,reason=_premium_link_allowed(text,user_id,chat.id,chat.type)
     if not ok:
         return await msg.reply_text(_premium_link_block_text("single",reason),parse_mode="HTML")
@@ -546,6 +561,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
         "ts":time.time(),
+        "msg_date":msg_date,
     }
     
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
@@ -635,7 +651,7 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
         parse_mode="HTML",
     )
     
-async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0,chat_type:str=""):
+async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0,chat_type:str="",msg_date:float=0.0):
     # Gate terakhir: jangan pernah unduh domain premium-only tanpa izin,
     # walau request datang dari worker/cache lama.
     if user_id is not None:
@@ -656,9 +672,10 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
     path=None
     t_detect=time.monotonic()
     try:
+        since_msg_str = f" since_msg={time.time()-msg_date:.2f}s" if msg_date > 0 else ""
         log.info(
-            "Download worker start | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s",
-            raw_url,fmt_key,format_id,has_audio,engine,
+            "Download worker start | url=%s fmt_key=%s format_id=%s has_audio=%s engine=%s%s",
+            raw_url,fmt_key,format_id,has_audio,engine,since_msg_str,
         )
         is_tiktok_url=is_tiktok(raw_url)
         stage("detection",t_detect,job=raw_url)
@@ -926,6 +943,13 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     wait_time = _check_and_consume_limit(user_id)
     if wait_time > 0:
         return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+
+    msg_date = msg.date.timestamp() if (msg and getattr(msg, "date", None)) else time.time()
+    delay = max(0.0, time.time() - msg_date)
+    log.info(
+        "Link detected (/dl) | platform=%s url=%s user_id=%s chat_id=%s delay=%.2fs",
+        _platform_label(url), url, user_id, msg.chat.id, delay,
+    )
     
     dl_id=uuid.uuid4().hex[:8]
     DL_CACHE[dl_id]={
@@ -936,6 +960,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
         "reply_to":msg.message_id,
         "message_thread_id":getattr(msg,"message_thread_id",None),
         "ts":time.time(),
+        "msg_date":msg_date,
     }
     settings=get_user_settings(user_id)
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
@@ -1092,8 +1117,9 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     DL_CACHE.pop(dl_id,None)
     
     log.info(
-        "Resolution callback selected | url=%s height=%s format_id=%s has_audio=%s engine=%s picked=%s",
+        "Resolution callback selected | url=%s height=%s format_id=%s has_audio=%s engine=%s picked=%s since_msg=%.2fs",
         data.get("url"),height,picked.get("format_id"),picked.get("has_audio"),engine,picked,
+        time.time() - float(data.get("msg_date") or data.get("ts") or time.time()),
     )
 
     # Silent mode: hapus pesan picker begitu resolusi dipilih, lalu teruskan
