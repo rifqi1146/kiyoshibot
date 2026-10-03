@@ -118,6 +118,7 @@ def is_invalid_video(path: str) -> bool:
             ],
             capture_output=True,
             text=True,
+            timeout=15,
         )
         info = __import__("json").loads(p.stdout)
         stream = info["streams"][0]
@@ -132,6 +133,27 @@ def is_invalid_video(path: str) -> bool:
 
 class FileSizeLimitExceeded(RuntimeError):
     pass
+
+def is_media_content_type(content_type: str | None) -> bool:
+    """True kalau Content-Type adalah media nyata (bukan JSON, HTML, atau teks error).
+
+    Dipakai di probe HEAD/Range sebelum mempercayai Content-Length: CDN seperti
+    TikTok `aweme/v1/play/` membalas HEAD dengan HTTP 200 `Content-Type: application/json`
+    berukuran 108 B, padahal videonya di-stream lewat Range/GET berukuran megabyte.
+    Mempercayai Content-Length dari response non-media menyebabkan total ukuran
+    salah dibaca menjadi ~108 byte.
+    """
+    ct = (content_type or "").strip().lower().split(";")[0].strip()
+    if not ct:
+        # Header tidak ada -> jangan tolak buta, biarkan lolos
+        return True
+    if ct.startswith(("video/", "audio/", "image/", "application/octet-stream", "binary/octet-stream")):
+        return True
+    if ct in ("application/x-mpegurl", "application/vnd.apple.mpegurl"):
+        return True
+    # JSON / HTML / text / xml jelas bukan media
+    return False
+
 
 def check_media_size_limit(size_bytes: int | float, label: str = "File") -> None:
     from .constants import MAX_TG_SIZE

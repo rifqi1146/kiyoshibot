@@ -10,7 +10,17 @@ WELCOME_VERIFY_DB = os.path.abspath(
 
 def _connect():
     os.makedirs(os.path.dirname(WELCOME_VERIFY_DB), exist_ok=True)
-    return sqlite3.connect(WELCOME_VERIFY_DB)
+    # PRAGMAs WAJIB di setiap koneksi, bukan cuma saat init: `busy_timeout`
+    # membuat writer menunggu 30s alih-alih langsung `database is locked`,
+    # dan WAL membuat reader tidak memblokir writer.
+    con = sqlite3.connect(WELCOME_VERIFY_DB, timeout=30.0)
+    try:
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")
+        con.execute("PRAGMA busy_timeout=30000;")
+    except sqlite3.Error:
+        pass
+    return con
 
 
 def init_welcome_db():

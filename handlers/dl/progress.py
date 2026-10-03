@@ -100,7 +100,46 @@ def parse_eta_str(value) -> float | None:
 
 
 # Single shared edit cache stored on the bot instance, keyed by (chat_id, message_id).
+# Tanpa batas, dict ini tumbuh tanpa henti: tiap pesan status yang pernah diedit
+# menyimpan satu entri permanen selama umur proses (satunya-satunya pembersihan
+# dulu adalah pop milik Instagram yang memang tidak pernah menulis). Sekarang
+# dibatasi TTL + cap supaya tetap efektif sebagai dedup/throttle tetapi memori
+# yang dipakai konstan.
 _EDIT_CACHE_ATTR = "_dl_status_edit_cache"
+_EDIT_CACHE_MAX = int(os.getenv("DL_EDIT_CACHE_MAX", "2048"))
+_EDIT_CACHE_TTL = float(os.getenv("DL_EDIT_CACHE_TTL", "1800"))
+
+
+def prune_edit_cache(
+    cache: dict,
+    *,
+    now: float | None = None,
+    max_entries: int | None = None,
+    ttl: float | None = None,
+) -> int:
+    """Buang entri cache edit yang sudah basi lalu cap ukurannya.
+
+    Dict Python menjaga urutan insert, jadi membuang dari kepala = FIFO paling
+    lama. Mengembalikan jumlah entri yang dibuang.
+    """
+    if not cache:
+        return 0
+    if max_entries is None:
+        max_entries = _EDIT_CACHE_MAX
+    if ttl is None:
+        ttl = _EDIT_CACHE_TTL
+    dropped = 0
+    if ttl > 0 and len(cache) > 64:
+        now = time.monotonic() if now is None else now
+        for k in [k for k, v in cache.items() if now - float(v.get("ts", 0.0)) > ttl]:
+            cache.pop(k, None)
+            dropped += 1
+    if max_entries > 0 and len(cache) > max_entries:
+        excess = len(cache) - max_entries
+        for k in list(cache)[:excess]:
+            cache.pop(k, None)
+            dropped += 1
+    return dropped
 
 
 async def edit_status(
@@ -139,6 +178,8 @@ async def edit_status(
             disable_web_page_preview=True,
         )
         cache[key] = {"text": text, "ts": time.monotonic()}
+        if len(cache) > _EDIT_CACHE_MAX:
+            prune_edit_cache(cache)
     except RetryAfter as e:
         wait = max(int(getattr(e, "retry_after", 1)), 1)
         log.warning("%s RetryAfter | chat_id=%s wait=%s", label, chat_id, wait)

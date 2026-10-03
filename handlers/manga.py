@@ -30,6 +30,56 @@ _MANGA_MESSAGE_LOCKS = {}
 _MANGA_LOCK_TIMES = {}
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
+# `context.user_data` tidak pernah dibersihkan PTB selama proses hidup. Data
+# reader manga (daftar URL gambar bisa ratusan string + map hash->path) menumpuk
+# di sana untuk tiap chapter yang pernah dibuka user. Pindahkan ke cache level
+# modul ber-TTL + ber-cap; key memakai (user_id, suffix) supaya tetap per-user
+# seperti user_data. Data yang tadinya di user_data dipindah ke sini; akses
+# helper `_udata_get/_udata_set` menjaga perilaku lookup (None dianggap absen).
+_MANGA_CACHE: dict[tuple[int, str], tuple[float, object]] = {}
+_MANGA_CACHE_TTL = float(os.getenv("MANGA_CACHE_TTL", "7200"))
+_MANGA_CACHE_MAX = int(os.getenv("MANGA_CACHE_MAX", "400"))
+
+
+def _udata_key(context, suffix: str):
+    uid = getattr(getattr(context, "effective_user", None), "id", None)
+    if uid is None:
+        uid = getattr(context, "_user_id", None)
+    if uid is None:
+        uid = 0
+    return (int(uid), str(suffix))
+
+
+def _udata_prune(now: float | None = None) -> None:
+    if len(_MANGA_CACHE) <= _MANGA_CACHE_MAX:
+        return
+    now = time.time() if now is None else now
+    for k in [k for k, v in _MANGA_CACHE.items() if now - v[0] > _MANGA_CACHE_TTL]:
+        _MANGA_CACHE.pop(k, None)
+    if len(_MANGA_CACHE) > _MANGA_CACHE_MAX:
+        for k in list(_MANGA_CACHE)[: len(_MANGA_CACHE) - _MANGA_CACHE_MAX]:
+            _MANGA_CACHE.pop(k, None)
+
+
+def _udata_get(context, suffix: str, default=None):
+    item = _MANGA_CACHE.get(_udata_key(context, suffix))
+    if not item:
+        return default
+    if time.time() - item[0] > _MANGA_CACHE_TTL:
+        _MANGA_CACHE.pop(_udata_key(context, suffix), None)
+        return default
+    return item[1]
+
+
+def _udata_set(context, suffix: str, value) -> None:
+    _MANGA_CACHE[_udata_key(context, suffix)] = (time.time(), value)
+    _udata_prune()
+
+
+def _udata_has(context, suffix: str) -> bool:
+    return _udata_get(context, suffix) is not None
+
+
 def _is_nsfw_enabled(chat_id: int, chat_type: str) -> bool:
     return is_nsfw_allowed(chat_id, chat_type)
 
@@ -221,8 +271,9 @@ async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit
 
 async def get_chapter_context(chapter_id: str, context: ContextTypes.DEFAULT_TYPE):
     cache_key = f"ctx_{chapter_id}"
-    if cache_key in context.user_data:
-        return context.user_data[cache_key]
+    cached = _udata_get(context, cache_key)
+    if cached is not None:
+        return cached
     ch_data = await fetch_json(f"{MANGADEX_API}/chapter/{chapter_id}?includes[]=manga")
     if not ch_data or "data" not in ch_data or "attributes" not in ch_data["data"]:
         return None, None, "Unknown", "??", "??"
@@ -247,7 +298,7 @@ async def get_chapter_context(chapter_id: str, context: ContextTypes.DEFAULT_TYP
                         next_id = chapters[i + 1]["id"]
                     break
     res = (prev_id, next_id, title, ch_num, lang)
-    context.user_data[cache_key] = res
+    _udata_set(context, cache_key, res)
     return res
 
 def get_nav_keyboard(chapter_id: str, current_idx: int, total_pages: int, prev_ch: str = None, next_ch: str = None):
@@ -274,7 +325,7 @@ async def build_search_list(query: str, offset: int, context: ContextTypes.DEFAU
     keyboard = []
     for manga in data["data"]:
         title = manga["attributes"]["title"].get("en", manga["attributes"]["title"].get("ja-ro", "Unknown"))
-        context.user_data["last_manga_query"] = query
+        _udata_set(context, "last_manga_query", query)
         keyboard.append([InlineKeyboardButton(f"📖 {title[:35]}", callback_data=f"detailmanga_{manga['id']}_0")])
     nav_buttons = []
     if offset > 0:
@@ -319,7 +370,7 @@ async def build_nh_search_list(query: str, page: int, context: ContextTypes.DEFA
     data = await fetch_json(f"{NH_API_URL}/search", {"query": query, "page": page}, custom_headers=NH_HEADERS)
     if not data or not data.get("result"):
         return None, None
-    context.user_data["last_nh_query"] = query
+    _udata_set(context, "last_nh_query", query)
     keyboard = []
     for item in data["result"]:
         raw_title = item["english_title"] or "Unknown"
@@ -398,7 +449,7 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             hasil_unik.add(href)
             path = href.replace(MAID_URL, "")
             short_id = hashlib.md5(path.encode()).hexdigest()[:8]
-            context.user_data[f"maid_map_{short_id}"] = path
+            _udata_set(context, f"maid_map_{short_id}", path)
             keyboard.append([InlineKeyboardButton(f"📖 {title[:35]}", callback_data=f"maiddet_{short_id}")])
             if len(keyboard) >= 5:
                 break
@@ -464,7 +515,7 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.message.delete()
     elif data.startswith("msearch_"):
         offset = int(data.split("_")[1])
-        q = context.user_data.get("last_manga_query", "")
+        q = _udata_get(context, "last_manga_query", "")
         if not q:
             return await query.answer("❌ Search session expired.", show_alert=True)
         text, markup = await build_search_list(q, offset, context)
@@ -549,7 +600,7 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         base_url = server_data.get("baseUrl", "")
         chapter_hash = server_data.get("chapter", {}).get("hash", "")
         urls = [f"{base_url}/data/{chapter_hash}/{p}" for p in server_data.get("chapter", {}).get("data", [])]
-        context.user_data[f"manga_{chapter_id}"] = urls
+        _udata_set(context, f"manga_{chapter_id}", urls)
         keyboard = get_nav_keyboard(chapter_id, 0, len(urls), prev_ch, next_ch)
         caption_text = f"📖 <b>{_escape(m_title)}</b> | Ch:{_escape(m_ch)} | 🌐 {_escape(m_lang)}"
         img_bytes = await fetch_image_bytes(urls[0])
@@ -565,10 +616,10 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         chapter_id = parts[1]
         page_idx = int(parts[2])
-        urls = context.user_data.get(f"manga_{chapter_id}")
+        urls = _udata_get(context, f"manga_{chapter_id}")
         if not urls:
             return await query.answer("❌ Session expired.", show_alert=True)
-        prev_ch, next_ch, m_title, m_ch, m_lang = context.user_data.get(f"ctx_{chapter_id}", (None, None, "Unknown", "?", "?"))
+        prev_ch, next_ch, m_title, m_ch, m_lang = _udata_get(context, f"ctx_{chapter_id}", (None, None, "Unknown", "?", "?"))
         await query.answer()
         img_bytes = await fetch_image_bytes(urls[page_idx])
         if img_bytes:
@@ -579,7 +630,7 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         short_id = parts[1]
         offset = int(parts[2]) if len(parts) > 2 else 0
-        path = context.user_data.get(f"maid_map_{short_id}")
+        path = _udata_get(context, f"maid_map_{short_id}")
         if not path:
             return await query.answer("❌ Session expired.", show_alert=True)
         await query.answer(f"Loading chapters {offset+1}-{offset+5}...")
@@ -608,10 +659,10 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 ch_num = "?"
             ch_sid = hashlib.md5(ch_path.encode()).hexdigest()[:8]
-            context.user_data[f"maid_map_{ch_sid}"] = ch_path
+            _udata_set(context, f"maid_map_{ch_sid}", ch_path)
             n_sid = hashlib.md5(all_chapters[i - 1].get("href").replace(MAID_URL, "").encode()).hexdigest()[:8] if i > 0 else None
             p_sid = hashlib.md5(all_chapters[i + 1].get("href").replace(MAID_URL, "").encode()).hexdigest()[:8] if i < total_ch - 1 else None
-            context.user_data[f"maid_ctx_{ch_sid}"] = {"next_ch": n_sid, "prev_ch": p_sid, "title": title, "ch_num": ch_num}
+            _udata_set(context, f"maid_ctx_{ch_sid}", {"next_ch": n_sid, "prev_ch": p_sid, "title": title, "ch_num": ch_num})
             if offset <= i < offset + 5:
                 keyboard.append([InlineKeyboardButton(f"📖 Ch. {ch_num}", callback_data=f"maidread_{ch_sid}")])
         list_nav = []
@@ -648,14 +699,14 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("maidread_"):
         await query.answer("Opening chapter... ⏳")
         short_id = data.split("_")[1]
-        path = context.user_data.get(f"maid_map_{short_id}")
+        path = _udata_get(context, f"maid_map_{short_id}")
         if not path:
             return await context.bot.send_message(
                 chat_id=query.message.chat_id,
                 message_thread_id=query.message.message_thread_id,
                 text="❌ Session expired."
             )
-        ctx = context.user_data.get(f"maid_ctx_{short_id}", {})
+        ctx = _udata_get(context, f"maid_ctx_{short_id}", {})
         manga_title = ctx.get("title", "Manga Maid")
         ch_num = ctx.get("ch_num", "?")
         target_url = f"{MAID_URL}{path}" if path.startswith("/") else f"{MAID_URL}/{path}"
@@ -679,7 +730,7 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_thread_id=query.message.message_thread_id,
                 text="❌ No pages found."
             )
-        context.user_data[f"maid_imgs_{short_id}"] = urls
+        _udata_set(context, f"maid_imgs_{short_id}", urls)
         img_bytes = await fetch_image_bytes(urls[0], referer=MAID_URL)
         if not img_bytes:
             return await context.bot.send_message(
@@ -705,10 +756,10 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         short_id = parts[1]
         page_idx = int(parts[2])
-        urls = context.user_data.get(f"maid_imgs_{short_id}")
+        urls = _udata_get(context, f"maid_imgs_{short_id}")
         if not urls:
             return await query.answer("❌ Reader session expired.", show_alert=True)
-        ctx = context.user_data.get(f"maid_ctx_{short_id}", {})
+        ctx = _udata_get(context, f"maid_ctx_{short_id}", {})
         await query.answer()
         img_bytes = await fetch_image_bytes(urls[page_idx], referer=MAID_URL)
         if img_bytes:
@@ -728,7 +779,7 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_render_page(query, context, img_bytes, caption, InlineKeyboardMarkup([nav, ch_nav]), True, owner_id=query.from_user.id)
     elif data.startswith("nhsearch_"):
         page = int(data.split("_")[1])
-        q = context.user_data.get("last_nh_query", "")
+        q = _udata_get(context, "last_nh_query", "")
         if not q:
             return await query.answer("❌ Search session expired.", show_alert=True)
         text, markup = await build_nh_search_list(q, page, context)
@@ -783,13 +834,13 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gallery_id = parts[-2]
         page_idx = int(parts[-1])
         cache_key = f"nh_{gallery_id}"
-        if cache_key not in context.user_data:
+        if not _udata_has(context, cache_key):
             g_data = await fetch_json(f"{NH_API_URL}/galleries/{gallery_id}", custom_headers=NH_HEADERS)
             if not g_data:
                 return await query.answer("❌ Server error.")
-            context.user_data[cache_key] = g_data
+            _udata_set(context, cache_key, g_data)
         else:
-            g_data = context.user_data[cache_key]
+            g_data = _udata_get(context, cache_key)
         pages = g_data["pages"]
         config = await fetch_json(f"{NH_API_URL}/config", custom_headers=NH_HEADERS)
         img_server = config["image_servers"][0] if config and "image_servers" in config else "https://i.nhentai.net"

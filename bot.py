@@ -3,6 +3,18 @@ import os
 import re
 import socket
 import logging
+
+# uvloop di-install lewat requirements tapi dulu tidak pernah dipakai — bot
+# jalan di event loop selectors bawaan. Pasang SEBELUM loop pertama dibuat
+# (sebelum PTB bikin loop di run_polling). Matikan dengan BOT_UVLOOP=0 kalau
+# ada masalah: perilaku handler & UI tidak berubah sama sekali.
+if os.getenv("BOT_UVLOOP", "1").strip().lower() not in ("0", "false", "no"):
+    try:
+        import uvloop
+        uvloop.install()
+    except Exception:
+        pass
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder,JobQueue
 from utils.http import close_http_session

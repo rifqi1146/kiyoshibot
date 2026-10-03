@@ -41,6 +41,10 @@ PER_PAGE = 5
 # (`/…-episode-N-subtitle-indonesia/`), tetap masuk hasil.
 _LISTING_PATH = re.compile(r"^/(?:hentai|jav)/[^/]+/?$")
 CACHE_TTL = 3600  # detik
+# Batas keras entri cache pencarian. TTL membersihkan yang basi, tapi kalau ada
+# lonjakan query unik dalam satu jam cache-nya bisa membengkak tanpa batas di
+# RAM. Lewat batas, buang yang paling lama (dict menjaga urutan insert).
+MAX_SEARCH_ENTRIES = 120
 
 # search_id -> { query, results, page, ts, user_id, chat_id }
 _SEARCH_CACHE = {}
@@ -225,6 +229,9 @@ def _purge_expired_cache():
     now = time.time()
     for key in [k for k, v in _SEARCH_CACHE.items() if now - v.get("ts", 0) > CACHE_TTL]:
         _SEARCH_CACHE.pop(key, None)
+    if len(_SEARCH_CACHE) > MAX_SEARCH_ENTRIES:
+        for key in list(_SEARCH_CACHE)[: len(_SEARCH_CACHE) - MAX_SEARCH_ENTRIES]:
+            _SEARCH_CACHE.pop(key, None)
 
 
 async def nekopoi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

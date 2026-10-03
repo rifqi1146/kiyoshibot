@@ -30,7 +30,6 @@ from handlers.punishworldsearch import punish_cmd
 from handlers.simontoksearch import simontok_cmd
 from handlers.susunkata import susunkata_cmd
 from handlers.ping import ping_cmd
-from handlers.dl.tiktok.livetiktok import recordlive_cmd, stoprecord_cmd, statusrecord_cmd
 from handlers.premium import premium_cmd
 from handlers.quiz import quiz_cmd
 from handlers.quoteanime import quoteanime_cmd
@@ -173,9 +172,6 @@ COMMAND_HANDLERS = [
     ("waifu", waifu_cmd, False),
     ("weather", weather_cmd, False),
     ("whoisdomain", whoisdomain_cmd, True),
-    ("recordlive", recordlive_cmd, False),
-    ("stoprecord", stoprecord_cmd, False),
-    ("statusrecord", statusrecord_cmd, False),
 ]
 
 def register_commands(app):

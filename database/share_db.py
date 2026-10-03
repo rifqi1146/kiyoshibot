@@ -6,8 +6,13 @@ SHARE_DB = "data/shared_media.sqlite3"
 
 def _connect():
     os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(SHARE_DB)
-    con.execute("PRAGMA journal_mode=WAL;")
+    con = sqlite3.connect(SHARE_DB, timeout=30.0)
+    try:
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")
+        con.execute("PRAGMA busy_timeout=30000;")
+    except sqlite3.Error:
+        pass
     return con
 
 def init_share_db():

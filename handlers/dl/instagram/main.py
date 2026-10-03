@@ -18,7 +18,7 @@ from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from curl_cffi.requests import AsyncSession
 from handlers.dl.utils import progress_bar, check_media_size_limit, FileSizeLimitExceeded
-from handlers.dl.progress import render_progress_text, edit_status, TransferStats, log_progress, log_done
+from handlers.dl.progress import render_progress_text, edit_status, TransferStats, log_progress, log_done, prune_edit_cache
 
 log=logging.getLogger(__name__)
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
@@ -810,7 +810,10 @@ def _download_candidates(url:str)->list[str]:
 async def _safe_edit_status(bot,chat_id,message_id,text:str,min_interval:float=1.2):
     if not bot or not chat_id or not message_id:
         return
-    cache=getattr(bot,"_ig_status_edit_cache",{})
+    cache=getattr(bot,"_ig_status_edit_cache",None)
+    if cache is None:
+        cache={}
+        setattr(bot,"_ig_status_edit_cache",cache)
     if not message_id:
         return
     key=(int(chat_id),int(message_id))
@@ -833,7 +836,7 @@ async def _safe_edit_status(bot,chat_id,message_id,text:str,min_interval:float=1
                 disable_web_page_preview=True,
             )
             cache[key]={"text":text,"ts":time.monotonic()}
-            setattr(bot,"_ig_status_edit_cache",cache)
+            prune_edit_cache(cache)
             return
         except RetryAfter as e:
             wait=max(int(getattr(e,"retry_after",1)),1)
@@ -842,7 +845,7 @@ async def _safe_edit_status(bot,chat_id,message_id,text:str,min_interval:float=1
         except Exception as e:
             if "message is not modified" in str(e).lower():
                 cache[key]={"text":text,"ts":time.monotonic()}
-                setattr(bot,"_ig_status_edit_cache",cache)
+                prune_edit_cache(cache)
                 return
             log.warning("Failed to edit Instagram status | chat_id=%s message_id=%s err=%r",chat_id,message_id,e)
             return

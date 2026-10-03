@@ -45,18 +45,34 @@ def _cleanup_dl_cache():
     for k in expired:
         DL_CACHE.pop(k, None)
 
-def _check_and_consume_limit(user_id: int) -> int:
-    if is_premium_user(user_id):
-        return 0
+def _cleanup_limit_cache():
     now = time.time()
-    
-    # Cleanup expired rate limit caches
     expired_users = [u for u, hist in list(DL_LIMIT_CACHE.items()) if not [t for t in hist if now - t < 60]]
     for u in expired_users:
         DL_LIMIT_CACHE.pop(u, None)
-        
+
+def prune_runtime_caches():
+    """Bersihkan cache runtime router. Dipanggil tiap titik masuk download.
+
+    Membuat pembersihan TIDAK bergantung pada request non-premium (dulu
+    `_cleanup_dl_cache` ada di belakang short-circuit premium, jadi entri basi
+    bisa menahan map `res_map` dsb. selama tak ada user non-premium).
+    Cache edit status di objek bot membersihkan dirinya sendiri saat menulis
+    (lihat `progress.prune_edit_cache`), jadi tidak diiterasi di sini.
+    """
     _cleanup_dl_cache()
-        
+    _cleanup_limit_cache()
+
+def _check_and_consume_limit(user_id: int) -> int:
+    now = time.time()
+
+    # Cleanup cache selalu jalan (premium maupun bukan) — dulu di belakang
+    # short-circuit premium sehingga tidak pernah dieksekusi oleh user premium.
+    prune_runtime_caches()
+
+    if is_premium_user(user_id):
+        return 0
+
     history = DL_LIMIT_CACHE.get(user_id, [])
     history = [ts for ts in history if now - ts < 60]
     if len(history) >= 3:

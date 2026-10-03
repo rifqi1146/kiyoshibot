@@ -44,6 +44,11 @@ _POOL_LOCKS: dict[str, asyncio.Lock] = {}
 # Lock khusus jalur default (tanpa keyword): semua user default memakai SATU
 # keyword aktif yang sama sampai pool-nya habis.
 _DEFAULT_META_LOCK = asyncio.Lock()
+# Cap pool keyword + lock: pool per keyword memuat ~20 dict video, jadi keyword
+# sembarang/typo user harus punya batas. Dibiarkan tanpa cap = menumpuk selama
+# umur proses. Lihat `_prune_pools`.
+_VIDEO_POOLS_MAX = int(os.getenv("ASUPAN_POOL_MAX", "64"))
+_POOL_LOCKS_MAX = int(os.getenv("ASUPAN_POOL_LOCKS_MAX", "64"))
 # Cache sesi Cloudflare (cookie cf_clearance + UA browser) untuk fast-path search.
 _CF_SESSION: dict | None = None
 
@@ -342,6 +347,29 @@ async def _prime_and_get_url(video_item: dict) -> str | None:
     return None
 
 
+def _lock_busy(lock: asyncio.Lock) -> bool:
+    """True kalau lock sedang dipegang ATAU sedang ditunggu coroutine lain.
+
+    `Lock.locked()` hanya melihat yang sedang memegang; coroutine yang antre
+    tidak terlihat. `_waiters` dipakai untuk melihat antrean — `None` berarti
+    tidak pernah ada yang menantre (idle, aman dibuang), sedangkan deque
+    berisi antrian nyata. Kalau atributnya hilang sama sekali (API berubah),
+    dianggap sibuk supaya lock aktif tidak pernah dibuang paksa.
+    """
+    if lock.locked():
+        return True
+    try:
+        waiters = lock._waiters
+    except AttributeError:
+        return True
+    if waiters is None:
+        return False
+    try:
+        return len(waiters) > 0
+    except TypeError:
+        return True
+
+
 def _pop_pool(norm: str) -> dict | None:
     """Ambil 1 video acak dari pool keyword. Hapus pool kalau sudah kosong."""
     pool = _VIDEO_POOLS.get(norm)
@@ -351,6 +379,32 @@ def _pop_pool(norm: str) -> dict | None:
     if not pool:
         _VIDEO_POOLS.pop(norm, None)
     return item
+
+
+def _prune_pools() -> None:
+    """Batas ukuran pool keyword & lock supaya tak tumbuh tanpa batas.
+
+    Pool tiap keyword menyimpan ~20 dict video. Kalau user memasukkan keyword
+    yang berbeda-beda (termasuk typo), kedua struktur menumpuk selamanya.
+    Kedua dict mempertahankan urutan insert, jadi buang dari kepala = yang
+    paling lama tidak dipakai. Entry yang masih di-PIN oleh lock aktif tidak
+    disentuh.
+    """
+    if len(_VIDEO_POOLS) > _VIDEO_POOLS_MAX:
+        for k in list(_VIDEO_POOLS)[: len(_VIDEO_POOLS) - _VIDEO_POOLS_MAX]:
+            lk = _POOL_LOCKS.get(k)
+            if lk is not None and _lock_busy(lk):
+                continue
+            _VIDEO_POOLS.pop(k, None)
+            if k in _POOL_LOCKS and not _lock_busy(_POOL_LOCKS[k]):
+                _POOL_LOCKS.pop(k, None)
+    if len(_POOL_LOCKS) > _POOL_LOCKS_MAX:
+        for k in [k for k, lk in _POOL_LOCKS.items() if not _lock_busy(lk)]:
+            if len(_POOL_LOCKS) <= _POOL_LOCKS_MAX:
+                break
+            if k in _VIDEO_POOLS:
+                continue
+            _POOL_LOCKS.pop(k, None)
 
 
 async def _acquire_item(keyword: str | None) -> dict | None:
@@ -367,18 +421,27 @@ async def _acquire_item(keyword: str | None) -> dict | None:
     if keyword and keyword.strip():
         q = keyword.strip()
         norm = q.lower()
+        _prune_pools()
         lock = _POOL_LOCKS.setdefault(norm, asyncio.Lock())
-        async with lock:
-            item = _pop_pool(norm)
-            if item:
-                return item
-            log.info("Mengisi pool asupan | query=%s", q)
-            new_videos = await _search_keyword(q)
-            if not new_videos:
-                return None
-            _VIDEO_POOLS[norm] = new_videos
-            log.info("Pool asupan keyword=%r terisi: %s video", q, len(new_videos))
-            return _pop_pool(norm)
+        try:
+            async with lock:
+                item = _pop_pool(norm)
+                if item:
+                    return item
+                log.info("Mengisi pool asupan | query=%s", q)
+                new_videos = await _search_keyword(q)
+                if not new_videos:
+                    return None
+                _VIDEO_POOLS[norm] = new_videos
+                log.info("Pool asupan keyword=%r terisi: %s video", q, len(new_videos))
+                return _pop_pool(norm)
+        finally:
+            # Dijalankan SETELAH `async with` melepas kunci, dan hanya membuang
+            # saat benar-benar tidak ada pemakai lain (holder + antrean kosong).
+            # Kalau pool sudah habis, simpanan lock tidak lagi berguna — buang
+            # supaya keyword sembarang tidak menumpuk.
+            if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
+                _POOL_LOCKS.pop(norm, None)
 
     async with _DEFAULT_META_LOCK:
         if _DEFAULT_KEYWORD:

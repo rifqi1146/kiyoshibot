@@ -43,6 +43,10 @@ _PREFIX_TO_SITE = {cfg["prefix"]: key for key, cfg in SITES.items()}
 MAX_RESULTS = 30
 PER_PAGE = 5
 CACHE_TTL = 3600  # detik
+# Batas keras entri cache pencarian. TTL membersihkan yang basi, tapi kalau ada
+# lonjakan query unik dalam satu jam cache-nya bisa membengkak tanpa batas di
+# RAM. Lewat batas, buang yang paling lama (dict menjaga urutan insert).
+MAX_SEARCH_ENTRIES = 120
 
 # search_id -> { site, query, results, page, ts, user_id, chat_id }
 _SEARCH_CACHE = {}
@@ -170,6 +174,9 @@ def _purge_expired_cache():
     now = time.time()
     for key in [k for k, v in _SEARCH_CACHE.items() if now - v["ts"] > CACHE_TTL]:
         _SEARCH_CACHE.pop(key, None)
+    if len(_SEARCH_CACHE) > MAX_SEARCH_ENTRIES:
+        for key in list(_SEARCH_CACHE)[: len(_SEARCH_CACHE) - MAX_SEARCH_ENTRIES]:
+            _SEARCH_CACHE.pop(key, None)
 
 
 def make_site_cmd(site_key: str):

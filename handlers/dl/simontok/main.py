@@ -100,8 +100,8 @@ async def simontok_download(
         # remux audio-only. Tolak lebih dulu, jangan kirim file rusak diam-diam.
         if not await asyncio.to_thread(ext.has_video_stream, tmp_mp4):
             raise RuntimeError(
-                "Video tidak didukung: codec-nya tidak dikenal server "
-                "(file ini tidak bisa diremux dengan aman)."
+                "Video post ini rusak atau tidak didukung (stream video memakai codec "
+                "yang tidak bisa didekode oleh server). Silakan coba post lain."
             )
 
         shutil.move(tmp_mp4, final_path)

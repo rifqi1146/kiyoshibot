@@ -55,12 +55,29 @@ def init_moderation_storage():
 
 def _moderation_db():
     init_moderation_db()
-    return sqlite3.connect(MODERATION_DB)
+    return _open(MODERATION_DB)
 
 
 def _sudo_db():
     init_sudo_db()
-    return sqlite3.connect(SUDO_DB)
+    return _open(SUDO_DB)
+
+
+def _open(path: str) -> sqlite3.Connection:
+    """Koneksi dengan PRAGMAs yang sama seperti helper init.
+
+    Tanpa `busy_timeout`, query yang bertabrakan dengan writer lain langsung
+    melempar `sqlite3.OperationalError: database is locked` (error ke user),
+    padahal menunggu 30 detik sudah cukup untuk menyelesaikannya.
+    """
+    con = sqlite3.connect(path, timeout=30.0)
+    try:
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")
+        con.execute("PRAGMA busy_timeout=30000;")
+    except sqlite3.Error:
+        pass
+    return con
 
 
 def moderation_is_enabled(chat_id: int) -> bool:

@@ -27,7 +27,7 @@ import subprocess
 from utils.http import get_http_session
 
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
-from handlers.dl.utils import sanitize_filename, is_invalid_video, check_media_size_limit, FileSizeLimitExceeded
+from handlers.dl.utils import sanitize_filename, is_invalid_video, check_media_size_limit, is_media_content_type, FileSizeLimitExceeded
 from handlers.dl.progress import TransferStats
 
 from .constants import (
@@ -64,9 +64,18 @@ log = logging.getLogger(__name__)
 async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     try:
         async with session.head(url,headers=headers,timeout=aiohttp.ClientTimeout(total=20),allow_redirects=True) as resp:
-            total=int(resp.headers.get("Content-Length",0) or 0)
-            if total>0:
-                return total
+            # JANGAN percaya Content-Length dari response non-media: CDN TikTok
+            # `aweme/v1/play/` membalas HEAD dengan HTTP 200
+            # `Content-Type: application/json` + `Content-Length: 108` (bukan
+            # video). Tanpa guard ini total jadi 108 B dan UI memaparkan
+            # `1.3 MB/108 B` dengan persentase jutaan persen. Video aslinya
+            # di-stream lewat GET/Range dan berukuran megabyte.
+            if is_media_content_type(resp.headers.get("Content-Type")):
+                total=int(resp.headers.get("Content-Length",0) or 0)
+                if total>0:
+                    return total
+            else:
+                log.debug("TikTok HEAD size probe rejected non-media content-type | type=%s url=%s",resp.headers.get("Content-Type"),url[:160])
     except Exception as e:
         log.debug("TikTok HEAD size probe failed | err=%r",e)
     try:
@@ -77,7 +86,7 @@ async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
             m=re.search(r"/(\d+)$",content_range)
             if m:
                 return int(m.group(1))
-            if resp.headers.get("Content-Length"):
+            if resp.headers.get("Content-Length") and is_media_content_type(resp.headers.get("Content-Type")):
                 return int(resp.headers.get("Content-Length",0) or 0)
     except Exception as e:
         log.debug("TikTok Range size probe failed | err=%r",e)
