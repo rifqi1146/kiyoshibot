@@ -70,6 +70,7 @@ PREMIUM_ONLY_DOMAINS = {
     "femdomvc.com",
     "asiangirl.porn",
     "bdsmlust.com",
+    "heavy-r.com",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -153,4 +154,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "femdomvc.com",
     "asiangirl.porn",
     "bdsmlust.com",
+    "heavy-r.com",
 }
