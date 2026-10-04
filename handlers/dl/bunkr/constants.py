@@ -30,5 +30,9 @@ SIGN_URL = "https://glb-apisign.cdn.cr/sign"
 # Interval edit status progress (detik)
 BUNKR_PROGRESS_INTERVAL = float(os.getenv("BUNKR_PROGRESS_INTERVAL", "3"))
 
+# Jumlah media album yang diunduh paralel. Album besar (30+ file) sebelumnya
+# diunduh serial satu-per-satu -> ~2x waktu. Naikkan via env bila CDN izinkan.
+BUNKR_ALBUM_CONCURRENCY = int(os.getenv("BUNKR_ALBUM_CONCURRENCY", "6"))
+
 _VIDEO_EXT = (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".ts")
 _IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")

@@ -27,6 +27,7 @@ _LAST_IG_STATUS_TEXT={}
 IG_PROGRESS=os.getenv("INSTAGRAM_PROGRESS","1").lower() in ("1","true","on","yes")
 IG_PROGRESS_INTERVAL=float(os.getenv("INSTAGRAM_PROGRESS_INTERVAL","1.5"))
 IG_AIOHTTP_CHUNK_SIZE=int(os.getenv("INSTAGRAM_AIOHTTP_CHUNK_SIZE",str(256*1024)))
+IG_CAROUSEL_CONCURRENCY=int(os.getenv("INSTAGRAM_CAROUSEL_CONCURRENCY","6"))
 
 GRAPHQL_ENDPOINT="https://www.instagram.com/graphql/query/"
 POLARIS_ACTION="PolarisPostActionLoadPostQueryQuery"
@@ -1088,23 +1089,50 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
     failed_count = 0
     last_error = None
     total_items = len(urls)
-    
-    for idx, media_url in enumerate(urls, start=1):
-        try:
-            label = f"Downloading Instagram media ({idx}/{total_items})" if total_items > 1 else "Downloading Instagram media"
-            downloaded.append(await _download_remote_media(
-                media_url, 
-                source=source, 
-                bot=bot, 
-                chat_id=chat_id, 
-                status_msg_id=status_msg_id, 
-                label=label
-            ))
-        except Exception as e:
-            failed_count += 1
-            last_error = e
-            log.warning("Instagram media download failed | source=%s host=%s err=%r", source, urlparse(media_url).hostname, e)
-            
+
+    if total_items <= 1:
+        for idx, media_url in enumerate(urls, start=1):
+            try:
+                downloaded.append(await _download_remote_media(
+                    media_url,
+                    source=source,
+                    bot=bot,
+                    chat_id=chat_id,
+                    status_msg_id=status_msg_id,
+                    label="Downloading Instagram media",
+                ))
+            except Exception as e:
+                failed_count += 1
+                last_error = e
+                log.warning("Instagram media download failed | source=%s host=%s err=%r", source, urlparse(media_url).hostname, e)
+    else:
+        # Carousel multi-slide: unduh paralel (sebelumnya serial 1-per-1).
+        # Hasil dikumpulkan per-index supaya urutan media tetap sesuai post.
+        results: list = [None] * total_items
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(max(1, IG_CAROUSEL_CONCURRENCY))
+
+        async def _one(i: int, media_url: str):
+            nonlocal failed_count, last_error
+            async with sem:
+                try:
+                    results[i] = await _download_remote_media(
+                        media_url,
+                        source=source,
+                        bot=bot,
+                        chat_id=chat_id,
+                        status_msg_id=status_msg_id,
+                        label=f"Downloading Instagram media ({i + 1}/{total_items})",
+                    )
+                except Exception as e:
+                    async with lock:
+                        failed_count += 1
+                        last_error = e
+                    log.warning("Instagram media download failed | source=%s host=%s err=%r", source, urlparse(media_url).hostname, e)
+
+        await asyncio.gather(*(_one(i, u) for i, u in enumerate(urls)))
+        downloaded = [r for r in results if r]
+
     if not downloaded:
         raise last_error or RuntimeError("All media downloads failed")
         

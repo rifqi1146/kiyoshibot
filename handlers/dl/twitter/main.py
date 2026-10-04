@@ -290,7 +290,7 @@ async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,
     if total: check_media_size_limit(total,"X media")
     out_dir=os.path.dirname(out_path) or "."
     out_name=os.path.basename(out_path)
-    cmd=[aria2,"--dir",out_dir,"--out",out_name,"--file-allocation=none","--allow-overwrite=true","--auto-file-renaming=false","--continue=true","--max-connection-per-server=8","--split=8","--min-split-size=1M","--summary-interval=0","--download-result=hide","--console-log-level=warn"]
+    cmd=[aria2,"--dir",out_dir,"--out",out_name,"--file-allocation=none","--allow-overwrite=true","--auto-file-renaming=false","--continue=true","--max-connection-per-server=16","--split=16","--min-split-size=1M","--summary-interval=0","--download-result=hide","--console-log-level=warn"]
     for k,v in (headers or {}).items():
         if v: cmd.extend(["--header",f"{k}: {v}"])
     cmd.append(media_url)
@@ -322,7 +322,7 @@ async def _aiohttp_download_with_progress(session,media_url:str,out_path:str,bot
         total=int(r.headers.get("Content-Length",0) or 0); downloaded=0; stats=TransferStats(total)
         if total: check_media_size_limit(total,"X media")
         async with aiofiles.open(out_path,"wb") as f:
-            async for chunk in r.content.iter_chunked(64*1024):
+            async for chunk in r.content.iter_chunked(512*1024):
                 if not chunk: continue
                 await f.write(chunk); downloaded+=len(chunk)
                 if downloaded>MAX_TG_SIZE: raise FileSizeLimitExceeded("X media exceeds 2GB limit. Download canceled.")

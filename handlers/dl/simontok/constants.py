@@ -26,7 +26,7 @@ SIMONTOK_HOSTS = ("simontok.study", "www.simontok.study")
 # alur identik (window.__PX + /api/hls).
 EMBED_HOST_MARKERS = ("putarin.", "puterin.")
 
-SEG_CONCURRENCY = int(os.getenv("SIMONTOK_SEG_CONCURRENCY", "6"))
+SEG_CONCURRENCY = int(os.getenv("SIMONTOK_SEG_CONCURRENCY", "12"))
 SEG_RETRIES = int(os.getenv("SIMONTOK_SEG_RETRIES", "3"))
 
 # Interval progress adaptif (detik) — samakan dengan downloader lain.

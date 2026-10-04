@@ -174,7 +174,8 @@ async def _download_aria2c(
     notify: bool,
 ) -> bool:
     """Download paralel multi-koneksi via aria2c (14s untuk 70MB vs 4+ menit single stream)."""
-    aria2 = shutil.which("aria2c")
+    from handlers.dl.aria2 import _resolve_aria2
+    aria2 = _resolve_aria2()
     if not aria2:
         return False
 

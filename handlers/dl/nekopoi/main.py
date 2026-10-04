@@ -453,7 +453,7 @@ async def nekopoi_download(
             if size > MAX_TG_SIZE:
                 raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
             log.info("Nekopoi DoodStream sukses | title=%r label=%s size=%.2fMB", title, label, size / 1024 / 1024)
-            return {"path": final_path, "title": title}
+            return {"path": final_path, "title": title, "remux_done": True}
 
         if chosen.get("type") in ("pixeldrain_ouo", "mp4upload_ouo"):
             # Urutan sumber per tinggi:
@@ -548,7 +548,7 @@ async def nekopoi_download(
             if size > MAX_TG_SIZE:
                 raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
             log.info("Nekopoi %s sukses | title=%r label=%s size=%.2fMB", src_kind, title, label, size / 1024 / 1024)
-            return {"path": final_path, "title": title}
+            return {"path": final_path, "title": title, "remux_done": True}
 
         if fmt_key == "mp3":
             final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
@@ -576,7 +576,7 @@ async def nekopoi_download(
         if size > MAX_TG_SIZE:
             raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
         log.info("Nekopoi sukses | title=%r label=%s size=%.2fMB", title, label, size / 1024 / 1024)
-        return {"path": final_path, "title": title}
+        return {"path": final_path, "title": title, "remux_done": True}
     except FileSizeLimitExceeded:
         if final_path and os.path.exists(final_path):
             try:

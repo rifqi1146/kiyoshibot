@@ -110,7 +110,7 @@ async def simontok_download(
             title, segs["duration"], len(seg_urls),
             os.path.getsize(final_path) / 1024 / 1024,
         )
-        return {"path": final_path, "title": title, "duration": segs["duration"]}
+        return {"path": final_path, "title": title, "duration": segs["duration"], "remux_done": True}
 
     except FileSizeLimitExceeded:
         if final_path and os.path.exists(final_path):

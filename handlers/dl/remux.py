@@ -291,6 +291,18 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
             item["path"] = p
         if detect_media_type(p) == "video":
             item["type"] = "animation" if was_gif else "video"
+            # Jalur cepat: downloader sudah menghasilkan MP4 faststart
+            # (ditandai "remux_done": True) -> lewati ffmpeg kedua.
+            if item.get("remux_done"):
+                meta = await asyncio.to_thread(video_meta, p)
+                thumb_path = item.get("thumb")
+                if not (thumb_path and os.path.exists(thumb_path)):
+                    thumb_path = await asyncio.to_thread(make_video_thumbnail, p)
+                if thumb_path:
+                    item["thumb"] = thumb_path
+                if meta:
+                    item["meta"] = meta
+                return item
             new_path, thumb_path, meta = await remux_and_thumbnail_parallel(p)
             item["path"] = new_path
             if thumb_path:
@@ -316,12 +328,23 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
                 result["type"] = "animation"
                 result["is_animation"] = True
             if detect_media_type(p)=="video":
-                new_path,thumb_path,meta=await remux_and_thumbnail_parallel(p)
-                result["path"]=new_path
-                if thumb_path:
-                    result["thumb"]=thumb_path
-                if meta:
-                    result["meta"]=meta
+                # Jalur cepat: downloader sudah menghasilkan MP4 faststart
+                # (ditandai "remux_done": True) -> lewati ffmpeg remux kedua,
+                # cukup ambil metadata + thumbnail.
+                if result.get("remux_done"):
+                    result["meta"]=await asyncio.to_thread(video_meta,p)
+                    thumb_path=result.get("thumb")
+                    if not (thumb_path and os.path.exists(thumb_path)):
+                        thumb_path=await asyncio.to_thread(make_video_thumbnail,p)
+                    if thumb_path:
+                        result["thumb"]=thumb_path
+                else:
+                    new_path,thumb_path,meta=await remux_and_thumbnail_parallel(p)
+                    result["path"]=new_path
+                    if thumb_path:
+                        result["thumb"]=thumb_path
+                    if meta:
+                        result["meta"]=meta
             else:
                 result["path"]=await asyncio.to_thread(_prepare_single_path,p)
         return result

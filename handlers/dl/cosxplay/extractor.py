@@ -176,7 +176,30 @@ async def download_video(url: str, format_id: str, out_path: str, bot, chat_id, 
         
     dl_url = target["url"]
     headers = {"User-Agent": UA, "Referer": "https://cosxplay.com/"}
-    
+    total_hint = int(target.get("filesize") or 0)
+    if total_hint > MAX_TG_SIZE:
+        raise FileSizeLimitExceeded(
+            f"File exceeds 2GB limit ({total_hint / 1024 ** 3:.2f} GB). Download canceled."
+        )
+
+    # Mesin utama: aria2c multi-koneksi (CDN `nosofiles.com` lambat per socket).
+    try:
+        from handlers.dl.aria2 import download_aria2
+        ok = await download_aria2(
+            dl_url, out_path,
+            headers=headers, total_size=total_hint,
+            kind="CosXplay download", label="CosXplay MP4", title=title,
+            bot=bot, chat_id=chat_id, status_msg_id=status_msg_id, notify=notify,
+            edit_interval=COSXPLAY_PROGRESS_INTERVAL, timeout=HTTP_TIMEOUT * 12,
+        )
+        if ok and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return {"path": out_path, "title": title}
+    except FileSizeLimitExceeded:
+        raise
+    except Exception as e:
+        log.warning("CosXplay aria2c exception, fallback ke streaming | err=%r", e)
+
+    # Fallback: streaming langsung.
     def _get():
         resp = curl_requests.get(dl_url, headers=headers, impersonate="chrome", stream=True, timeout=HTTP_TIMEOUT)
         if resp.status_code not in (200, 206):

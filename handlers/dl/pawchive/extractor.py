@@ -64,6 +64,8 @@ UA = (
 _HTTP_TIMEOUT = 45
 # Interval edit progress (detik) — samakan skala dengan scraper lain (3s default).
 PAWCHIVE_PROGRESS_INTERVAL = float(os.getenv("PAWCHIVE_PROGRESS_INTERVAL", "3"))
+# Jumlah media album yang diunduh paralel (album sebelumnya serial 1-per-1).
+PAWCHIVE_ALBUM_CONCURRENCY = int(os.getenv("PAWCHIVE_ALBUM_CONCURRENCY", "6"))
 _VIDEO_EXT = (".mp4", ".webm", ".mkv", ".mov", ".m4v")
 _IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 _FILE_HOST = "https://file.pawchive.pw"
@@ -508,23 +510,48 @@ async def download_album(medias_list: list, title: str, bot, chat_id, status_msg
         if wait:
             flood_until = last_edit + wait
 
-    items = []
-    for idx, item in enumerate(medias, 1):
+    items: list = []
+    failures = 0
+    progress_lock = asyncio.Lock()
+    state = {"last_edit": last_edit or time.time(), "flood_until": flood_until}
+    sem = asyncio.Semaphore(max(1, PAWCHIVE_ALBUM_CONCURRENCY))
+
+    async def _one(idx: int, item: dict):
+        nonlocal failures
         m_type = item.get("type", media_type)
         def_ext = ".mp4" if m_type == "video" else ".jpg"
         prefix = "vid" if m_type == "video" else "img"
         name = f"{tag}_{prefix}_{idx:03d}{extension_for(item.get('name'), def_ext)}"
         out = os.path.join(out_dir, name)
-        
-        # Untuk multiple media, progress bar individu akan mengganggu (rate limit).
-        # Jadi kita panggil download_to_file senyap (notify=False)
-        await download_to_file(item.get("url"), out, bot, chat_id, status_msg_id, title, notify=False)
-        items.append({"path": out, "type": m_type})
-        now = time.time()
-        if status_msg_id and now >= flood_until and (idx == total or now - last_edit >= interval):
-            wait = await _safe_edit_status(bot, chat_id, status_msg_id, _render_album_status(idx))
-            last_edit = now
-            if wait:
-                flood_until = now + wait
+
+        async with sem:
+            try:
+                # Untuk multiple media, progress bar individu akan mengganggu (rate limit).
+                # Jadi kita panggil download_to_file senyap (notify=False)
+                await download_to_file(item.get("url"), out, bot, chat_id, status_msg_id, title, notify=False)
+            except Exception as e:
+                failures += 1
+                log.warning("Pawchive download gagal | %s -> %r", item.get("name"), e)
+                if os.path.exists(out):
+                    try:
+                        os.remove(out)
+                    except OSError:
+                        pass
+                return
+
+        async with progress_lock:
+            items.append({"path": out, "type": m_type})
+            now = time.time()
+            done = len(items)
+            if status_msg_id and now >= state["flood_until"] and (done == total or now - state["last_edit"] >= interval):
+                wait = await _safe_edit_status(bot, chat_id, status_msg_id, _render_album_status(done))
+                state["last_edit"] = now
+                if wait:
+                    state["flood_until"] = now + wait
+
+    await asyncio.gather(*(_one(idx, item) for idx, item in enumerate(medias, 1)))
+
+    if not items:
+        raise RuntimeError(f"Semua media Pawchive gagal diunduh ({failures}/{total} gagal)")
 
     return {"items": items, "title": sanitize_filename(title or "Pawchive", 100)}

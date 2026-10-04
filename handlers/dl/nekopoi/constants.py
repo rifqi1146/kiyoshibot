@@ -36,7 +36,7 @@ EMBED_HOST_STREAMPOI = ("streampoi.com", "streamruby.com", "streamruby.net")
 EMBED_HOST_DOOD = ("playmogo.com", "doodstream.com", "dood.", "ds2play.com")
 
 # Progress HLS.
-SEG_CONCURRENCY = int(os.getenv("NEKOPOI_SEG_CONCURRENCY", "6"))
+SEG_CONCURRENCY = int(os.getenv("NEKOPOI_SEG_CONCURRENCY", "12"))
 SEG_RETRIES = int(os.getenv("NEKOPOI_SEG_RETRIES", "3"))
 SEG_TIMEOUT = float(os.getenv("NEKOPOI_SEG_TIMEOUT", "60"))
 # Progress HLS: interval edit pesan ADAPTIF (hindari 429 flood Telegram).

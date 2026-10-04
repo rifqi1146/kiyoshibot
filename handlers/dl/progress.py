@@ -322,7 +322,9 @@ class TransferStats:
         "_win_ts",
         "_win_bytes",
         "_last_log_ts",
+        "_done_logged",
         "_last_edit_ts",
+        "_done_edited",
         "downloaded",
         "speed_bps",
         "avg_bps",
@@ -336,7 +338,9 @@ class TransferStats:
         self._win_ts = self.started
         self._win_bytes = 0
         self._last_log_ts = 0.0
+        self._done_logged = False
         self._last_edit_ts = -10.0
+        self._done_edited = False
         self.downloaded = 0
         self.speed_bps = 0.0
         self.avg_bps = 0.0
@@ -348,7 +352,27 @@ class TransferStats:
             done = max(int(done or 0), 0)
         except (TypeError, ValueError):
             done = 0
+
+        # Byte pertama mengalir: geser titik mulai ke sekarang. `TransferStats`
+        # dibuat SEBELUM koneksi terbuka, jadi tanpa reset ini burst awal
+        # (16 koneksi aria2 mengisi buffer OS sekaligus) dibagi dengan elapsed
+        # yang terlalu kecil -> avg/speed meledak (pernah 60-230 MB/s) padahal
+        # throughput riil 3-4 MB/s. Itu juga yang membuat interval edit dinamis
+        # salah pilih bucket tercepat.
+        first_byte = done > 0 and self.downloaded <= 0
+        if first_byte:
+            self.started = now
+            self._win_ts = now
+            self._win_bytes = 0
         self.downloaded = done
+
+        # Pada sample byte pertama, elapsed == 0 -> jangan hitung avg/speed
+        # (pembagian dengan floor 0.001s menghasilkan angka palsu 1000 MB/s).
+        if first_byte:
+            self.avg_bps = 0.0
+            self.speed_bps = 0.0
+            self.eta_seconds = None
+            return self
 
         # Kecepatan dihitung dari JENDELA WAKTU (~1.0s), bukan antar-sample.
         # Sample per-chunk di thread unduh menabrak dua masalah:
@@ -374,6 +398,13 @@ class TransferStats:
         # (16KB/1ms = 15.6 MB/s, angka stagnan yang pernah nongol di UI).
         # Konsumen tampil pakai `speed_bps or avg_bps` (lihat `telegram_text`).
 
+        # Clamp avg saat baru mulai (belum 5 detik): `done/elapsed` meledak
+        # karena pembagi masih kecil (pernah tampil avg_speed=34.5 MB/s padahal
+        # riil ~4 MB/s). Kalau jendela sudah terisi, batasi avg ke 2x speed_bps
+        # supaya angka yang dipakai UI/log tidak menyesatkan.
+        if elapsed < 5.0 and self.speed_bps > 0:
+            self.avg_bps = min(self.avg_bps, self.speed_bps * 2.0)
+
         if self.total > 0 and self.speed_bps > 0 and done <= self.total:
             self.eta_seconds = (self.total - done) / self.speed_bps
         else:
@@ -392,22 +423,97 @@ class TransferStats:
 
     def should_log(self, interval: float = 2.5, *, now: float | None = None) -> bool:
         now = now if now is not None else time.monotonic()
+        # Sudah 100%: log sekali saja, lalu diam (proses kadang belum exit
+        # begitu file penuh — aria2c menutup koneksi — dan emit/sample terus
+        # dipanggil, bikin log "100.0%" terus-menerus).
+        if self.total > 0 and self.downloaded >= self.total:
+            if self._done_logged:
+                return False
+            self._done_logged = True
+            self._last_log_ts = now
+            return True
         if (
             self._last_log_ts <= 0
             or (now - self._last_log_ts) >= interval
-            or (self.total > 0 and self.downloaded >= self.total)
         ):
             self._last_log_ts = now
             return True
         return False
 
+    def adaptive_edit_interval(self) -> float:
+        """Interval edit pesan Telegram dinamis, mengikuti kecepatan unduhan.
+
+        Bucket kecepatan:
+          - Speed < 1 MB/s  -> 10 detik
+          - Speed < 3 MB/s  -> 7 detik
+          - Speed < 5 MB/s  -> 5 detik
+          - Speed >= 5 MB/s -> 3 detik
+
+        Sifatnya REAKTIF: kalau kecepatan drop di tengah unduhan, interval
+        otomatis naik ke bucket yang lebih lambat (dan sebaliknya). Jadi pesan
+        tidak di-edit tiap detik saat CDN sedang lambat / ke-throttle.
+
+        Kecepatan dipakai = `speed_bps` (jendela ~1s) bila sudah terisi; kalau
+        belum, `avg_bps` baru dipercaya setelah unduhan berjalan >= 5 detik.
+        Keduanya rawan overstate tepat setelah byte pertama (burst buffer +
+        pembagi elapsed kecil: pernah terbaca 60-130 MB/s padahal throughput
+        riil 3-4 MB/s), karena itu ada guard waktu.
+
+        Faktor ukuran: kalau sisa file tinggal sedikit (ETA < 2x interval),
+        interval dirapatkan (floor 2 detik) supaya progress akhir tetap tampil
+        sebelum file selesai.
+        """
+        now = time.monotonic()
+        if self.speed_bps > 0:
+            speed = self.speed_bps
+        elif (now - self.started) >= 5.0 and self.avg_bps > 0:
+            speed = self.avg_bps
+        else:
+            speed = 0.0
+
+        MB = 1024 * 1024
+        if speed <= 0:
+            iv = 10.0
+        elif speed < 1.0 * MB:
+            iv = 10.0
+        elif speed < 3.0 * MB:
+            iv = 7.0
+        elif speed < 5.0 * MB:
+            iv = 5.0
+        else:
+            iv = 3.0
+
+        # Rapetkan hanya kalau unduhan BENAR-BENAR hampir selesai (ETA < 2x iv),
+        # bukan memotong bucket di tengah unduhan.
+        if self.total > 0 and speed > 0 and self.downloaded < self.total:
+            eta = (self.total - self.downloaded) / speed
+            if eta < iv * 2.0:
+                iv = max(2.0, eta)
+        return iv
+
     def should_edit(self, interval: float = 2.0, *, now: float | None = None) -> bool:
         now = now if now is not None else time.monotonic()
-        if (
-            self._last_edit_ts < 0
-            or (now - self._last_edit_ts) >= interval
-            or (self.total > 0 and self.downloaded >= self.total)
-        ):
+        # Jika interval <= 0, anggap caller memaksakan edit (mis. awal 0% / akhir 100%)
+        if interval <= 0:
+            self._last_edit_ts = now
+            return True
+
+        # Sudah 100%: paksa edit SEKALI saja (supaya bar penuh tampil), lalu
+        # diam. Tanpa flag ini, setiap panggilan emit() selama proses unduhan
+        # belum exit (aria2c masih menutup koneksi) akan lolos -> spam edit
+        # tiap detik di 100% (terjadi pada FemdomVC 23:01:20-23:01:28).
+        if self.total > 0 and self.downloaded >= self.total:
+            if self._done_edited:
+                return False
+            self._done_edited = True
+            self._last_edit_ts = now
+            return True
+
+        # Pakai interval dinamis (sesuai kecepatan + sisa ukuran),
+        # minimal sebesar interval yang diminta caller.
+        effective = max(interval, self.adaptive_edit_interval())
+
+        if self._last_edit_ts < 0 or (now - self._last_edit_ts) >= effective:
             self._last_edit_ts = now
             return True
         return False

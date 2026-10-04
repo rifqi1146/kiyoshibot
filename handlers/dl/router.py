@@ -33,8 +33,8 @@ try:
     nsfw_db_init()
 except Exception as e:
     log.warning("NSFW DB init from downloader router failed | err=%r",e)
-TIKTOK_LOCK=asyncio.Semaphore(3)
-YTDLP_SEM=asyncio.Semaphore(4)
+TIKTOK_LOCK=asyncio.Semaphore(6)
+YTDLP_SEM=asyncio.Semaphore(8)
 _MAX_FLOOD_RETRY=2
 
 DL_LIMIT_CACHE = {}
@@ -840,7 +840,7 @@ async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:
     total=len(urls)
     done={"n":0}
     lock=asyncio.Lock()
-    sem=asyncio.Semaphore(3)
+    sem=asyncio.Semaphore(5)
     results=[None]*total
 
     async def _render(status_text:str):

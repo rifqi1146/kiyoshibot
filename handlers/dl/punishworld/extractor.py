@@ -163,9 +163,45 @@ async def download_to_file(
     status_msg_id,
     title: str,
 ) -> int:
-    """Stream MP4 ke `out_path` dengan progress bar + limit 2GB."""
+    """MP4 ke `out_path` dengan progress bar + limit 2GB.
+
+    Mesin utama: aria2c multi-koneksi. Fallback: streaming curl_cffi.
+    """
     headers = {"User-Agent": UA, "Referer": "https://punishworld.com/"}
     interval = PROGRESS_MIN_INTERVAL
+
+    # Probe ukuran untuk pre-check limit 2GB.
+    try:
+        from curl_cffi import requests as _probe_req
+        _probe = await asyncio.to_thread(
+            _probe_req.head, url,
+            headers=headers, impersonate="chrome", timeout=HTTP_TIMEOUT,
+        )
+        _probe_total = int(_probe.headers.get("Content-Length") or 0)
+        if _probe_total > MAX_TG_SIZE:
+            raise FileSizeLimitExceeded(
+                f"File exceeds 2GB limit ({_probe_total / 1024 / 1024 / 1024:.2f} GB). Download canceled."
+            )
+    except FileSizeLimitExceeded:
+        raise
+    except Exception:
+        _probe_total = 0
+
+    try:
+        from handlers.dl.aria2 import download_aria2
+        ok = await download_aria2(
+            url, out_path,
+            headers=headers, total_size=_probe_total,
+            kind="PunishWorld download", label="PunishWorld MP4", title=title,
+            bot=bot, chat_id=chat_id, status_msg_id=status_msg_id, notify=bool(status_msg_id),
+            edit_interval=interval, timeout=HTTP_TIMEOUT * 12,
+        )
+        if ok and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return os.path.getsize(out_path)
+    except FileSizeLimitExceeded:
+        raise
+    except Exception as e:
+        log.warning("PunishWorld aria2c exception, fallback ke streaming | err=%r", e)
 
     def _get():
         resp = curl_requests.get(

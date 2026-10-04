@@ -53,6 +53,7 @@ from .constants import (
     BUNKR_PROGRESS_INTERVAL,
     _VIDEO_EXT,
     _IMAGE_EXT,
+    BUNKR_ALBUM_CONCURRENCY,
 )
 
 log = logging.getLogger(__name__)
@@ -374,10 +375,12 @@ async def download_album(
     medias_list: list, title: str, bot, chat_id, status_msg_id,
     out_dir: str, tag: str = "bunkr", item_label: str = "media",
 ) -> dict:
-    """Unduh semua media album senyap, kembalikan `{items:[{path,type}], title}`.
+    """Unduh semua media album, kembalikan `{items:[{path,type}], title}`.
 
-    Pesan status hanya menampilkan progres jumlah item (misal `12/30 media`)
-    dan diedit sekali per `_album_interval(total)` supaya aman dari rate limit.
+    Resolve + unduh dijalankan **paralel** (Semaphore `BUNKR_ALBUM_CONCURRENCY`)
+    supaya album besar tidak lagi memakan waktu ~2x dari yang perlu. Progres
+    pesan status diperbarui saat tiap item selesai, tetap memakai
+    `_album_interval(total)` agar aman dari rate limit.
     """
     medias = [m for m in (medias_list or []) if m.get("page")]
     total = len(medias)
@@ -395,56 +398,63 @@ async def download_album(
             f"<code>{done_count}/{total} {item_label}</code>"
         )
 
-    flood_until = 0.0
-    last_edit = 0.0
     if status_msg_id:
         wait = await _safe_edit_status(bot, chat_id, status_msg_id, _render(0))
-        last_edit = time.time()
-        if wait:
-            flood_until = last_edit + wait
 
-    items = []
+    items: list = []
     failures = 0
-    for idx, item in enumerate(medias, 1):
-        try:
-            info = await asyncio.to_thread(resolve_file, item["page"])
-        except Exception as e:
-            failures += 1
-            log.warning("Bunkr resolve gagal | %s -> %r", item.get("name"), e)
-            continue
+    progress_lock = asyncio.Lock()
+    state = {"last_edit": time.time(), "flood_until": 0.0}
+    sem = asyncio.Semaphore(max(1, BUNKR_ALBUM_CONCURRENCY))
 
-        m_type = item.get("type") or ("video" if info["name"].lower().endswith(_VIDEO_EXT) else "image")
-        def_ext = ".mp4" if m_type == "video" else ".jpg"
-        prefix = "vid" if m_type == "video" else "img"
-        name = f"{tag}_{prefix}_{idx:03d}{extension_for(info['name'], def_ext)}"
-        out = os.path.join(out_dir, name)
+    async def _one(idx: int, item: dict):
+        nonlocal failures
+        async with sem:
+            try:
+                info = await asyncio.to_thread(resolve_file, item["page"])
+            except Exception as e:
+                failures += 1
+                log.warning("Bunkr resolve gagal | %s -> %r", item.get("name"), e)
+                return
 
-        try:
-            await download_to_file(
-                info["url"], out, bot, chat_id, status_msg_id,
-                title, notify=False, referer=info.get("referer") or "",
+            m_type = item.get("type") or (
+                "video" if info["name"].lower().endswith(_VIDEO_EXT) else "image"
             )
-        except Exception as e:
-            failures += 1
-            log.warning("Bunkr download gagal | %s -> %r", info.get("name"), e)
-            if os.path.exists(out):
-                try:
-                    os.remove(out)
-                except OSError:
-                    pass
-            continue
+            def_ext = ".mp4" if m_type == "video" else ".jpg"
+            prefix = "vid" if m_type == "video" else "img"
+            name = f"{tag}_{prefix}_{idx:03d}{extension_for(info['name'], def_ext)}"
+            out = os.path.join(out_dir, name)
 
-        items.append({"path": out, "type": m_type})
-        now = time.time()
-        if status_msg_id and now >= flood_until and (
-            idx == total or now - last_edit >= interval
-        ):
-            wait = await _safe_edit_status(
-                bot, chat_id, status_msg_id, _render(len(items))
-            )
-            last_edit = now
-            if wait:
-                flood_until = now + wait
+            try:
+                await download_to_file(
+                    info["url"], out, bot, chat_id, status_msg_id,
+                    title, notify=False, referer=info.get("referer") or "",
+                )
+            except Exception as e:
+                failures += 1
+                log.warning("Bunkr download gagal | %s -> %r", info.get("name"), e)
+                if os.path.exists(out):
+                    try:
+                        os.remove(out)
+                    except OSError:
+                        pass
+                return
+
+            async with progress_lock:
+                items.append({"path": out, "type": m_type})
+                now = time.time()
+                done = len(items)
+                if status_msg_id and now >= state["flood_until"] and (
+                    done == total or now - state["last_edit"] >= interval
+                ):
+                    wait = await _safe_edit_status(
+                        bot, chat_id, status_msg_id, _render(done)
+                    )
+                    state["last_edit"] = now
+                    if wait:
+                        state["flood_until"] = now + wait
+
+    await asyncio.gather(*(_one(idx, item) for idx, item in enumerate(medias, 1)))
 
     if not items:
         raise RuntimeError(

@@ -163,7 +163,7 @@ async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,
     out_name=os.path.basename(out_path)
     cmd=[
         aria2,"--dir",out_dir,"--out",out_name,"--file-allocation=none","--allow-overwrite=true",
-        "--auto-file-renaming=false","--continue=true","--max-connection-per-server=8","--split=8",
+        "--auto-file-renaming=false","--continue=true","--max-connection-per-server=16","--split=16",
         "--min-split-size=1M","--summary-interval=0","--download-result=hide","--console-log-level=warn",
     ]
     for k,v in (headers or {}).items():
@@ -214,7 +214,7 @@ async def _aiohttp_download_with_progress(session,media_url:str,out_path:str,bot
         downloaded=0
         stats=TransferStats(total)
         async with aiofiles.open(out_path,"wb") as f:
-            async for chunk in r.content.iter_chunked(64*1024):
+            async for chunk in r.content.iter_chunked(512*1024):
                 if not chunk:
                     continue
                 await f.write(chunk)

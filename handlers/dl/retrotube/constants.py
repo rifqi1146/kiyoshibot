@@ -122,7 +122,7 @@ _MIRROR_EXTRA_HOSTS = {
     "becekku.*": ("becekku.live", "becekku.club"),
 }
 
-_SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "5"))
+_SEG_CONCURRENCY = int(os.getenv("RETROTUBE_SEG_CONCURRENCY", "10"))
 _SEG_RETRIES = int(os.getenv("RETROTUBE_SEG_RETRIES", "3"))
 _HTTP_TIMEOUT = int(os.getenv("RETROTUBE_HTTP_TIMEOUT", "30"))
 _FFMPEG_TIMEOUT = int(os.getenv("RETROTUBE_FFMPEG_TIMEOUT", "300"))
