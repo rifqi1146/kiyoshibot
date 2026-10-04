@@ -68,6 +68,7 @@ PREMIUM_ONLY_DOMAINS = {
     "bunkr.cr",
     "darknessporn.com",
     "femdomvc.com",
+    "asiangirl.porn",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -149,4 +150,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "bunkrr.*",
     "darknessporn.com",
     "femdomvc.com",
+    "asiangirl.porn",
 }

@@ -13,6 +13,9 @@ log=logging.getLogger(__name__)
 FFPROBE_TIMEOUT=int(os.getenv("FFPROBE_TIMEOUT","30"))
 FFMPEG_REMUX_TIMEOUT=int(os.getenv("FFMPEG_REMUX_TIMEOUT","180"))
 FFMPEG_THUMB_TIMEOUT=int(os.getenv("FFMPEG_THUMB_TIMEOUT","45"))
+# Timeout unduhan HLS penuh (bukan remux lokal). Video 6 menit ~163s @ CDN
+# 35 segmen/menit; 900s cukup longgar untuk post 10+ menit.
+FFMPEG_HLS_TIMEOUT=int(os.getenv("FFMPEG_HLS_TIMEOUT","900"))
 
 def _run_cmd(cmd:list[str],timeout:int|float|None=None)->str:
     if not cmd:
@@ -243,8 +246,16 @@ async def download_hls_aes_ffmpeg(
     out_path: str,
     user_agent: str = "",
     audio_only: bool = False,
+    timeout: float | None = None,
 ) -> str:
-    """Download HLS AES-128 via ffmpeg (ffmpeg dekripsi sendiri tanpa dependensi crypto)."""
+    """Download HLS AES-128 via ffmpeg (ffmpeg dekripsi sendiri tanpa dependensi crypto).
+
+    `timeout` terpisah dari `FFMPEG_REMUX_TIMEOUT` (180s): remux itu operasi
+    lokal beberapa detik, sedangkan unduhan HLS 6-menit butuh beberapa menit.
+    Default `FFMPEG_HLS_TIMEOUT` (env, 900s).
+    """
+    if timeout is None:
+        timeout = FFMPEG_HLS_TIMEOUT
     headers = f"User-Agent: {user_agent}\r\nReferer: {referer or playlist_url}\r\n"
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
@@ -263,7 +274,7 @@ async def download_hls_aes_ffmpeg(
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=FFMPEG_REMUX_TIMEOUT)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
