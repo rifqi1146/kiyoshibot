@@ -69,6 +69,7 @@ PREMIUM_ONLY_DOMAINS = {
     "darknessporn.com",
     "femdomvc.com",
     "asiangirl.porn",
+    "bdsmlust.com",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -151,4 +152,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "darknessporn.com",
     "femdomvc.com",
     "asiangirl.porn",
+    "bdsmlust.com",
 }

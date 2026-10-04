@@ -204,6 +204,7 @@ def _platform_label(url:str)->str:
         (("darknessporn.com",),"DarknessPorn"),
         (("femdomvc.com",),"FemdomVC"),
         (("asiangirl.porn",),"AsianGirlPorn"),
+        (("bdsmlust.com",),"BDSMLust"),
         ((
             "bokepcrot.*",
             "lendirqu.*",
