@@ -28,6 +28,7 @@ from .punishworld.main import is_punishworld_url,punishworld_download
 from .simontok.main import is_simontok_url,simontok_download
 from .bunkr.main import is_bunkr_url,bunkr_download
 from .darknessporn.main import is_darknessporn_url,darknessporn_download
+from .femdomvc.main import is_femdomvc_url,femdomvc_download
 from .remux import video_meta,make_video_thumbnail
 from .mtproto_uploader import try_send_video_via_mtproto
 from .pyrogram_uploader import try_send_video_via_pyrogram
@@ -990,6 +991,22 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
             known_size=known_size,
         )
         stage("scrape+download:darknessporn",t0,job=raw_url)
+        return result
+    if is_femdomvc_url(raw_url):
+        t0=time.monotonic()
+        result=await femdomvc_download(
+            raw_url=raw_url,
+            fmt_key=fmt_key,
+            bot=bot,
+            chat_id=chat_id,
+            status_msg_id=status_msg_id,
+            format_id=format_id,
+            has_audio=has_audio,
+            metadata_ready=metadata_ready,
+            known_size=known_size,
+            engine=engine,
+        )
+        stage("scrape+download:femdomvc",t0,job=raw_url)
         return result
     if re.search(r'(?:pixiv\.net|pixiv\.me)', raw_url, re.I):
         log.info("Pixiv URL detected, routing directly to gallery-dl | url=%s", raw_url)
