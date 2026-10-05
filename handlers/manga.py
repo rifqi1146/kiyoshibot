@@ -205,6 +205,103 @@ def enforce_telegram_photo_limits(img_bytes):
         log.error(f"Failed to resize image via Pillow: {e}")
         return img_bytes
 
+async def send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source=""):
+    log.info(f"Starting PDF generation for '{title}' ({len(urls)} pages) from '{source}'")
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=message_thread_id,
+        text=f"⏳ Downloading 0/{len(urls)} pages for PDF..."
+    )
+    
+    async def fetch_one(session, url):
+        headers = {"User-Agent": USER_AGENT, "Referer": referer}
+        if source == "nh" and NH_HEADERS:
+            headers.update(NH_HEADERS)
+        try:
+            async with session.get(url, headers=headers, timeout=15) as response:
+                if response.status == 200:
+                    return await response.read()
+        except Exception as e:
+            log.error(f"Error fetching image for PDF '{title}': {e}")
+        return None
+
+    session = await get_http_session()
+    images_bytes = []
+    chunk_size = 5
+    for i in range(0, len(urls), chunk_size):
+        chunk_urls = urls[i:i+chunk_size]
+        tasks = [fetch_one(session, u) for u in chunk_urls]
+        results = await asyncio.gather(*tasks)
+        images_bytes.extend([r for r in results if r])
+        await asyncio.sleep(0.5)
+        try:
+            await status_msg.edit_text(f"⏳ Downloading {min(i+chunk_size, len(urls))}/{len(urls)} pages for PDF...")
+        except Exception:
+            pass
+
+    log.info(f"Downloaded {len(images_bytes)}/{len(urls)} pages for '{title}'")
+
+    if not images_bytes:
+        log.error(f"Failed to download any images for PDF '{title}'")
+        return await status_msg.edit_text("❌ Failed to download images for PDF.")
+
+    await status_msg.edit_text(f"⏳ Generating PDF for {len(images_bytes)} pages...")
+    log.info(f"Building PDF in memory for '{title}'...")
+
+    def build_pdf(img_bytes_list):
+        if not Image:
+            return None
+        imgs = []
+        for b in img_bytes_list:
+            try:
+                img = Image.open(BytesIO(b)).convert("RGB")
+                w, h = img.size
+                if w > 1200:
+                    scale = 1200.0 / w
+                    resample_method = getattr(Image, "Resampling", Image).LANCZOS
+                    img = img.resize((int(w * scale), int(h * scale)), resample_method)
+                temp = BytesIO()
+                img.save(temp, format="JPEG", quality=75)
+                temp.seek(0)
+                img_compressed = Image.open(temp)
+                imgs.append(img_compressed)
+            except Exception as e:
+                log.warning(f"Failed to process a page for PDF: {e}")
+        if not imgs:
+            return None
+        out = BytesIO()
+        imgs[0].save(out, format="PDF", save_all=True, append_images=imgs[1:])
+        return out.getvalue()
+        
+    pdf_bytes = await asyncio.to_thread(build_pdf, images_bytes)
+    if not pdf_bytes:
+        log.error(f"Failed to generate PDF for '{title}' (Pillow error or empty images)")
+        return await status_msg.edit_text("❌ Failed to generate PDF. Make sure Pillow is installed.")
+        
+    pdf_size_mb = len(pdf_bytes) / 1024 / 1024
+    log.info(f"PDF generated successfully for '{title}' (Size: {pdf_size_mb:.2f} MB)")
+    await status_msg.edit_text(f"⏳ Uploading PDF to Telegram (Size: {pdf_size_mb:.2f} MB)...")
+    
+    pdf_io = BytesIO(pdf_bytes)
+    safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    if not safe_title:
+        safe_title = "Manga_Chapter"
+    pdf_io.name = f"{safe_title}.pdf"
+    
+    try:
+        await context.bot.send_document(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            document=pdf_io,
+            caption=f"📚 <b>{_escape(title)}</b>",
+            parse_mode="HTML"
+        )
+        log.info(f"Successfully sent PDF '{title}' to chat_id={chat_id}")
+        await status_msg.delete()
+    except Exception as e:
+        log.error(f"Failed to send PDF '{title}': {e}")
+        await status_msg.edit_text(f"❌ Failed to send PDF. It might be too large for Telegram API (Limit is 50MB for bots).")
+
 async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit=True, owner_id=None):
     img_safe = await asyncio.to_thread(enforce_telegram_photo_limits, img_bytes)
     if owner_id is None and getattr(query, "from_user", None):
@@ -362,6 +459,7 @@ def build_nh_detail_ui(data):
     )
     keyboard = [
         [InlineKeyboardButton("📖 Read Now", callback_data=f"nhread_read_{data['id']}_0")],
+        [InlineKeyboardButton("⬇️ Download PDF", callback_data=f"pdfnh_{data['id']}")],
         [InlineKeyboardButton("❌ Close", callback_data="close_manga")]
     ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -556,7 +654,10 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for ch in feed["data"]:
                 ch_num = ch["attributes"]["chapter"] or "Oneshot"
                 lang = ch["attributes"]["translatedLanguage"].upper()
-                keyboard.append([InlineKeyboardButton(f"📖 Ch.{ch_num} [{lang}]", callback_data=f"readmanga_{ch['id']}")])
+                keyboard.append([
+                    InlineKeyboardButton(f"📖 Ch.{ch_num} [{lang}]", callback_data=f"readmanga_{ch['id']}"),
+                    InlineKeyboardButton("⬇️ PDF", callback_data=f"pdfdex_{ch['id']}")
+                ])
         nav_buttons = []
         if offset > 0:
             nav_buttons.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"detailmanga_{manga_id}_{offset - 10}"))
@@ -644,6 +745,13 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         desc = desc_tag.text.strip() if desc_tag else "No description available."
         cover_tag = soup.select_one(".series-thumb img")
         cover_url = cover_tag.get("src") if cover_tag else None
+        if cover_url:
+            if cover_url.startswith("//"):
+                cover_url = "https:" + cover_url
+            elif cover_url.startswith("/"):
+                cover_url = MAID_URL + cover_url
+            elif cover_url.startswith("data:"):
+                cover_url = None
         all_chapters = soup.select(".series-chapterlist li a")
         total_ch = len(all_chapters)
         keyboard = []
@@ -664,7 +772,10 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p_sid = hashlib.md5(all_chapters[i + 1].get("href").replace(MAID_URL, "").encode()).hexdigest()[:8] if i < total_ch - 1 else None
             _udata_set(context, f"maid_ctx_{ch_sid}", {"next_ch": n_sid, "prev_ch": p_sid, "title": title, "ch_num": ch_num})
             if offset <= i < offset + 5:
-                keyboard.append([InlineKeyboardButton(f"📖 Ch. {ch_num}", callback_data=f"maidread_{ch_sid}")])
+                keyboard.append([
+                    InlineKeyboardButton(f"📖 Ch. {ch_num}", callback_data=f"maidread_{ch_sid}"),
+                    InlineKeyboardButton("⬇️ PDF", callback_data=f"pdfmaid_{ch_sid}")
+                ])
         list_nav = []
         if offset > 0:
             list_nav.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"maiddet_{short_id}_{offset - 5}"))
@@ -874,6 +985,87 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption_text = f"🔞 <b>{_escape(title[:100])}</b>\n📄 Page: {page_idx + 1}/{len(pages)}"
         is_edit = bool(getattr(query.message, "photo", None))
         await safe_render_page(query, context, img_bytes, caption_text, keyboard, is_edit, owner_id=query.from_user.id)
+    elif data.startswith("pdfdex_"):
+        await query.answer("Preparing PDF...")
+        chapter_id = data.split("_")[1]
+        server_data = await fetch_json(f"{MANGADEX_API}/at-home/server/{chapter_id}")
+        if not server_data or not server_data.get("chapter", {}).get("data"):
+            return await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                message_thread_id=query.message.message_thread_id,
+                text="❌ Failed to load chapter data for PDF."
+            )
+        _, _, m_title, m_ch, m_lang = await get_chapter_context(chapter_id, context)
+        base_url = server_data.get("baseUrl", "")
+        chapter_hash = server_data.get("chapter", {}).get("hash", "")
+        urls = [f"{base_url}/data/{chapter_hash}/{p}" for p in server_data.get("chapter", {}).get("data", [])]
+        title = f"{m_title} - Ch {m_ch} [{m_lang}]"
+        asyncio.create_task(send_pdf_task(query.message.chat_id, query.message.message_thread_id, context, title, urls, "https://mangadex.org/", "dex"))
+    elif data.startswith("pdfmaid_"):
+        await query.answer("Preparing PDF...")
+        short_id = data.split("_")[1]
+        path = _udata_get(context, f"maid_map_{short_id}")
+        if not path:
+            return await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                message_thread_id=query.message.message_thread_id,
+                text="❌ Session expired. Please search again."
+            )
+        ctx = _udata_get(context, f"maid_ctx_{short_id}", {})
+        manga_title = ctx.get("title", "Manga Maid")
+        ch_num = ctx.get("ch_num", "?")
+        target_url = f"{MAID_URL}{path}" if path.startswith("/") else f"{MAID_URL}/{path}"
+        html_doc = await fetch_html(target_url)
+        if not html_doc:
+            return await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                message_thread_id=query.message.message_thread_id,
+                text="❌ Failed to load chapter page for PDF."
+            )
+        soup = BeautifulSoup(html_doc, "html.parser")
+        img_tags = soup.select("#readerarea img, .reader-area img, .chapter-image img, .mangareader img")
+        urls = []
+        for img in img_tags:
+            src = img.get("data-src") or img.get("data-lazy-src") or img.get("src")
+            if src and src.startswith("http"):
+                urls.append(src)
+        if not urls:
+            return await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                message_thread_id=query.message.message_thread_id,
+                text="❌ No pages found for PDF."
+            )
+        title = f"{manga_title} - Ch {ch_num}"
+        asyncio.create_task(send_pdf_task(query.message.chat_id, query.message.message_thread_id, context, title, urls, MAID_URL, "maid"))
+    elif data.startswith("pdfnh_"):
+        await query.answer("Preparing PDF...")
+        gallery_id = data.split("_")[1]
+        g_data = await fetch_json(f"{NH_API_URL}/galleries/{gallery_id}", custom_headers=NH_HEADERS)
+        if not g_data:
+            return await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                message_thread_id=query.message.message_thread_id,
+                text="❌ Server error while fetching Doujin data."
+            )
+        pages = g_data.get("pages", [])
+        if not pages:
+            return await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                message_thread_id=query.message.message_thread_id,
+                text="❌ No pages found in this Doujin."
+            )
+        config = await fetch_json(f"{NH_API_URL}/config", custom_headers=NH_HEADERS)
+        img_server = config["image_servers"][0] if config and "image_servers" in config else "https://i.nhentai.net"
+        urls = []
+        for i, page in enumerate(pages):
+            path = page["path"]
+            if path.startswith("http"):
+                urls.append(path)
+            else:
+                ext = path.split(".")[-1] if "." in path else "jpg"
+                urls.append(f"{img_server}/galleries/{g_data['media_id']}/{i + 1}.{ext}")
+        title = g_data["title"]["pretty"] or g_data["title"]["english"]
+        asyncio.create_task(send_pdf_task(query.message.chat_id, query.message.message_thread_id, context, title, urls, "https://nhentai.net/", "nh"))
 
 try:
     nsfw_db_init()
