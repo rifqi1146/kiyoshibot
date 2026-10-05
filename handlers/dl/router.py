@@ -15,6 +15,7 @@ from .constants import TMP_DIR,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOMAINS
 from .stages import stage
 from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
+from database.spoiler_db import is_spoiler_enabled
 from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
@@ -525,6 +526,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
                 fmt_key=fmt_key,
                 message_thread_id=getattr(msg,"message_thread_id",None),
                 user_id=user_id,
+                chat_type=chat.type,
             )
         )
         return
@@ -767,6 +769,14 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
         stage("processing",prepare_started,job=raw_url)
         log.info("Prepare media done | url=%s elapsed=%.2fs",raw_url,time.monotonic()-prepare_started)
         upload_started=time.monotonic()
+        has_spoiler = False
+        if chat_type != "private" and is_spoiler_enabled(chat_id, chat_type):
+            if is_premium_required(raw_url, PREMIUM_ONLY_DOMAINS):
+                has_spoiler = True
+                log.info(
+                    "Spoiler applied | chat_id=%s url=%s domain=%s",
+                    chat_id, raw_url, _host(raw_url),
+                )
         await send_downloaded_media(
             bot=bot,
             chat_id=chat_id,
@@ -775,6 +785,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
             path=path,
             fmt_key=fmt_key,
             message_thread_id=message_thread_id,
+            has_spoiler=has_spoiler,
         )
         stage("upload",upload_started,job=raw_url)
         stage("total",t_detect,job=raw_url)
@@ -839,7 +850,7 @@ async def _download_one_for_batch(url:str,fmt_key:str,bot,chat_id,status_msg_id,
         )
 
 
-async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:str="video",message_thread_id=None,user_id:int|None=None):
+async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:str="video",message_thread_id=None,user_id:int|None=None,chat_type:str="private"):
     bot=app.bot
     total=len(urls)
     done={"n":0}
@@ -865,6 +876,14 @@ async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:
                 res=await _download_one_for_batch(u,fmt_key,bot,chat_id,None,message_thread_id)
                 if res:
                     res=await prepare_download_result_for_send(res,fmt_key=fmt_key)
+                if res:
+                    res = res if isinstance(res, dict) else {"path": res}
+                    res["has_spoiler"] = bool(
+                        is_premium_required(u, PREMIUM_ONLY_DOMAINS)
+                        and is_spoiler_enabled(chat_id, chat_type)
+                    )
+                    if res["has_spoiler"]:
+                        log.info("Spoiler applied | chat_id=%s scope=batch domain=%s", chat_id, _host(u))
                 results[idx]=res
             except Exception as e:
                 log.warning("Batch item failed | url=%s err=%r",u,e)
@@ -883,6 +902,11 @@ async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:
         return
 
     await _render(f"📤 <b>Uploading {len(ok)} item...</b>")
+    has_spoiler = False
+    if chat_type != "private" and is_spoiler_enabled(chat_id, chat_type):
+        if any(is_premium_required(u, PREMIUM_ONLY_DOMAINS) for u in urls):
+            has_spoiler = True
+            log.info("Spoiler applied | chat_id=%s scope=batch", chat_id)
     try:
         await send_batch_downloaded_media(
             bot=bot,
@@ -891,6 +915,7 @@ async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:
             status_msg_id=status_msg_id,
             results=ok,
             message_thread_id=message_thread_id,
+            has_spoiler=has_spoiler,
         )
     finally:
         if status_msg_id:
@@ -935,6 +960,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
                 fmt_key=fmt_key,
                 message_thread_id=getattr(msg, "message_thread_id", None),
                 user_id=user_id,
+                chat_type=msg.chat.type,
             )
         )
         return

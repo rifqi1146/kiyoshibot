@@ -23,6 +23,7 @@ from handlers.music import music_cmd
 from handlers.networking import whoisdomain_cmd, ip_cmd, domain_cmd, net_cmd
 from handlers.nobg import nobg_cmd
 from handlers.nsfw import nsfw_cmd
+from handlers.spoiler import spoiler_cmd
 from handlers.retrotubesearch import lendirqu_cmd, becekku_cmd
 from handlers.nekopoisearch import nekopoi_cmd
 from handlers.premiumbenefit import premiumbenefit_cmd
@@ -136,6 +137,7 @@ COMMAND_HANDLERS = [
     ("net", net_cmd, False),
     ("nobg", nobg_cmd, False),
     ("nsfw", nsfw_cmd, False),
+    ("spoiler", spoiler_cmd, False),
     ("ping", ping_cmd, True),
     ("premium", premium_cmd, False),
     ("premiumbenefit", premiumbenefit_cmd, False),

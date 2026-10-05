@@ -250,7 +250,7 @@ async def _fast_upload_video(client,file_path,progress_callback):
     log.info("FastTelethon upload done | file=%s",name)
     return uploaded
 
-async def try_send_video_via_mtproto(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None):
+async def try_send_video_via_mtproto(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None,has_spoiler=False):
     if not _ENABLED:
         return False
     if not file_path or not os.path.exists(file_path):
@@ -307,6 +307,8 @@ async def try_send_video_via_mtproto(bot,chat_id,status_msg_id,file_path,caption
             "thumb":thumb_path if thumb_path and os.path.exists(thumb_path) else None,
             "reply_to":reply_to,
         }
+        if has_spoiler:
+            send_kwargs["spoiler"]=True
         if uploaded_file is None:
             send_kwargs["progress_callback"]=progress_callback
             send_kwargs["part_size_kb"]=_PART_SIZE_KB

@@ -270,7 +270,7 @@ async def _send_video(client,kwargs):
             return await client.send_video(**kwargs)
         raise
 
-async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None):
+async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None,has_spoiler=False):
     if not _PYROFORK_STATE["enabled"]:
         return False
     if not file_path or not os.path.exists(file_path):
@@ -305,6 +305,8 @@ async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,captio
             kwargs["height"]=int(height)
         if thumb_path and os.path.exists(thumb_path):
             kwargs["thumb"]=thumb_path
+        if has_spoiler:
+            kwargs["has_spoiler"]=True
         log.info(
             "Pyrofork upload start | chat_id=%s target=%s file=%s size=%s progress=%s interval=%.1fs max_transmissions=%s",
             chat_id,

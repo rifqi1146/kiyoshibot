@@ -64,6 +64,8 @@ BOT_COMMANDS=[
     ("gsearch","Google search"),
     ("asupan","Random asupan"),
     ("tr","Translate text"),
+    ("nsfw","NSFW settings"),
+    ("spoiler","Spoiler settings"),
 ]
 
 class TokenRedactFilter(logging.Filter):

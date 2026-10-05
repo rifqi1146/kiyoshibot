@@ -95,7 +95,7 @@ def set_upload_engine(value:str)->str:
             log.warning("Failed to save upload engine state | file=%s err=%r",_UPLOAD_ENGINE_STATE_FILE,e)
     return engine
 
-async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None):
+async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumb_path=None,has_spoiler=False):
     if not status_msg_id:
         log.debug("Silent mode detected, using custom upload engine without progress updates")
     engine=get_upload_engine()
@@ -113,6 +113,7 @@ async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,
                 width=width,
                 height=height,
                 thumb_path=thumb_path,
+                has_spoiler=has_spoiler,
             )
         if engine=="0":
             return await try_send_video_via_mtproto(
@@ -127,6 +128,7 @@ async def _try_send_video_via_upload_engine(bot,chat_id,status_msg_id,file_path,
                 width=width,
                 height=height,
                 thumb_path=thumb_path,
+                has_spoiler=has_spoiler,
             )
         log.warning("Unsupported upload engine ignored | value=%s",engine)
         return False
@@ -370,7 +372,7 @@ async def _send_media_group_with_fallback(bot,chat_id,media,reply_to=None,messag
             log.exception("Failed to send media group | chat_id=%s",chat_id)
             raise
 
-async def _send_photo_with_fallback(bot,chat_id,photo,caption,reply_to=None,message_thread_id=None):
+async def _send_photo_with_fallback(bot,chat_id,photo,caption,reply_to=None,message_thread_id=None,has_spoiler=False):
     kwargs={
         "chat_id":chat_id,
         "photo":photo,
@@ -380,6 +382,8 @@ async def _send_photo_with_fallback(bot,chat_id,photo,caption,reply_to=None,mess
         "message_thread_id":message_thread_id,
         "disable_notification":True,
     }
+    if has_spoiler:
+        kwargs["has_spoiler"]=True
     while True:
         try:
             started=time.monotonic()
@@ -397,7 +401,7 @@ async def _send_photo_with_fallback(bot,chat_id,photo,caption,reply_to=None,mess
             log.exception("Failed to send photo | chat_id=%s",chat_id)
             raise
 
-async def _send_video_with_fallback(bot,chat_id,video,caption,reply_to=None,message_thread_id=None,supports_streaming=True,duration=None,width=None,height=None,thumbnail=None):
+async def _send_video_with_fallback(bot,chat_id,video,caption,reply_to=None,message_thread_id=None,supports_streaming=True,duration=None,width=None,height=None,thumbnail=None,has_spoiler=False):
     kwargs={
         "chat_id":chat_id,
         "video":video,
@@ -408,6 +412,8 @@ async def _send_video_with_fallback(bot,chat_id,video,caption,reply_to=None,mess
         "message_thread_id":message_thread_id,
         "disable_notification":True,
     }
+    if has_spoiler:
+        kwargs["has_spoiler"]=True
     if duration:
         kwargs["duration"]=int(duration)
     if width:
@@ -435,7 +441,7 @@ async def _send_video_with_fallback(bot,chat_id,video,caption,reply_to=None,mess
             log.exception("Failed to send video | chat_id=%s",chat_id)
             raise
 
-async def _send_animation_with_fallback(bot,chat_id,animation,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumbnail=None):
+async def _send_animation_with_fallback(bot,chat_id,animation,caption,reply_to=None,message_thread_id=None,duration=None,width=None,height=None,thumbnail=None,has_spoiler=False):
     kwargs={
         "chat_id":chat_id,
         "animation":animation,
@@ -445,6 +451,8 @@ async def _send_animation_with_fallback(bot,chat_id,animation,caption,reply_to=N
         "message_thread_id":message_thread_id,
         "disable_notification":True,
     }
+    if has_spoiler:
+        kwargs["has_spoiler"]=True
     if duration:
         kwargs["duration"]=int(duration)
     if width:
@@ -511,10 +519,15 @@ async def _cleanup_album_files(items:list[dict]):
 async def _cleanup_single_file(path:str|None):
     await _delete_file(path,"download")
 
-async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thread_id=None):
+async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thread_id=None,has_spoiler=False):
     items=result.get("items") or []
     if not items:
         raise RuntimeError("Album result kosong")
+    if has_spoiler or any(bool(item.get("has_spoiler")) for item in items):
+        log.info(
+            "Album sent with spoiler | chat_id=%s items=%s",
+            chat_id, len(items),
+        )
     title=(result.get("title") or "Media").strip() or "Media"
     bot_name=await _get_bot_name(bot)
     caption=_build_safe_photo_caption(title,bot_name)
@@ -527,6 +540,7 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
                 file_path=item.get("path")
                 media_url=str(item.get("url") or "").strip()
                 media_type=str(item.get("type") or "").strip().lower()
+                item_spoiler = has_spoiler or bool(item.get("has_spoiler"))
                 is_first=idx==0 and i==0
                 item_caption=caption if is_first else None
                 item_parse_mode="HTML" if is_first else None
@@ -547,6 +561,8 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
                             "parse_mode": item_parse_mode,
                             "supports_streaming": True
                         }
+                        if item_spoiler:
+                            vid_kwargs["has_spoiler"] = True
                         meta = item.get("meta") or {}
                         if meta.get("duration"):
                             vid_kwargs["duration"] = int(meta["duration"])
@@ -563,13 +579,22 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
 
                         media.append(InputMediaVideo(**vid_kwargs))
                     else:
-                        media.append(InputMediaPhoto(media=fh,caption=item_caption,parse_mode=item_parse_mode))
+                        photo_kwargs = {"media": fh, "caption": item_caption, "parse_mode": item_parse_mode}
+                        if item_spoiler:
+                            photo_kwargs["has_spoiler"] = True
+                        media.append(InputMediaPhoto(**photo_kwargs))
                     continue
                 if media_url:
                     if media_type=="video":
-                        media.append(InputMediaVideo(media=media_url,caption=item_caption,parse_mode=item_parse_mode,supports_streaming=True))
+                        vid_kwargs = {"media": media_url, "caption": item_caption, "parse_mode": item_parse_mode, "supports_streaming": True}
+                        if item_spoiler:
+                            vid_kwargs["has_spoiler"] = True
+                        media.append(InputMediaVideo(**vid_kwargs))
                     else:
-                        media.append(InputMediaPhoto(media=media_url,caption=item_caption,parse_mode=item_parse_mode))
+                        photo_kwargs = {"media": media_url, "caption": item_caption, "parse_mode": item_parse_mode}
+                        if item_spoiler:
+                            photo_kwargs["has_spoiler"] = True
+                        media.append(InputMediaPhoto(**photo_kwargs))
                     continue
                 log.warning("Skipping media group item because file/url is missing | chat_id=%s item=%s",chat_id,item)
             if not media:
@@ -607,7 +632,7 @@ def _rich_slideshow_label(fmt_key: str, source: str) -> str:
     return "Media"
 
 
-async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key: str, message_thread_id=None) -> bool:
+async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key: str, message_thread_id=None, has_spoiler=False) -> bool:
     """Kirim album foto sebagai Rich Slideshow (swipe horizontal).
 
     Digunakan untuk SEMUA platform (TikTok, Instagram, X/Twitter, Threads,
@@ -618,6 +643,14 @@ async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key
     """
     items = result.get("items") or []
     if len(items) < 2:
+        return False
+    # Spoiler aktif: Rich Slideshow tidak mendukung blur, jadi paksa fallback
+    # ke sendMediaGroup yang mengirim tiap foto dengan has_spoiler=True.
+    if has_spoiler:
+        log.info(
+            "Rich slideshow skipped | chat_id=%s reason=spoiler count=%s",
+            chat_id, len(items),
+        )
         return False
     # Cek apakah semua item berupa photo (slideshow tidak mendukung video)
     paths: list[str] = []
@@ -677,7 +710,7 @@ async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key
     return True
 
 
-async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,message_thread_id=None):
+async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,message_thread_id=None,has_spoiler=False):
     if isinstance(path,dict) and path.get("items"):
         all_items=path.get("items") or []
         album_items=[it for it in all_items if it.get("type")!="animation"]
@@ -703,6 +736,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 bot=bot, chat_id=chat_id, reply_to=reply_to,
                 status_msg_id=status_msg_id, path=single_payload,
                 fmt_key=fmt_key, message_thread_id=message_thread_id,
+                has_spoiler=has_spoiler,
             )
         elif len(album_items) > 1:
             path={**path, "items": album_items}
@@ -717,9 +751,10 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 sent = await _try_send_rich_slideshow(
                     bot=bot, chat_id=chat_id, reply_to=reply_to,
                     result=path, fmt_key=fmt_key, message_thread_id=message_thread_id,
+                    has_spoiler=has_spoiler,
                 )
                 if not sent:
-                    await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=path,message_thread_id=message_thread_id)
+                    await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=path,message_thread_id=message_thread_id,has_spoiler=has_spoiler)
             finally:
                 await _cleanup_album_files(album_items)
 
@@ -735,6 +770,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                     path={"path": video_path, "title": path.get("title"),
                           "thumb": it.get("thumb"), "meta": it.get("meta")},
                     fmt_key="video", message_thread_id=message_thread_id,
+                    has_spoiler=has_spoiler or bool(it.get("has_spoiler")),
                 )
             except Exception as e:
                 log.warning("Separate video send failed | path=%s err=%r",video_path,e)
@@ -769,6 +805,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                         width=meta.get("width"),
                         height=meta.get("height"),
                         thumbnail=thumb_fh,
+                        has_spoiler=has_spoiler,
                     )
                 finally:
                     _safe_close(anim_fh,"animation",chat_id)
@@ -814,7 +851,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
         if media_type=="photo":
             await _set_uploading_status(bot,chat_id,status_msg_id,"photo")
             await _ensure_photo_size(file_path)
-            await _send_photo_with_fallback(bot=bot,chat_id=chat_id,photo=file_path,caption=_build_safe_photo_caption(caption_text,bot_name),reply_to=reply_to,message_thread_id=message_thread_id)
+            await _send_photo_with_fallback(bot=bot,chat_id=chat_id,photo=file_path,caption=_build_safe_photo_caption(caption_text,bot_name),reply_to=reply_to,message_thread_id=message_thread_id,has_spoiler=has_spoiler)
             return
         if media_type=="video":
             await _set_uploading_status(bot,chat_id,status_msg_id,"video")
@@ -863,6 +900,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                     width=meta_video.get("width"),
                     height=meta_video.get("height"),
                     thumb_path=thumb_path,
+                    has_spoiler=has_spoiler,
                 )
                 if sent:
                     return
@@ -880,6 +918,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                     width=meta_video.get("width"),
                     height=meta_video.get("height"),
                     thumbnail=thumb_fh,
+                    has_spoiler=has_spoiler,
                 )
             finally:
                 _safe_close(video_fh,"video",chat_id)
@@ -1136,7 +1175,7 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
     return result
 
 
-async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results:list,message_thread_id=None):
+async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results:list,message_thread_id=None,has_spoiler=False):
     """Kirim hasil batch (multi-link).
 
     Foto/video dikumpulkan jadi satu album Telegram. Audio dikirim terpisah
@@ -1185,12 +1224,12 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
     if album_items:
         payload={"items":album_items,"title":"Batch Download"}
         try:
-            await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=payload,message_thread_id=message_thread_id)
+            await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=payload,message_thread_id=message_thread_id,has_spoiler=has_spoiler)
         except Exception as e:
             log.warning("Batch album send failed, sending individually | chat_id=%s err=%r",chat_id,e)
             for it in album_items:
                 try:
-                    await send_downloaded_media(bot=bot,chat_id=chat_id,reply_to=reply_to,status_msg_id=None,path={"path":it["path"],"title":None},fmt_key="mp4",message_thread_id=message_thread_id)
+                    await send_downloaded_media(bot=bot,chat_id=chat_id,reply_to=reply_to,status_msg_id=None,path={"path":it["path"],"title":None},fmt_key="mp4",message_thread_id=message_thread_id,has_spoiler=has_spoiler or bool(it.get("has_spoiler")))
                 except Exception as e2:
                     log.warning("Batch item send failed | path=%s err=%r",it["path"],e2)
         finally:
@@ -1202,6 +1241,7 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
                 bot=bot, chat_id=chat_id, reply_to=reply_to, status_msg_id=status_msg_id,
                 path={"items":[anim],"title":"Batch Download"},
                 fmt_key="mp4", message_thread_id=message_thread_id,
+                has_spoiler=has_spoiler,
             )
         except Exception as e:
             log.warning("Batch animation send failed | path=%s err=%r",anim.get("path"),e)

@@ -277,7 +277,10 @@ HELP_TEXT = {
         "\n"
         "- `/nsfw enable` — Enable NSFW in the group\n"
         "- `/nsfw disable` — Disable NSFW in the group\n"
-        "- `/nsfw status` — Check NSFW status"
+        "- `/nsfw status` — Check NSFW status\n"
+        "- `/spoiler enable` — Send premium media with spoiler\n"
+        "- `/spoiler disable` — Send premium media normally\n"
+        "- `/spoiler status` — Check spoiler status"
     ),
 
     "wlc": (
