@@ -683,7 +683,14 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
         album_items=[it for it in all_items if it.get("type")!="animation"]
         anim_items=[it for it in all_items if it.get("type")=="animation"]
 
-        # 1. Kirim album foto/video (tanpa animasi GIF)
+        # Video dipisah dari album: kirim album foto dulu (biar jadi rich
+        # slideshow), baru video sebagai pesan sendiri via upload engine
+        # (pyrofork) supaya cepat. Berlaku untuk silent mode maupun tidak.
+        video_items=[it for it in album_items if (it.get("type") or "").lower()=="video"]
+        if video_items:
+            album_items=[it for it in album_items if (it.get("type") or "").lower()!="video"]
+
+        # 1. Kirim album foto (tanpa animasi GIF / video)
         if len(album_items) == 1:
             it = album_items[0]
             single_payload = {
@@ -698,7 +705,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 fmt_key=fmt_key, message_thread_id=message_thread_id,
             )
         elif len(album_items) > 1:
-            path["items"]=album_items
+            path={**path, "items": album_items}
             first=album_items[0]
             first_path=first.get("path")
             first_type=str(first.get("type") or "").strip().lower()
@@ -715,6 +722,23 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                     await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=path,message_thread_id=message_thread_id)
             finally:
                 await _cleanup_album_files(album_items)
+
+        # 1b. Kirim video terpisah (setelah album)
+        for it in video_items:
+            video_path=it.get("path")
+            if not video_path or not os.path.exists(video_path):
+                continue
+            try:
+                await send_downloaded_media(
+                    bot=bot, chat_id=chat_id, reply_to=reply_to,
+                    status_msg_id=status_msg_id,
+                    path={"path": video_path, "title": path.get("title"),
+                          "thumb": it.get("thumb"), "meta": it.get("meta")},
+                    fmt_key="video", message_thread_id=message_thread_id,
+                )
+            except Exception as e:
+                log.warning("Separate video send failed | path=%s err=%r",video_path,e)
+                await _delete_file(video_path,"separate video")
 
         # 2. Kirim animasi GIF sebagai pesan animasi terpisah
         if anim_items:
