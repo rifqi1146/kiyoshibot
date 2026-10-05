@@ -206,6 +206,7 @@ def _platform_label(url:str)->str:
         (("asiangirl.porn",),"AsianGirlPorn"),
         (("bdsmlust.com",),"BDSMLust"),
         (("heavy-r.com",),"HeavyR"),
+        (("cosplaytele.com",),"Cosplaytele"),
         ((
             "bokepcrot.*",
             "lendirqu.*",

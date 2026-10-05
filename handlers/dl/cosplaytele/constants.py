@@ -1,0 +1,19 @@
+import os
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+_HTTP_TIMEOUT = 45
+COSPLAYTELE_PROGRESS_INTERVAL = float(os.getenv("COSPLAYTELE_PROGRESS_INTERVAL", "3"))
+COSPLAYTELE_ALBUM_CONCURRENCY = int(os.getenv("COSPLAYTELE_ALBUM_CONCURRENCY", "6"))
+
+_IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+
+# Cossora HLS
+COSSORA_HTTP_TIMEOUT = 30
+COSSORA_SEG_TIMEOUT = 30
+COSSORA_SEG_CONCURRENCY = int(os.getenv("COSSORA_SEG_CONCURRENCY", "12"))
+COSSORA_SEG_RETRIES = 3
+COSSORA_FFMPEG_TIMEOUT = int(os.getenv("COSSORA_FFMPEG_TIMEOUT", "900"))

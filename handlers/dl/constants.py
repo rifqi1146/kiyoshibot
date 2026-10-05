@@ -71,6 +71,7 @@ PREMIUM_ONLY_DOMAINS = {
     "asiangirl.porn",
     "bdsmlust.com",
     "heavy-r.com",
+    "cosplaytele.com",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -155,4 +156,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "asiangirl.porn",
     "bdsmlust.com",
     "heavy-r.com",
+    "cosplaytele.com",
 }
