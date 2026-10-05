@@ -149,8 +149,9 @@ def _mirror_urls(raw_url: str) -> list:
 def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
     """-> (kind, media_url, thumb) dengan kind di {'hls','mp4'}, atau (None,None,None)."""
     
-    # Bypass DDoS-Guard untuk voe.sx dengan melakukan rewrite ke domain clone-nya.
-    embed_url = re.sub(r'https?://(?:www\.)?voe\.sx/e/', 'https://jeremyparticipantanything.com/e/', embed_url)
+    # VOE rotates its player domain via a literal JavaScript redirect.
+    # Do not pin an obsolete clone before fetching the canonical embed.
+    is_voe = _host(embed_url) in ('voe.sx', 'www.voe.sx')
 
     text = None
     for attempt in range(2):
@@ -164,6 +165,28 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
             )
             if r.status_code == 200:
                 text = r.text
+                # voe.sx first returns a tiny JS page that redirects to a current
+                # player mirror (the host rotates; e.g. teresapoliticallearn.com).
+                if is_voe:
+                    redirect = re.search(
+                        r"window\.location\.href\s*=\s*['\"](https?://[^'\"]+/e/[^'\"?#]+)",
+                        text,
+                        re.I,
+                    )
+                    if redirect:
+                        player_url = redirect.group(1)
+                        player = curl_requests.get(
+                            player_url,
+                            headers={"User-Agent": UA, "Referer": referer or embed_url},
+                            impersonate="chrome",
+                            timeout=_HTTP_TIMEOUT,
+                            allow_redirects=True,
+                        )
+                        if player.status_code == 200:
+                            text = player.text
+                            embed_url = player_url
+                        else:
+                            _dbg("VOE mirror non-200 | %s %s", player_url, player.status_code)
                 break
             _dbg("resolve non-200 | %s %s", embed_url, r.status_code)
         except Exception as e:
