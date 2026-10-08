@@ -183,7 +183,7 @@ def resolve_videos(videos: list) -> list:
 def pick_best_video(videos: list) -> dict:
     """Pilih video terbaik: resolusi tertinggi dulu, lalu label varian."""
     if not videos:
-        raise RuntimeError("Tidak ada video di post ini")
+        raise RuntimeError("No video in this post")
     if len(videos) == 1:
         return videos[0]
     ranked = sorted(videos, key=lambda v: _quality_rank(v.get("name", "")), reverse=True)
@@ -268,7 +268,7 @@ def _scrape_html(url: str, text: str) -> dict:
 def _scrape_api(url: str) -> dict:
     m = re.search(r"/([^/]+)/user/([^/]+)/post/([^/?#]+)", urlparse(url).path)
     if not m:
-        raise RuntimeError("URL post Pawchive tidak dikenali")
+        raise RuntimeError("Unrecognized Pawchive post URL")
     service, user, post = m.group(1), m.group(2), m.group(3)
     api = f"https://pawchive.pw/api/v1/{service}/user/{user}/post/{post}"
     r = curl_requests.get(
@@ -309,7 +309,7 @@ def scrape_post(url: str) -> dict:
         raise RuntimeError(f"HTTP {r.status_code} saat mengambil halaman Pawchive")
     result = _scrape_html(url, r.text)
     if not result["videos"] and not result["images"]:
-        log.warning("Pawchive HTML tidak menemukan media, fallback ke API | url=%s", url)
+        log.warning("Pawchive HTML found no media, falling back to API | url=%s", url)
         api_result = _scrape_api(url)
         if not api_result["title"]:
             api_result["title"] = result["title"]
@@ -356,7 +356,7 @@ async def download_to_file(
             url, headers=headers, impersonate="chrome", timeout=_HTTP_TIMEOUT, stream=True,
         )
         if resp.status_code != 200:
-            raise RuntimeError(f"Gagal mengunduh Pawchive ({resp.status_code})")
+            raise RuntimeError(f"Failed to download Pawchive ({resp.status_code})")
         return resp
 
     resp = await asyncio.to_thread(_get)
@@ -415,7 +415,7 @@ async def download_to_file(
             write_task.cancel()
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError("Gagal mengunduh file Pawchive (kosong)")
+        raise RuntimeError("Failed to download Pawchive file (empty)")
 
     downloaded = os.path.getsize(out_path)
     stats.sample(downloaded)
@@ -461,7 +461,7 @@ def extract_audio(src_path: str, out_path: str) -> str:
     ]
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
     return out_path
 
 
@@ -489,7 +489,7 @@ async def download_album(medias_list: list, title: str, bot, chat_id, status_msg
     medias = [m for m in (medias_list or []) if m.get("url")]
     total = len(medias)
     if not total:
-        raise RuntimeError("Tidak ada media yang bisa diunduh di post ini")
+        raise RuntimeError("No media to download in this post")
 
     interval = _album_interval(total)
     escaped_title = html_mod.escape(sanitize_filename(title, 80))
@@ -552,6 +552,6 @@ async def download_album(medias_list: list, title: str, bot, chat_id, status_msg
     await asyncio.gather(*(_one(idx, item) for idx, item in enumerate(medias, 1)))
 
     if not items:
-        raise RuntimeError(f"Semua media Pawchive gagal diunduh ({failures}/{total} gagal)")
+        raise RuntimeError(f"All Pawchive media failed to download ({failures}/{total} failed)")
 
     return {"items": items, "title": sanitize_filename(title or "Pawchive", 100)}

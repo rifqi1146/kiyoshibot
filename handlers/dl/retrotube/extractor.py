@@ -190,7 +190,7 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
                 break
             _dbg("resolve non-200 | %s %s", embed_url, r.status_code)
         except Exception as e:
-            _dbg("resolve fetch gagal (attempt %s) | %s %r", attempt + 1, embed_url, e)
+            _dbg("resolve fetch failed (attempt %s) | %s %r", attempt + 1, embed_url, e)
             time.sleep(1.0)
     if not text:
         return None, None, None
@@ -200,7 +200,7 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         try:
             text = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"))
         except Exception as e:
-            _dbg("unpack gagal | %s %r", embed_url, e)
+            _dbg("unpack failed | %s %r", embed_url, e)
 
     # VOE / kloningnya (miaw.lol): config JSON ter-obfuscate -> m3u8 (source) / mp4.
     voe_hls, voe_mp4 = _deobfuscate_voe_json(text)

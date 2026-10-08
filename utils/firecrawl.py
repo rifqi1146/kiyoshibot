@@ -36,7 +36,7 @@ def _headers() -> dict:
 
 def _require_key():
     if not _key():
-        raise RuntimeError("FIRECRAWL_API_KEY belum diset di env.")
+        raise RuntimeError("FIRECRAWL_API_KEY is not set in env.")
 
 
 def _pick_results(data: dict) -> list[dict]:
@@ -94,7 +94,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
         data = json.loads(raw)
     except ValueError:
         text = raw.strip()
-        return text[:6000] if text else "Tidak ada hasil pencarian."
+        return text[:6000] if text else "No search results."
 
     results = _pick_results(data)
     lines = [f"### Hasil pencarian: {query}"]
@@ -117,7 +117,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
         lines.append(block)
 
     if len(lines) == 1:
-        return "Tidak ada hasil pencarian."
+        return "No search results."
     text = "\n".join(lines)
     return text[:9000]
 

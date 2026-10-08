@@ -12,38 +12,38 @@ BENEFITS = (
     (
         "Downloader",
         (
-            ("/dl", "Unduhan tanpa limit tiga proses per menit."),
-            ("/dl", "Resolusi video Up to 1080p+."),
+            ("/dl", "Unlimited downloads (bypasses 3 processes per minute)."),
+            ("/dl", "Video resolution up to 1080p+."),
         ),
     ),
     (
         "Search & Download",
         (
-            ("/nekopoi", "Cari dan download konten dari Nekopoi."),
-            ("/punish", "Cari dan download konten dari PunishWorld."),
-            ("/lendirqu", "Cari dan download konten dari LendirQu."),
-            ("/becekku", "Cari dan download konten dari Becekku."),
-            ("/simontok", "Cari dan download konten dari Simontok."),
+            ("/nekopoi", "Search and download from Nekopoi."),
+            ("/punish", "Search and download from PunishWorld."),
+            ("/lendirqu", "Search and download from LendirQu."),
+            ("/becekku", "Search and download from Becekku."),
+            ("/simontok", "Search and download from Simontok."),
         ),
     ),
-    ("Manga", (("/manga nh", "Membaca manga NH / nhentai."),)),
-    ("Pengaturan", (("/settings", "Resolusi YouTube Up to 1080p."),)),
-    ("Lainnya", (("/mode", "Ganti persona Caca."),)),
+    ("Manga", (("/manga nh", "Read NH / nhentai manga."),)),
+    ("Settings", (("/settings", "YouTube resolution up to 1080p."),)),
+    ("Other", (("/mode", "Change Caca persona."),)),
 )
 
 NOTE_NSFW = (
-    "Website Premium hanya dapat dipakai di chat pribadi atau grup "
-    "yang telah mengaktifkan NSFW."
+    "Premium websites can only be used in private chat or groups "
+    "with NSFW enabled."
 )
 
 
 def _display_domains(domains) -> list[str]:
-    """Domain yang ditampilkan; wildcard tetap berlaku di router, tetapi disembunyikan dari daftar."""
+    """Displayed domains; wildcards still apply in the router but are hidden from the list."""
     return [domain for domain in sorted(set(domains)) if "*" not in domain]
 
 
 def _domain_rows(domains: list[str]) -> str:
-    """Render tabel domain dua kolom agar daftar panjang tetap ringkas."""
+    """Render a two-column domain table to keep long lists compact."""
     rows = []
     for index in range(0, len(domains), 2):
         left = escape(domains[index])
@@ -53,13 +53,13 @@ def _domain_rows(domains: list[str]) -> str:
 
 
 def _build_rich_message() -> dict:
-    """Bangun InputRichMessage memakai Rich HTML Bot API 10.3."""
+    """Build an InputRichMessage using Rich HTML from Bot API 10.3."""
     plain = _display_domains(PREMIUM_ONLY_DOMAINS)
     total = len(plain)
 
     sections = [
         "<h1>Premium Benefits</h1>",
-        "<p>Akses yang tersedia untuk <b>Donatur 😋</b>.</p>",
+        "<p>Benefits available for <b>Donors 😋</b>.</p>",
         "<hr/>",
     ]
 
@@ -75,28 +75,28 @@ def _build_rich_message() -> dict:
     sections.extend(
         (
             "<hr/>",
-            "<h3>Catatan</h3>",
+            "<h3>Notes</h3>",
             f"<aside>{escape(NOTE_NSFW)}</aside>",
             "<details>",
-            f"<summary><b>Website Premium ({total} domain)</b></summary>",
-            "<p>Domain berikut memerlukan Qris jika digunakan lewat downloader.</p>",
+            f"<summary><b>Premium Websites ({total} domains)</b></summary>",
+            "<p>The following domains require Qris when used through the downloader.</p>",
             "<table bordered striped compact>",
             "<tr><th>Domain</th><th>Domain</th></tr>",
             _domain_rows(plain),
             "</table>",
             "</details>",
-            "<footer>Dapatkan akses Premium dengan donate.</footer>",
+            "<footer>Get Premium access by donating.</footer>",
         )
     )
     return {"html": "".join(sections)}
 
 
 def _build_plain_text() -> str:
-    """Versi HTML biasa sebagai fallback server Bot API lama."""
+    """Plain HTML version as fallback for older Bot API servers."""
     plain = _display_domains(PREMIUM_ONLY_DOMAINS)
     total = len(plain)
 
-    parts = ["<b>Premium Benefits</b>", "", "Akses yang tersedia untuk <b>Donatur 😋</b>."]
+    parts = ["<b>Premium Benefits</b>", "", "Benefits available for <b>Donors 😋</b>."]
     for heading, items in BENEFITS:
         parts.append("")
         parts.append(f"<b>{escape(heading)}</b>")
@@ -107,17 +107,17 @@ def _build_plain_text() -> str:
             "",
             escape(NOTE_NSFW),
             "",
-            f"<b>Website Premium ({total} domain)</b>",
+            f"<b>Premium Websites ({total} domains)</b>",
             ", ".join(f"<code>{escape(domain)}</code>" for domain in plain),
             "",
-            "Dapatkan akses Premium dengan donate.",
+            "Get Premium access by donating.",
         )
     )
     return "\n".join(parts)
 
 
 async def premiumbenefit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kirim daftar benefit Premium lewat endpoint Rich Message."""
+    """Send the Premium benefits list via the Rich Message endpoint."""
     message = update.effective_message
     if message is None:
         return
@@ -134,10 +134,10 @@ async def premiumbenefit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         return await context.bot.do_api_request("sendRichMessage", payload)
     except Exception as e:
-        log.debug("Rich Message tidak didukung, fallback HTML | err=%r", e)
+        log.debug("Rich Message not supported, falling back to HTML | err=%r", e)
 
     try:
         return await message.reply_text(_build_plain_text(), parse_mode="HTML")
     except Exception as e:
-        log.debug("Gagal mengirim fallback premiumbenefit | err=%r", e)
+        log.debug("Failed to send premiumbenefit fallback | err=%r", e)
         return None

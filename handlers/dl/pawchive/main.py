@@ -127,7 +127,7 @@ async def pawchive_download(
             )
 
         if not videos:
-            raise RuntimeError("Tidak ada media yang bisa diunduh di post ini")
+            raise RuntimeError("No media to download in this post")
 
         item = ext.pick_best_video(videos)
         url = item["url"]

@@ -29,11 +29,11 @@ async def _send_next_asupan(bot, keyword):
         except Exception as e:
             last_err = e
             log.warning(
-                "[ASUPAN] Kirim by URL gagal (%r), skip video & coba berikutnya (%d/%d)",
+                "[ASUPAN] Send-by-URL failed (%r), skipping video & trying next (%d/%d)",
                 e, attempt, SEND_ATTEMPTS,
             )
 
-    raise last_err or RuntimeError("Gagal mengirim asupan")
+    raise last_err or RuntimeError("Failed to send asupan")
 
 
 async def warm_keyword_asupan_cache(bot, keyword: str):
@@ -53,7 +53,7 @@ async def warm_keyword_asupan_cache(bot, keyword: str):
     try:
         while len(cache) < ASUPAN_PREFETCH_SIZE:
             if getattr(state, "ASUPAN_ACTIVE_USERS", 0) > 0:
-                log.info("[ASUPAN KEYWORD PREFETCH] lewati warm %r, ada user aktif", kw)
+                log.info("[ASUPAN KEYWORD PREFETCH] skipping warm %r, active user present", kw)
                 break
             try:
                 msg = await _send_next_asupan(bot, kw)
@@ -74,7 +74,7 @@ async def warm_asupan_cache(bot):
     try:
         while len(state.ASUPAN_CACHE) < ASUPAN_PREFETCH_SIZE:
             if getattr(state, "ASUPAN_ACTIVE_USERS", 0) > 0:
-                log.info("[ASUPAN PREFETCH] lewati warm default, ada user aktif")
+                log.info("[ASUPAN PREFETCH] skipping default warm, active user present")
                 break
             try:
                 msg = await _send_next_asupan(bot, None)

@@ -69,7 +69,7 @@ def _fetch_segments(master_url: str, referer: str) -> list:
             except Exception as e:
                 last_err = repr(e)
             time.sleep(1.0)
-        raise RuntimeError(f"Gagal mengambil playlist setelah 3 percobaan ({last_err})")
+        raise RuntimeError(f"Failed to fetch playlist after 3 attempts ({last_err})")
 
     master_text = _get_playlist(master_url)
 
@@ -121,7 +121,7 @@ def _fetch_segments(master_url: str, referer: str) -> list:
         else:
             urls.append(urljoin(base, ln))
     if not urls:
-        raise RuntimeError("Tidak ada segmen video di playlist")
+        raise RuntimeError("No video segments in playlist")
     _dbg("segments found | count=%s", len(urls))
     return urls
 
@@ -140,7 +140,7 @@ def _download_one_segment(url: str, referer: str, out_path: str) -> int:
         except Exception as e:
             last_err = repr(e)
         time.sleep(0.6 * (attempt + 1))
-    raise RuntimeError(f"Gagal mengunduh segmen ({last_err})")
+    raise RuntimeError(f"Failed to download segment ({last_err})")
 
 
 async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
@@ -245,7 +245,7 @@ def _concat(segment_files: list, out_path: str, work_dir: str, audio_only: bool 
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg timeout setelah {_FFMPEG_TIMEOUT}s") from e
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
     return out_path
 
 
@@ -256,7 +256,7 @@ def _extract_audio(src_path: str, out_path: str) -> str:
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg timeout setelah {_FFMPEG_TIMEOUT}s") from e
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
     return out_path
 
 
@@ -275,14 +275,14 @@ def _download_direct(url: str, referer: str, out_path: str) -> int:
                 url2 = "https://drive.google.com" + m.group(1).replace("&amp;", "&")
                 r = curl_requests.get(url2, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT, stream=True)
                 if r.status_code != 200 or not r.content:
-                    raise RuntimeError(f"Gagal mengunduh GDrive setelah konfirmasi ({r.status_code})")
+                    raise RuntimeError(f"Failed to download GDrive after confirmation ({r.status_code})")
             else:
                 if "quota" in text.lower() or "limit" in text.lower():
                     raise RuntimeError("Limit kuota Google Drive tercapai")
-                raise RuntimeError("Gagal mem-bypass konfirmasi Google Drive")
+                raise RuntimeError("Failed to bypass Google Drive confirmation")
 
     if r.status_code != 200:
-        raise RuntimeError(f"Gagal mengunduh file ({r.status_code})")
+        raise RuntimeError(f"Failed to download file ({r.status_code})")
     
     total = 0
     with open(out_path, "wb") as f:
@@ -293,7 +293,7 @@ def _download_direct(url: str, referer: str, out_path: str) -> int:
                 if total > MAX_TG_SIZE:
                     raise FileSizeLimitExceeded("File melebihi batas 2GB")
     if total <= 0:
-        raise RuntimeError(f"Gagal mengunduh file (kosong)")
+        raise RuntimeError(f"Failed to download file (empty)")
     return total
 
 
@@ -330,7 +330,7 @@ def _download_gdrive(gid: str, out_path: str) -> int:
                     if os.path.getsize(out_path) > MAX_TG_SIZE:
                         raise FileSizeLimitExceeded("File melebihi batas 2GB")
                     return os.path.getsize(out_path)
-                raise RuntimeError("Gagal mengunduh Google Drive (konfirmasi gagal)")
+                raise RuntimeError("Failed to download Google Drive (confirmation failed)")
         else:
             r = curl_requests.get(
                 "https://drive.usercontent.google.com/download",
@@ -340,7 +340,7 @@ def _download_gdrive(gid: str, out_path: str) -> int:
             ct = (r.headers.get("content-type") or "").lower()
 
     if r.status_code != 200 or "video" not in ct:
-        raise RuntimeError(f"Google Drive tidak mengembalikan video ({r.status_code}, {ct or 'no ct'})")
+        raise RuntimeError(f"Google Drive did not return a video ({r.status_code}, {ct or 'no ct'})")
 
     total = 0
     with open(out_path, "wb") as f:
@@ -365,5 +365,5 @@ def _download_thumb(thumb_url: str, out_path: str):
                 f.write(r.content)
             return out_path
     except Exception as e:
-        _dbg("thumb gagal | %r", e)
+        _dbg("thumb failed | %r", e)
     return None

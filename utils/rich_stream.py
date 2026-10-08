@@ -78,7 +78,7 @@ async def stream_to_draft(
             message_thread_id, can_stop, is_rtl,
         )
     except Exception as e:
-        raise RuntimeError(f"Rich draft tidak didukung di chat ini: {e}")
+        raise RuntimeError(f"Rich draft not supported in this chat: {e}")
 
     acc = ""
     last_sent = time.monotonic()
@@ -274,7 +274,7 @@ async def send_rich_slideshow(
         if not attach:
             res = await bot.do_api_request("sendRichMessage", payload)
             if isinstance(res, dict) and res.get("error_code"):
-                raise RuntimeError(res.get("description") or "sendRichMessage gagal")
+                raise RuntimeError(res.get("description") or "sendRichMessage failed")
             return res
         import aiohttp
 
@@ -294,7 +294,7 @@ async def send_rich_slideshow(
         async with session.post(url, data=form) as resp:
             data = await resp.json(content_type=None)
         if not data.get("ok"):
-            raise RuntimeError(data.get("description") or "sendRichMessage gagal")
+            raise RuntimeError(data.get("description") or "sendRichMessage failed")
         return data.get("result")
 
     # Coba details block dulu (Bot API >= 10.3); kalau server lama menolak,

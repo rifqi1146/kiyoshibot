@@ -178,7 +178,7 @@ def _fetch_embed_page(vid: str, session: curl_requests.Session) -> dict | None:
     real_id = hid_m.group(1) if hid_m else None
     if real_id != vid:
         log.info(
-            "HeavyR embed ID tidak cocok (video dihapus) | vid=%s real=%s",
+            "HeavyR embed ID mismatch (video deleted) | vid=%s real=%s",
             vid, real_id,
         )
         return None
@@ -212,7 +212,7 @@ def _resolve_hls(playlist_url: str, session: curl_requests.Session) -> tuple[str
 
     if _KEY_RE.search(text):
         raise RuntimeError(
-            "Playlist HLS Heavy-R terenkripsi (#EXT-X-KEY) — jalur ini belum didukung"
+            "Heavy-R HLS playlist is encrypted (#EXT-X-KEY) — this path is not supported yet"
         )
 
     # Master playlist -> ikuti varian pertama (belum teramati di produksi,
@@ -284,7 +284,7 @@ def scrape_post(url: str) -> dict:
     """Scrape metadata + download URL dari post heavy-r.com / embed URL."""
     vid = _extract_video_id(url)
     if not vid:
-        raise RuntimeError(f"Bukan URL video Heavy-R yang valid: {url}")
+        raise RuntimeError(f"Not a valid Heavy-R video URL: {url}")
 
     session = curl_requests.Session(
         impersonate="chrome", headers={"User-Agent": UA}
@@ -336,7 +336,7 @@ def scrape_post(url: str) -> dict:
 
     if not source:
         raise FileNotFoundError(
-            f"Heavy-R: video {vid} tidak ditemukan atau host tidak didukung"
+            f"Heavy-R: video {vid} not found or unsupported host"
         )
 
     # 4. Ukuran (HLS sudah dihitung dari playlist).
@@ -471,7 +471,7 @@ async def download_video(
     post = await asyncio.to_thread(scrape_post, url)
     dl_url = post.get("download_url") or ""
     if not dl_url:
-        raise RuntimeError("Gagal mendapatkan link download Heavy-R.")
+        raise RuntimeError("Failed to get Heavy-R download link.")
     referer = post.get("referer") or HEAVYR_REFERER
 
     total = int(post.get("filesize") or 0)

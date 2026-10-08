@@ -291,11 +291,11 @@ async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = reply.document if reply else None
 
     if not doc:
-        return await msg.reply_text("Reply ke file .zip dengan /restore")
+        return await msg.reply_text("Reply to a .zip file with /restore")
 
     file_name = (doc.file_name or "").lower()
     if not file_name.endswith(".zip"):
-        return await msg.reply_text("File harus archive .zip")
+        return await msg.reply_text("File must be a .zip archive")
 
     status = await msg.reply_text("Downloading and restoring...")
     zip_path = None

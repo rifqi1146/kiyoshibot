@@ -55,25 +55,25 @@ async def ai_reply_router(update, context):
 
     if await groq_db_has_last_message_id(reply_mid):
         return await msg.reply_text(
-            "😒 Lu siapa?\n"
-            "Gue belum ngobrol sama lu.\n"
-            "Ketik /groq dulu.",
+            "😒 Who are you?\n"
+            "I haven't talked to you yet.\n"
+            "Use /groq first.",
             parse_mode="HTML"
         )
 
     if await ai_db_has_last_message_id(reply_mid):
         return await msg.reply_text(
-            "😒 Lu siapa?\n"
-            "Gue belum ngobrol sama lu.\n"
-            "Ketik /ask dulu.",
+            "😒 Who are you?\n"
+            "I haven't talked to you yet.\n"
+            "Use /ask first.",
             parse_mode="HTML"
         )
 
     if await meta_db_has_last_message_id(reply_mid):
         return await msg.reply_text(
-            "😒 Lu siapa?\n"
-            "Gue belum ngobrol sama lu.\n"
-            "Ketik /caca dulu.",
+            "😒 Who are you?\n"
+            "I haven't talked to you yet.\n"
+            "Use /caca first.",
             parse_mode="HTML"
         )
     return

@@ -7,7 +7,7 @@ from utils.text import sanitize_ai_output
 
 
 async def _send_help(bot, chat, text_md: str, keyboard, reply_to=None):
-    """Kirim help: coba rich message dulu (DM & supergroup), fallback HTML."""
+    """Send help: try rich message first (DM & supergroup), fallback to HTML."""
     try:
         return await send_rich_message(
             bot, chat.id, text_md, reply_markup=keyboard,
@@ -26,7 +26,7 @@ async def _send_help(bot, chat, text_md: str, keyboard, reply_to=None):
 
 
 async def _edit_help(q, text_md: str, keyboard):
-    """Update menu: pertahankan rich message, fallback HTML kalau tak didukung."""
+    """Update menu: keep rich message, fallback to HTML if unsupported."""
     msg = q.message
     if is_rich_message(msg):
         try:
@@ -115,7 +115,7 @@ HELP_TEXT = {
     "menu": (
         "### 📖 Help Menu\n"
         "\n"
-        "Pilih kategori lewat tombol di bawah 👇\n"
+        "Choose a category using the buttons below 👇\n"
     ),
 
     "features": (
@@ -139,9 +139,9 @@ HELP_TEXT = {
         "- `/nekopoi` — Search & download from Nekopoi\n"
         "- `/nobg` — Remove image background\n"
         "- `/premiumbenefit` — List commands & features that require premium\n"
-        "- `/q [N] [r] [color]` — Quote sticker; `N` pesan ke depan, `-N` ke belakang, `r` tampilkan reply, `color` nama/hex/gradient\n"
-        "- `/qi [N] [r] [color]` — Quote bergambar wallpaper\n"
-        "- `/qs [N] [r] [color]` — Quote buat stories (9:16)\n"
+        "- `/q [N] [r] [color]` — Quote sticker; `N` next msgs, `-N` previous, `r` show reply, `color` name/hex/gradient\n"
+        "- `/qi [N] [r] [color]` — Quote wallpaper image\n"
+        "- `/qs [N] [r] [color]` — Quote for stories (9:16)\n"
         "- `/quoteanime` — Random anime quotes\n"
         "- `/reminder` — Schedule a reminder\n"
         "- `/resi` — Track packages, Indonesia expedition only\n"
@@ -155,7 +155,7 @@ HELP_TEXT = {
         "- `/waifu` — Get a waifu\n"
         "- `/weather` — Get weather information\n"
         "\n"
-        "> Tip: ketik command-nya aja langsung, tanpa perlu argumen tambahan 😉"
+        "> Tip: type the command directly, no extra arguments needed 😉"
     ),
 
     "ai": (
@@ -165,7 +165,7 @@ HELP_TEXT = {
         "- `/groq` — Chat with Groq\n"
         "- `/caca` — Caca Chat Bot\n"
         "\n"
-        "> Balas pesan bot dengan pertanyaan buat lanjutin obrolan."
+        "> Reply to the bot's message to continue the conversation."
     ),
 
     "utils": (
@@ -320,7 +320,7 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = int(parts[1])
     except Exception:
         try:
-            await q.answer("Menu help tidak valid.", show_alert=True)
+            await q.answer("Invalid help menu.", show_alert=True)
         except Exception:
             pass
         return

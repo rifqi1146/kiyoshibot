@@ -1071,7 +1071,7 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
             log.warning("Step 1 Failed: Internal scraper broken | err=%r", e)
             
     if not urls:
-        log.info("Step 2: Scraper internal gagal, mencoba Neoxr API...")
+        log.info("Step 2: Internal scraper failed, trying Neoxr API...")
         neoxr_res = await _fetch_neoxr_api(url)
         if neoxr_res.get("status") and neoxr_res.get("urls"):
             urls = neoxr_res.get("urls")

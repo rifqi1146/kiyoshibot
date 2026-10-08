@@ -522,7 +522,7 @@ async def _cleanup_single_file(path:str|None):
 async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thread_id=None,has_spoiler=False):
     items=result.get("items") or []
     if not items:
-        raise RuntimeError("Album result kosong")
+        raise RuntimeError("Album result is empty")
     if has_spoiler or any(bool(item.get("has_spoiler")) for item in items):
         log.info(
             "Album sent with spoiler | chat_id=%s items=%s",
@@ -819,7 +819,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
     file_path=meta.get("path")
     original_title=(meta.get("title") or "").strip()
     if not file_path or not os.path.exists(file_path):
-        raise RuntimeError("Download gagal")
+        raise RuntimeError("Download failed")
     if os.path.getsize(file_path)>MAX_TG_SIZE:
         raise RuntimeError("File exceeds 2GB. Please choose a lower resolution.")
     bot_name=await _get_bot_name(bot)
@@ -925,7 +925,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 _safe_close(thumb_fh,"thumbnail",chat_id)
                 await _delete_file(thumb_path,"thumbnail")
             return
-        raise RuntimeError("Media tidak didukung")
+        raise RuntimeError("Media not supported")
     finally:
         if fixed_audio:
             await _delete_file(fixed_audio,"temp audio")

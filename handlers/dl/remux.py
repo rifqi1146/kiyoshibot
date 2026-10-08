@@ -278,12 +278,12 @@ async def download_hls_aes_ffmpeg(
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        raise RuntimeError(f"ffmpeg AES HLS timeout setelah {FFMPEG_REMUX_TIMEOUT}s")
+        raise RuntimeError(f"ffmpeg AES HLS timeout after {FFMPEG_REMUX_TIMEOUT}s")
     if proc.returncode != 0:
         err_msg = (stderr or b"").decode(errors="replace").strip()[-400:]
-        raise RuntimeError(f"ffmpeg AES HLS gagal: {err_msg}")
+        raise RuntimeError(f"ffmpeg AES HLS failed: {err_msg}")
     if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError("ffmpeg AES HLS menghasilkan file kosong")
+        raise RuntimeError("ffmpeg AES HLS produced an empty file")
     log.info("HLS AES-128 done | size=%.2fMB", os.path.getsize(out_path) / 1024 / 1024)
     return out_path
 

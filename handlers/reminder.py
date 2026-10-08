@@ -46,9 +46,9 @@ async def reminder_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     jobs = context.application.job_queue.get_jobs_by_name(q.data)
 
     if not jobs:
-        await q.answer("Reminder sudah tidak aktif", show_alert=True)
+        await q.answer("Reminder is no longer active", show_alert=True)
         try:
-            await q.message.edit_text("Reminder sudah tidak aktif")
+            await q.message.edit_text("Reminder is no longer active")
         except Exception:
             pass
         return
@@ -57,14 +57,14 @@ async def reminder_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     owner_id = job.data["user_id"]
 
     if q.from_user.id != owner_id:
-        await q.answer("Bukan reminder lu tolol", show_alert=True)
+        await q.answer("This is not your reminder, idiot", show_alert=True)
         return
 
-    await q.answer("Reminder dibatalkan")
+    await q.answer("Reminder cancelled")
 
     job.schedule_removal()
     try:
-        await q.message.edit_text("Reminder dibatalkan")
+        await q.message.edit_text("Reminder cancelled")
     except Exception:
         pass
 
@@ -76,16 +76,16 @@ async def reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if len(context.args) < 2:
         return await msg.reply_text(
-            "Format salah\n\n"
-            "Contoh:\n"
-            "/reminder 18.30 main ml @user1"
+            "Wrong format\n\n"
+            "Example:\n"
+            "/reminder 18.30 play ml @user1"
         )
 
     time_str = context.args[0]
     target_time = parse_time_wib(time_str)
 
     if not target_time:
-        return await msg.reply_text("Format jam harus HH.MM (WIB)")
+        return await msg.reply_text("Time format must be HH.MM (WIB)")
 
     text = " ".join(context.args[1:])
     thread_id = msg.message_thread_id
@@ -96,7 +96,7 @@ async def reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reminder_text = (
         f"⏰ <b>REMINDER</b>\n\n"
         f"{text}\n\n"
-        f"<i>Waktu: {time_str} WIB</i>"
+        f"<i>Time: {time_str} WIB</i>"
     )
 
     context.application.job_queue.run_once(
@@ -119,7 +119,7 @@ async def reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await msg.reply_text(
-        f"Reminder diset jam <b>{time_str} WIB</b>",
+        f"Reminder set for <b>{time_str} WIB</b>",
         parse_mode="HTML",
         reply_markup=keyboard
     )

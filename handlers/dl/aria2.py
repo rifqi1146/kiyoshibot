@@ -49,7 +49,7 @@ def _resolve_aria2() -> str | None:
     if found:
         log.info("aria2c resolved | path=%s", found)
     else:
-        log.warning("aria2c tidak ditemukan; unduhan akan pakai streaming")
+        log.warning("aria2c not found; download will use streaming")
     return found or None
 
 
@@ -187,7 +187,7 @@ async def download_aria2(
 
     if rc != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
         err = stderr_b.decode("utf-8", errors="ignore").strip()
-        log.warning("aria2c gagal, fallback ke streaming | code=%s err=%s", rc, err[:200])
+        log.warning("aria2c failed, falling back to streaming | code=%s err=%s", rc, err[:200])
         # Bersihkan file parsial + control file (.aria2) supaya fallback streaming
         # mulai dari awal dengan file kosong (bukan menimpa sisa parsial).
         for p in (out_path, out_path + ".aria2"):

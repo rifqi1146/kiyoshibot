@@ -33,7 +33,7 @@ def _headers() -> dict:
 
 def _require_key():
     if not JINA_API_KEY:
-        raise RuntimeError("JINA_API_KEY belum diset di env.")
+        raise RuntimeError("JINA_API_KEY is not set in env.")
 
 
 async def web_search(query: str, max_results: int = 5) -> str:
@@ -59,7 +59,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
     except ValueError:
         # s.jina.ai balas markdown/teks polos kalau Accept tidak dihormati
         text = raw.strip()
-        return text[:6000] if text else "Tidak ada hasil pencarian."
+        return text[:6000] if text else "No search results."
 
     results = data.get("data") or []
     lines = [f"### Hasil pencarian: {query}"]
@@ -72,7 +72,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
         if title and url:
             lines.append(f"- **{title}**\n  {url}\n  {snippet}")
     if len(lines) == 1:
-        return "Tidak ada hasil pencarian."
+        return "No search results."
     return "\n".join(lines)
 
 

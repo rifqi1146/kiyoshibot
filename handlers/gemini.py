@@ -27,7 +27,7 @@ async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_i
             try:
                 await bot.send_chat_action(**kwargs)
             except Exception as api_err:
-                log.warning("Typing action gagal, hapus thread_id. Error: %s", api_err)
+                log.warning("Typing action failed, dropping thread_id. Error: %s", api_err)
                 kwargs.pop("message_thread_id", None)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=4.0)
@@ -73,7 +73,7 @@ async def _reply_thread(bot,msg,text,parse_mode=None):
             except Exception as e2:
                 log.warning("Plain resend failed | chat_id=%s err=%r",msg.chat_id,e2)
                 return None
-        log.warning("Gemini threaded reply failed, retry without reply target | chat_id=%s thread_id=%s err=%r",msg.chat_id,thread_id,e)
+        log.warning("Threaded reply failed, retrying without reply target | chat_id=%s thread_id=%s err=%r",msg.chat_id,thread_id,e)
         kwargs.pop("reply_to_message_id",None)
         return await bot.send_message(**kwargs)
 
@@ -146,7 +146,7 @@ async def ask_ai_gemini_stream(prompt:str,model:str="gemini-2.5-flash"):
     Yield (ok, chunk_or_error, status) - ok=True artinya delta teks.
     """
     if not GEMINI_API_KEY:
-        yield False,"API key Gemini belum diset.",None
+        yield False,"Gemini API key is not set.",None
         return
     url=(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
@@ -199,7 +199,7 @@ async def ask_ai_gemini_stream(prompt:str,model:str="gemini-2.5-flash"):
 
 async def ask_ai_gemini(prompt:str,model:str="gemini-2.5-flash")->tuple[bool,str,Optional[int]]:
     if not GEMINI_API_KEY:
-        return False,"API key Gemini belum diset.",None
+        return False,"Gemini API key is not set.",None
     url=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload={
         "system_instruction":{
@@ -232,7 +232,7 @@ async def ask_ai_gemini(prompt:str,model:str="gemini-2.5-flash")->tuple[bool,str
             data=await resp.json()
         candidates=data.get("candidates") or []
         if not candidates:
-            return True,"Model tidak memberikan jawaban.",200
+            return True,"Model did not provide an answer.",200
         parts=candidates[0].get("content",{}).get("parts",[])
         if parts:
             return True,parts[0].get("text","").strip(),200
@@ -263,7 +263,7 @@ async def ai_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             return await _reply_thread(
                 context.bot,
                 msg,
-                "😒 Lu siapa?\nGue belum ngobrol sama lu.\nKetik /ask dulu.",
+                "😒 Who are you?\nI haven't talked to you yet.\nUse /ask first.",
                 parse_mode="HTML",
             )
         prompt=(msg.text or "").strip()
@@ -289,7 +289,7 @@ async def ai_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
                 raise RuntimeError(raw)
         # Grup tidak mendukung draft streaming, tapi output tetap dikirim
         # sebagai Rich Message (fallback otomatis ke HTML kalau ditolak).
-        clean_md=sanitize_markdown(raw) or "Model tidak memberikan jawaban."
+        clean_md=sanitize_markdown(raw) or "Model did not provide an answer."
         chunks=split_message(clean_md,4000)
         await _stop_typing_task(stop,typing)
         last_sent_id=await _send_chunks(context.bot,msg,chunks)
@@ -302,7 +302,7 @@ async def ai_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
         await _reply_thread(context.bot,msg,f"❌ Error: {html.escape(str(e))}",parse_mode="HTML")
 
 async def _send_chunks(bot, msg, chunks: list[str]) -> int | None:
-    """Kirim hasil markdown sebagai Rich Message, fallback ke HTML sendMessage."""
+    """Send markdown output as Rich Message, fallback to HTML sendMessage."""
     from utils.rich_stream import send_rich_message
     if not chunks:
         return None
@@ -349,7 +349,7 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, final_p
             got = True
             yield chunk
         if not got:
-            yield "Model tidak memberikan jawaban."
+            yield "Model did not provide an answer."
 
     try:
         raw = await stream_to_draft(
@@ -365,13 +365,13 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, final_p
             history.append({"user": prompt, "ai": clean_md})
             await gemini_memory.set_history(user_id, history, last_id)
             return
-        clean_md = sanitize_markdown(raw) or "Model tidak memberikan jawaban."
+        clean_md = sanitize_markdown(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         last_id = await _send_chunks(bot, msg, chunks)
         history.append({"user": prompt, "ai": clean_md})
         await gemini_memory.set_history(user_id, history, last_id)
     except RuntimeError as e:
-        if "tidak didukung" in str(e):
+        if "not supported in this chat" in str(e):
             stop = asyncio.Event()
             typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, None))
             try:
@@ -382,7 +382,7 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, final_p
                         raw2 = await ask_groq_text(prompt=prompt, history=groq_history, use_search=False)
                     else:
                         raise RuntimeError(raw2)
-                clean_md = sanitize_markdown(raw2) or "Model tidak memberikan jawaban."
+                clean_md = sanitize_markdown(raw2) or "Model did not provide an answer."
                 chunks = split_message(clean_md, 4000)
                 await _stop_typing_task(stop, typing)
                 last_id = await _send_chunks(bot, msg, chunks)

@@ -57,7 +57,7 @@ async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_i
             try:
                 await bot.send_chat_action(**kwargs)
             except Exception as api_err:
-                log.warning("Typing action gagal, hapus thread_id. Error: %s", api_err)
+                log.warning("Typing action failed, dropping thread_id. Error: %s", api_err)
                 kwargs.pop("message_thread_id", None)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=4.0)
@@ -120,7 +120,7 @@ def _clean_groq_output(raw:str)->str:
     return sanitize_markdown(raw)
 
 async def _send_chunks(bot,msg,chunks:list[str])->Optional[int]:
-    """Kirim hasil markdown sebagai Rich Message, fallback ke HTML sendMessage."""
+    """Send markdown output as Rich Message, fallback to HTML sendMessage."""
     from utils.rich_stream import send_rich_message
     if not chunks:
         return None
@@ -246,7 +246,7 @@ async def ask_groq_stream(prompt:str,history:Optional[list]=None,use_search:bool
                     yield text
 
 async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
-    """Streaming Rich Message draft untuk DM; grup pakai jalur non-streaming."""
+    """Streaming Rich Message draft for DMs; groups use the non-streaming path."""
     from utils.rich_stream import stream_to_draft
     bot=context.bot
     draft_id=msg.message_id
@@ -262,7 +262,7 @@ async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
             got=True
             yield chunk
         if not got:
-            yield "Model tidak memberikan jawaban."
+            yield "Model did not provide an answer."
 
     def save(clean_md,last_id):
         history.extend([
@@ -282,19 +282,19 @@ async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
             last_id=await _send_chunks(bot,msg,[clean_md])
             await save(clean_md,last_id)
             return
-        clean_md=_clean_groq_output(raw) or "Model tidak memberikan jawaban."
+        clean_md=_clean_groq_output(raw) or "Model did not provide an answer."
         chunks=split_message(clean_md,4000)
         last_id=await _send_chunks(bot,msg,chunks)
         await save(clean_md,last_id)
     except RuntimeError as e:
-        if "tidak didukung" not in str(e):
+        if "not supported in this chat" not in str(e):
             raise
         # Server/klien tak punya draft streaming -> fallback non-streaming.
         stop=asyncio.Event()
         typing=asyncio.create_task(_typing_loop(bot,msg.chat_id,stop,None))
         try:
             raw2=await ask_groq_text(prompt=prompt,history=history,use_search=use_search)
-            clean_md=_clean_groq_output(raw2) or "Model tidak memberikan jawaban."
+            clean_md=_clean_groq_output(raw2) or "Model did not provide an answer."
             chunks=split_message(clean_md,4000)
             await _stop_typing_task(stop,typing)
             last_id=await _send_chunks(bot,msg,chunks)
@@ -331,7 +331,7 @@ async def groq_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
         reply_mid=msg.reply_to_message.message_id
         active_mid=await groq_memory.get_last_message_id(user_id)
         if not active_mid or int(active_mid)!=int(reply_mid):
-            return await _reply_thread(context.bot,msg,"😒 Ketik /groq dulu.")
+            return await _reply_thread(context.bot,msg,"😒 Use /groq first.")
         prompt=(msg.text or "").strip()
     if not prompt:
         return
@@ -348,7 +348,7 @@ async def groq_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
         stop=asyncio.Event()
         typing=asyncio.create_task(_typing_loop(context.bot,msg.chat_id,stop,thread_id))
         raw=await ask_groq_text(prompt=prompt,history=history,use_search=use_search)
-        clean_md=_clean_groq_output(raw) or "Model tidak memberikan jawaban."
+        clean_md=_clean_groq_output(raw) or "Model did not provide an answer."
         chunks=split_message(clean_md,4000)
         await _stop_typing_task(stop,typing)
         last_sent_id=await _send_chunks(context.bot,msg,chunks)

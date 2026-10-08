@@ -152,7 +152,7 @@ async def asupan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             context.application.create_task(warm_asupan_cache(context.bot))
     except Exception as e:
-        await msg.edit_text(f"❌ Gagal: {e}")
+        await msg.edit_text(f"❌ Failed: {e}")
 
 async def asupan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -164,14 +164,14 @@ async def asupan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("❌ Invalid callback", show_alert=True)
         return
     if user_id != owner_id:
-        await q.answer("❌ Bukan asupan lu dongo!", show_alert=True)
+        await q.answer("❌ This is not your asupan, idiot!", show_alert=True)
         return
     if user_id not in OWNER_ID:
         now = time.time()
         last = state.ASUPAN_COOLDOWN.get(user_id, 0)
         if now - last < ASUPAN_COOLDOWN_SEC:
             await q.answer(
-                f"Tunggu {ASUPAN_COOLDOWN_SEC} detik sebelum ganti asupan lagi.",
+                f"Wait {ASUPAN_COOLDOWN_SEC}s before switching asupan again.",
                 show_alert=True,
             )
             return
@@ -195,7 +195,7 @@ async def asupan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             context.application.create_task(warm_asupan_cache(context.bot))
     except Exception:
-        await q.answer("❌ Gagal ambil asupan", show_alert=True)
+        await q.answer("❌ Failed to fetch asupan", show_alert=True)
 
 async def send_asupan_once(bot):
     if not LOG_CHAT_ID:

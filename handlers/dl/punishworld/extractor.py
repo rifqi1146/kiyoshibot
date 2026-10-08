@@ -101,7 +101,7 @@ def scrape_post(url: str) -> dict:
     """
     r = curl_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome", timeout=HTTP_TIMEOUT)
     if r.status_code != 200:
-        raise RuntimeError(f"Gagal mengambil halaman PunishWorld ({r.status_code})")
+        raise RuntimeError(f"Failed to fetch PunishWorld page ({r.status_code})")
 
     soup = BeautifulSoup(r.text, "html.parser")
 
@@ -142,7 +142,7 @@ def scrape_post(url: str) -> dict:
     sources.sort(key=lambda s: priority.get(s["label"], 9))
 
     if not sources:
-        raise RuntimeError("Tidak ada video ditemukan di halaman PunishWorld")
+        raise RuntimeError("No video found on PunishWorld page")
 
     log.info("PunishWorld scraped | title=%r sources=%d thumb=%s", title, len(sources), bool(thumb))
     return {"title": title, "thumbnail": thumb, "sources": sources}
@@ -209,7 +209,7 @@ async def download_to_file(
             timeout=HTTP_TIMEOUT, stream=True,
         )
         if resp.status_code not in (200, 206):
-            raise RuntimeError(f"Gagal mengunduh PunishWorld ({resp.status_code})")
+            raise RuntimeError(f"Failed to download PunishWorld ({resp.status_code})")
         return resp
 
     resp = await asyncio.to_thread(_get)
@@ -277,7 +277,7 @@ async def download_to_file(
             write_task.cancel()
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError("Gagal mengunduh file PunishWorld (kosong)")
+        raise RuntimeError("Failed to download PunishWorld file (empty)")
 
     downloaded = os.path.getsize(out_path)
     stats.sample(downloaded)
@@ -321,5 +321,5 @@ def extract_audio(src_path: str, out_path: str) -> str:
     ]
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
     return out_path

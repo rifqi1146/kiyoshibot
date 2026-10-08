@@ -102,7 +102,7 @@ async def darknessporn_download(
     if not target_var and variants:
         target_var = variants[0]
     if not target_var:
-        raise RuntimeError("Format video tidak ditemukan.")
+        raise RuntimeError("Video format not found.")
 
     work_dir = os.path.join(TMP_DIR, f"dp_{uuid.uuid4().hex[:10]}")
     os.makedirs(work_dir, exist_ok=True)
@@ -144,7 +144,7 @@ async def darknessporn_download(
             )
             await proc.wait()
             if proc.returncode != 0 or not os.path.exists(mp3_path):
-                raise RuntimeError("Gagal mengekstrak audio MP3 dari video.")
+                raise RuntimeError("Failed to extract MP3 audio from video.")
             return {
                 "path": mp3_path,
                 "title": title,

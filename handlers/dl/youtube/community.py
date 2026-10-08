@@ -127,12 +127,12 @@ async def download_youtube_post(
             # Fallback inline data
             m = re.search(r'window\["ytInitialData"\]\s*=\s*(\{.*?\});</script>', html_text, re.S)
         if not m:
-            raise RuntimeError("Gagal mengekstrak data YouTube Community Post")
+            raise RuntimeError("Failed to extract YouTube Community Post data")
 
         try:
             data = json.loads(m.group(1))
         except Exception as e:
-            raise RuntimeError(f"Gagal parse JSON YouTube Community Post: {e}")
+            raise RuntimeError(f"Failed to parse YouTube Community Post JSON: {e}")
 
         post = None
         for k, v in _walk_json(data):
@@ -141,7 +141,7 @@ async def download_youtube_post(
                 break
 
         if not post:
-            raise RuntimeError("Postingan komunitas YouTube tidak ditemukan atau sudah dihapus")
+            raise RuntimeError("YouTube community post not found or already deleted")
 
         author_runs = post.get("authorText", {}).get("runs", [])
         author = "".join(r.get("text", "") for r in author_runs).strip()
@@ -193,7 +193,7 @@ async def download_youtube_post(
                 )
                 await bot.send_message(chat_id=chat_id, text=msg_text, parse_mode="HTML")
                 return {"handled": True, "title": caption_text}
-            raise RuntimeError("Postingan komunitas ini hanya berisi teks (tidak ada media untuk diunduh).")
+            raise RuntimeError("This community post only contains text (no media to download).")
 
         # Download semua gambar
         saved_paths: list[str] = []
@@ -204,7 +204,7 @@ async def download_youtube_post(
                 saved_paths.append(dest)
 
         if not saved_paths:
-            raise RuntimeError("Gagal mengunduh gambar dari postingan komunitas YouTube")
+            raise RuntimeError("Failed to download image from YouTube community post")
 
         if len(saved_paths) == 1:
             log.info("YouTube community post downloaded 1 image | file=%s", saved_paths[0])

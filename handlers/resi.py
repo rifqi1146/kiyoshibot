@@ -43,13 +43,13 @@ def esc(text) -> str:
 
 def usage_text() -> str:
     return (
-        "📦 <b>Cek Resi</b>\n\n"
+        "📦 <b>Tracking Check</b>\n\n"
         "Format:\n"
         "<code>/resi ekspedisi nomor_resi</code>\n\n"
-        "Contoh:\n"
+        "Example:\n"
         "<code>/resi spx SPXID065715424</code>\n"
         "<code>/resi jne 0123456789</code>\n\n"
-        "Lihat ekspedisi support:\n"
+        "See supported couriers:\n"
         "<code>/resi list</code>"
     )
 
@@ -80,7 +80,7 @@ async def send_or_edit_long(msg, text: str):
 
 async def neoxr_get(endpoint: str, params: dict, timeout: int = 20):
     if not NEOXR_API_KEY:
-        return False, "NEOXR_API_KEY belum diset di .env"
+        return False, "NEOXR_API_KEY is not set in .env"
     params = dict(params)
     params["apikey"] = NEOXR_API_KEY
     session = await get_http_session()
@@ -95,7 +95,7 @@ async def neoxr_get(endpoint: str, params: dict, timeout: int = 20):
             except Exception:
                 return False, f"Invalid JSON: {raw[:500]}"
     except asyncio.TimeoutError:
-        return False, "Request timeout, API lambat / sedang sibuk."
+        return False, "Request timeout, API is slow / busy."
     except Exception as e:
         return False, str(e)
 
@@ -104,23 +104,23 @@ async def fetch_expedisi():
     if not ok:
         return False, EXPEDISI_FALLBACK, data
     if not isinstance(data, dict) or not data.get("status"):
-        return False, EXPEDISI_FALLBACK, data.get("message") or data.get("msg") or "Gagal mengambil list ekspedisi."
+        return False, EXPEDISI_FALLBACK, data.get("message") or data.get("msg") or "Failed to fetch courier list."
     items = data.get("data")
     if not isinstance(items, list) or not items:
-        return False, EXPEDISI_FALLBACK, "Data ekspedisi kosong dari API."
+        return False, EXPEDISI_FALLBACK, "Courier data is empty from API."
     return True, items, None
 
 def format_expedisi_list(items: list[dict], fallback_reason=None) -> str:
-    lines = ["📦 <b>List Ekspedisi Cek Resi</b>\n"]
+    lines = ["📦 <b>Courier Tracking List</b>\n"]
     for item in items:
         label = item.get("label")
         value = item.get("value")
         if label and value:
             lines.append(f"• <b>{esc(label)}</b> — <code>{esc(value)}</code>")
-    lines.append("\nContoh:")
+    lines.append("\nExample:")
     lines.append("<code>/resi spx SPXID06575424</code>")
     if fallback_reason:
-        lines.append(f"\n⚠️ API list gagal.\n<code>{esc(fallback_reason)}</code>")
+        lines.append(f"\n⚠️ API list failed.\n<code>{esc(fallback_reason)}</code>")
     return "\n".join(lines)
 
 def format_resi(data: dict) -> str:
@@ -131,9 +131,9 @@ def format_resi(data: dict) -> str:
     history = data.get("history") or []
 
     lines = [
-        "📦 <b>Hasil Cek Resi</b>",
+        "📦 <b>Tracking Result</b>",
         "",
-        f"🚚 Kurir: <b>{esc(courier)}</b>",
+        f"🚚 Courier: <b>{esc(courier)}</b>",
         f"🧾 AWB: <code>{esc(awb)}</code>",
         f"📌 Status: <b>{esc(state)}</b>",
     ]
@@ -142,10 +142,10 @@ def format_resi(data: dict) -> str:
         lines.append(f"🕒 Shipment At: <code>{esc(shipment_at)}</code>")
 
     lines.append("")
-    lines.append("📍 <b>Riwayat Pengiriman</b>")
+    lines.append("📍 <b>Shipping History</b>")
 
     if not history:
-        lines.append("Belum ada riwayat pengiriman.")
+        lines.append("No shipping history yet.")
         return "\n".join(lines)
 
     for i, item in enumerate(history, start=1):
@@ -160,14 +160,14 @@ def format_resi(data: dict) -> str:
     return "\n".join(lines)
 
 async def resi_list_cmd(msg):
-    status = await msg.reply_text("📦 Mengambil list ekspedisi...")
+    status = await msg.reply_text("📦 Fetching courier list...")
     ok, items, reason = await fetch_expedisi()
     text = format_expedisi_list(items, None if ok else reason)
     await send_or_edit_long(status, text)
 
 async def resi_check_cmd(msg, ekspedisi: str, nomor_resi: str):
     status = await msg.reply_text(
-        f"🔎 Cek resi <code>{esc(nomor_resi)}</code> via <b>{esc(ekspedisi)}</b>...",
+        f"🔎 Checking <code>{esc(nomor_resi)}</code> via <b>{esc(ekspedisi)}</b>...",
         parse_mode="HTML"
     )
 
@@ -178,23 +178,23 @@ async def resi_check_cmd(msg, ekspedisi: str, nomor_resi: str):
 
     if not ok:
         return await status.edit_text(
-            f"Gagal cek resi.\n\n<code>{esc(payload)}</code>",
+            f"Failed to check tracking number.\n\n<code>{esc(payload)}</code>",
             parse_mode="HTML"
         )
 
     if not isinstance(payload, dict):
-        return await status.edit_text("Response API tidak valid.")
+        return await status.edit_text("Invalid API response.")
 
     if not payload.get("status"):
-        err = payload.get("message") or payload.get("msg") or payload.get("data") or "Resi tidak ditemukan / ekspedisi salah."
+        err = payload.get("message") or payload.get("msg") or payload.get("data") or "Tracking number not found / wrong courier."
         return await status.edit_text(
-            f"Gagal cek resi.\n\n<code>{esc(err)}</code>",
+            f"Failed to check tracking number.\n\n<code>{esc(err)}</code>",
             parse_mode="HTML"
         )
 
     data = payload.get("data")
     if not isinstance(data, dict):
-        return await status.edit_text("Data resi kosong.")
+        return await status.edit_text("Tracking data is empty.")
 
     text = format_resi(data)
     await send_or_edit_long(status, text)

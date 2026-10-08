@@ -138,7 +138,7 @@ def _clean_caca_output(raw: str) -> str:
 
 
 async def _send_chunks(bot, msg, chunks: list[str]) -> int | None:
-    """Kirim hasil markdown sebagai Rich Message, fallback ke HTML sendMessage."""
+    """Send markdown output as Rich Message, fallback to HTML sendMessage."""
     from utils.rich_stream import send_rich_message
     if not chunks:
         return None
@@ -233,7 +233,7 @@ async def _shared_http_session():
 async def _groq_chat(messages: list[dict]) -> str:
     keys = _groq_api_keys()
     if not keys:
-        raise RuntimeError("GROQ_API_KEY belum disetel di environment.")
+        raise RuntimeError("GROQ_API_KEY is not set in the environment.")
 
     session = await _shared_http_session()
     payload = {
@@ -282,14 +282,14 @@ async def _groq_chat(messages: list[dict]) -> str:
             logger.warning("Groq request failed | key_index=%s err=%s", idx, err)
             continue
 
-    raise RuntimeError("Semua API key Groq gagal: " + " | ".join(errors[-3:]))
+    raise RuntimeError("All Groq API keys failed: " + " | ".join(errors[-3:]))
 
 
 async def _groq_chat_stream(messages: list[dict]):
     """Async generator delta streaming Caca via Groq (SSE OpenAI format)."""
     keys = _groq_api_keys()
     if not keys:
-        raise RuntimeError("GROQ_API_KEY belum disetel di environment.")
+        raise RuntimeError("GROQ_API_KEY is not set in the environment.")
 
     session = await _shared_http_session()
     payload = {
@@ -359,11 +359,11 @@ async def _groq_chat_stream(messages: list[dict]):
             logger.warning("Groq stream failed | key_index=%s err=%s", idx, err)
             continue
 
-    raise RuntimeError("Semua API key Groq stream gagal: " + " | ".join(errors[-3:]))
+    raise RuntimeError("All Groq API keys (stream) failed: " + " | ".join(errors[-3:]))
 
 
 async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages):
-    """Streaming Rich Message draft untuk DM Caca; grup pakai jalur non-streaming."""
+    """Streaming Rich Message draft for Caca DMs; groups use the non-streaming path."""
     from utils.rich_stream import stream_to_draft
     bot = context.bot
     draft_id = msg.message_id
@@ -379,7 +379,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             got = True
             yield chunk
         if not got:
-            yield "Model tidak memberikan jawaban."
+            yield "Model did not provide an answer."
 
     async def save(clean_md, last_id):
         history.extend([
@@ -401,20 +401,20 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             last_id = await _send_chunks(bot, msg, [clean_md])
             await save(clean_md, last_id)
             return
-        clean_md = _clean_caca_output(raw) or "Model tidak memberikan jawaban."
+        clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         last_id = await _send_chunks(bot, msg, chunks)
         await save(clean_md, last_id)
     except RuntimeError as e:
-        if "tidak didukung" not in str(e):
+        if "not supported in this chat" not in str(e):
             raise
-        # Rich draft tidak didukung di chat ini -> fallback non-streaming
+        # Rich draft not supported in this chat -> non-streaming fallback
         stop = asyncio.Event()
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, message_thread_id=thread_id))
         try:
             raw2 = await _groq_chat(messages)
-            clean_md = _clean_caca_output(raw2) or "Model tidak memberikan jawaban."
+            clean_md = _clean_caca_output(raw2) or "Model did not provide an answer."
             chunks = split_message(clean_md, 4000)
             await _stop_typing_task(stop, typing)
             last_id = await _send_chunks(bot, msg, chunks)
@@ -467,7 +467,7 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif msg.reply_to_message:
             history = await caca_memory.get_history(user_id)
             if not history:
-                return await _reply_thread(context.bot, msg, "😒 Gue ga inget ngobrol sama lu.\nKetik /caca dulu.")
+                return await _reply_thread(context.bot, msg, "😒 I don't remember talking to you.\nUse /caca first.")
             prompt = (msg.text or "").strip()
 
         if not prompt:
@@ -509,7 +509,7 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, message_thread_id=thread_id))
         raw = await _groq_chat(messages)
-        clean_md = _clean_caca_output(raw) or "Model tidak memberikan jawaban."
+        clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         await _stop_typing_task(stop, typing)
         last_id = await _send_chunks(context.bot, msg, chunks)

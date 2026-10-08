@@ -152,7 +152,7 @@ def probe_nekopoi(raw_url: str) -> dict:
     title = sanitize_filename(post.get("title") or "Nekopoi", 100)
     embeds = post.get("embeds") or []
     if not embeds:
-        raise RuntimeError("Tidak ada stream embed di halaman Nekopoi")
+        raise RuntimeError("No embed stream on Nekopoi page")
 
     def scrape_pixeldrain_variants(html_text: str) -> list:
         from bs4 import BeautifulSoup
@@ -245,7 +245,7 @@ def probe_nekopoi(raw_url: str) -> dict:
             master = ext.probe_stream(emb, referer=raw_url)
             variants = _dedup_by_height(ext.list_resolutions(master))
             if not variants:
-                raise RuntimeError("Tidak ada varian resolusi di playlist Nekopoi")
+                raise RuntimeError("No resolution variants in Nekopoi playlist")
             res_list = [
                 {
                     "height": int(v["height"]),
@@ -352,14 +352,14 @@ def probe_nekopoi(raw_url: str) -> dict:
     # didukung (host-nya pun sering sudah mati semua).
     if primary_err is None:
         hosts = _list_download_hosts(post.get("raw_html") or "")
-        names = ", ".join(hosts) if hosts else "tidak terdeteksi"
+        names = ", ".join(hosts) if hosts else "none detected"
         raise RuntimeError(
-            "Post Nekopoi ini tidak punya jalur unduh yang didukung: "
-            "tidak ada HLS (streampoi), DoodStream (playmogo), Pixeldrain, ataupun Mp4Upload. "
-            f"Host yang tersedia di post ({names}) belum didukung scraper."
+            "This Nekopoi post has no supported download path: "
+            "no HLS (streampoi), DoodStream (playmogo), Pixeldrain, or Mp4Upload. "
+            f"Available hosts in post ({names}) are not supported by the scraper."
         )
 
-    raise primary_err or last_err or RuntimeError("Gagal mengambil stream Nekopoi dari semua embed & download link")
+    raise primary_err or last_err or RuntimeError("Failed to fetch Nekopoi stream from all embeds & download links")
 
 
 def _pick_variant(variants: list, format_id: str | None) -> dict:
@@ -400,7 +400,7 @@ async def nekopoi_download(
 
         variants = probe.get("variants") or []
         if not variants:
-            raise RuntimeError("Tidak ada varian stream di halaman Nekopoi")
+            raise RuntimeError("No stream variants on Nekopoi page")
         chosen = _pick_variant(variants, format_id)
         title = sanitize_filename(probe.get("title") or "Nekopoi", 100)
         label = f"{int(chosen.get('height') or 0)}p"
@@ -507,8 +507,8 @@ async def nekopoi_download(
 
             if not direct_url:
                 if last_src_err and chosen.get("type") == "mp4upload_ouo":
-                    raise RuntimeError("Gagal mem-bypass link Mp4Upload Nekopoi") from last_src_err
-                raise RuntimeError("Gagal mem-bypass link Pixeldrain Nekopoi")
+                    raise RuntimeError("Failed to bypass Nekopoi Mp4Upload link") from last_src_err
+                raise RuntimeError("Failed to bypass Nekopoi Pixeldrain link")
 
             if src_kind == "Mp4Upload":
                 log.info("Nekopoi Mp4Upload sukses | title=%r label=%s", title, label)

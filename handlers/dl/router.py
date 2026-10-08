@@ -898,7 +898,7 @@ async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:
     log.info("Batch download done | chat_id=%s ok=%s/%s elapsed=%.2fs",chat_id,len(ok),total,time.monotonic()-t0)
 
     if not ok:
-        await _render("<b>Batch download failed</b>\n\n<code>Semua link gagal diunduh.</code>")
+        await _render("<b>Batch download failed</b>\n\n<code>All links failed to download.</code>")
         return
 
     await _render(f"📤 <b>Uploading {len(ok)} item...</b>")

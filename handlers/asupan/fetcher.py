@@ -242,7 +242,7 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
             if isinstance(data, list):
                 result_container.extend(data)
         except Exception as e:
-            log.warning("Gagal mengevaluasi JS priming: %s", e)
+            log.warning("Failed to evaluate JS priming: %s", e)
 
     fetcher = StealthyFetcher()
     fetcher.fetch(
@@ -477,6 +477,6 @@ async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
         final_url = await _prime_and_get_url(video_item)
         if final_url:
             return final_url
-        log.warning("Gagal resolve video id=%s, coba video lain", video_item.get("id"))
+        log.warning("Failed to resolve video id=%s, trying another video", video_item.get("id"))
 
-    raise RuntimeError("Gagal mendapatkan stream URL dari video asupan")
+    raise RuntimeError("Failed to get stream URL from asupan video")

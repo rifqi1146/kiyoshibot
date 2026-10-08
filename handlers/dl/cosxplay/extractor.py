@@ -75,7 +75,7 @@ def scrape_post(url: str) -> dict:
     resp = session.get(url, timeout=HTTP_TIMEOUT)
     
     if resp.status_code == 404:
-        raise FileNotFoundError(f"Video tidak ditemukan (HTTP 404): {url}")
+        raise FileNotFoundError(f"Video not found (HTTP 404): {url}")
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code} saat mengakses CosXplay")
         
@@ -154,7 +154,7 @@ def scrape_post(url: str) -> dict:
         })
 
     if not formats:
-        raise RuntimeError("Tidak ada varian video yang ditemukan di halaman ini.")
+        raise RuntimeError("No video variants found on this page.")
 
     return {
         "title": title,
@@ -172,7 +172,7 @@ async def download_video(url: str, format_id: str, out_path: str, bot, chat_id, 
     if not target and variants:
         target = variants[0]
     if not target:
-        raise RuntimeError("Gagal mendapatkan link download video.")
+        raise RuntimeError("Failed to get video download link.")
         
     dl_url = target["url"]
     headers = {"User-Agent": UA, "Referer": "https://cosxplay.com/"}

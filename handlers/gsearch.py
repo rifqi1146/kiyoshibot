@@ -40,11 +40,11 @@ async def google_search(query: str, page: int = 0, limit: int = 5):
 
 def _owner_label(user) -> str:
     if not user:
-        return "pengguna ini"
+        return "this user"
     if user.username:
         return f"@{user.username}"
     name = (user.first_name or "").strip()
-    return name or "pengguna ini"
+    return name or "this user"
 
 def gsearch_keyboard(search_id: str, page: int):
     return InlineKeyboardMarkup([
@@ -116,7 +116,7 @@ async def gsearch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await q.message.delete()
         if q.from_user.id != data["user"]:
             return await q.answer(
-                f"Hanya {data['owner_label']} yang dapat mengakses ini",
+                f"Only {data['owner_label']} can access this",
                 show_alert=True
             )
         GSEARCH_CACHE.pop(b, None)
@@ -131,7 +131,7 @@ async def gsearch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.message.edit_text("Search expired.")
     if q.from_user.id != data["user"]:
         return await q.answer(
-            f"Hanya {data['owner_label']} yang dapat mengakses ini",
+            f"Only {data['owner_label']} can access this",
             show_alert=True
         )
     if page < 0:

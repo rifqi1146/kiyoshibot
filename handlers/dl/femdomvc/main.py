@@ -139,7 +139,7 @@ async def femdomvc_download(
             )
             await proc.wait()
             if proc.returncode != 0 or not os.path.exists(mp3_path):
-                raise RuntimeError("Gagal mengekstrak audio MP3 dari video FemdomVC.")
+                raise RuntimeError("Failed to extract MP3 audio from FemdomVC video.")
             return {
                 "path": mp3_path,
                 "title": title,

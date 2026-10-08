@@ -70,7 +70,7 @@ async def simontok_download(
         segs = await asyncio.to_thread(ext.parse_segments, hls["m3u8_url"], hls["origin"] + "/")
         seg_urls = segs["segments"] or []
         if not seg_urls:
-            raise RuntimeError("Tidak ada segmen di playlist")
+            raise RuntimeError("No segments in playlist")
 
         referer = hls["origin"] + "/"
         seg_files = await ext.download_segments(
@@ -81,7 +81,7 @@ async def simontok_download(
         await asyncio.to_thread(ext.concat_segments, seg_files, tmp_mp4, work_dir)
 
         if not os.path.exists(tmp_mp4) or os.path.getsize(tmp_mp4) <= 0:
-            raise RuntimeError("Gagal menggabungkan video (file kosong)")
+            raise RuntimeError("Failed to merge video (empty file)")
 
         out_ext = "mp3" if fmt_key == "mp3" else "mp4"
         final_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.{out_ext}")
@@ -100,8 +100,8 @@ async def simontok_download(
         # remux audio-only. Tolak lebih dulu, jangan kirim file rusak diam-diam.
         if not await asyncio.to_thread(ext.has_video_stream, tmp_mp4):
             raise RuntimeError(
-                "Video post ini rusak atau tidak didukung (stream video memakai codec "
-                "yang tidak bisa didekode oleh server). Silakan coba post lain."
+                "This video post is broken or unsupported (the video stream uses a codec "
+                "the server cannot decode). Please try another post."
             )
 
         shutil.move(tmp_mp4, final_path)

@@ -81,7 +81,7 @@ async def _check_cas_ban(user_id: int) -> dict:
     try:
         session = await get_http_session()
         async with session.get(url, timeout=5) as resp:
-                log.info(f"[CAS] HTTP Status: {resp.status} untuk user {user_id}")
+                log.info(f"[CAS] HTTP Status: {resp.status} for user {user_id}")
                 
                 if resp.status != 200:
                     return {"banned": False}
@@ -95,7 +95,7 @@ async def _check_cas_ban(user_id: int) -> dict:
                     return {"banned": True, "offenses": offenses}
                     
     except asyncio.TimeoutError:
-        log.warning(f"[CAS] Request timeout untuk user {user_id}")
+        log.warning(f"[CAS] Request timeout for user {user_id}")
     except Exception as e:
         log.error(f"[CAS] Failed to check CAS API for {user_id} | err={e}")
     
@@ -369,19 +369,19 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
         }
         _schedule_verify_timeout(context.application, chat.id, user.id)
 
-        log.info(f"[CAS] Memulai proses verifikasi CAS untuk {user.id} di chat {chat.id}")
+        log.info(f"[CAS] Starting CAS verification process for {user.id} in chat {chat.id}")
         cas_status = await _check_cas_ban(user.id)
         
         if cas_status["banned"]:
-            log.warning(f"[CAS] SPAMMER DETECTED! Mengeksekusi auto-ban untuk {user.id}...")
+            log.warning(f"[CAS] SPAMMER DETECTED! Executing auto-ban for {user.id}...")
 
             await _cleanup_pending_state(context.bot, chat.id, user.id, delete_message=True)
             
             try:
                 await context.bot.ban_chat_member(chat_id=chat.id, user_id=user.id, revoke_messages=True)
-                log.info(f"[CAS] Berhasil membanned {user.id}")
+                log.info(f"[CAS] Successfully banned {user.id}")
             except Exception as e:
-                log.error(f"[CAS] GAGAL membanned user {user.id}: {e}")
+                log.error(f"[CAS] FAILED to ban user {user.id}: {e}")
             
             raw_fullname = user.full_name or "Unknown User"
             fullname_html = html_lib.escape(raw_fullname)
@@ -401,9 +401,9 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
-                log.info("[CAS] Pesan notifikasi BAN terkirim.")
+                log.info("[CAS] BAN notification sent.")
             except Exception as e:
-                log.error(f"[CAS] GAGAL mengirim notifikasi BAN: {e}")
+                log.error(f"[CAS] FAILED to send BAN notification: {e}")
 
 
 

@@ -633,7 +633,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
     log.info("yt-dlp output candidates | job_id=%s count=%s", job_id, len(files))
     log.debug("yt-dlp output files | job_id=%s files=%s", job_id, files)
     if not files:
-        raise RuntimeError("yt-dlp selesai tapi file output tidak ditemukan")
+        raise RuntimeError("yt-dlp finished but output file not found")
     picked = files[0]
     title = title_gallerydl(picked, job_id, url)
     final_path = _strip_job_prefix(picked, job_id)

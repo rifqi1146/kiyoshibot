@@ -18,24 +18,24 @@ from database.ship_db import (
 SHIP_COOLDOWN = 60 * 60 * 24  # 24 jam
 
 SHIP_MESSAGES = [
-    "🥰 Kalian keliatan nyaman satu sama lain",
-    "💗 Vibes-nya lembut dan saling ngerti",
-    "🌸 Cocoknya tuh keliatan natural",
-    "💞 Kayak saling nenangin tanpa sadar",
-    "✨ Bareng-bareng keliatan lebih hidup",
-    "🫶 Ada rasa aman di situ",
-    "🌷 Kalo ngobrol pasti nyambung",
-    "💫 Energinya bikin hangat",
-    "🤍 Sederhana tapi kerasa",
-    "🌼 Keliatan saling support",
+    "🥰 You two look comfortable with each other",
+    "💗 Soft vibes, you just get each other",
+    "🌸 You match in a natural way",
+    "💞 Like calming each other down without realizing it",
+    "✨ You come alive more when you're together",
+    "🫶 There's a sense of safety there",
+    "🌷 Conversation between you always flows",
+    "💫 The energy feels warm",
+    "🤍 Simple but you can feel it",
+    "🌼 You clearly support each other",
 ]
 
 SHIP_ENDING = [
-    "Semoga selalu akur ya 🤍",
-    "Lucu kalo beneran 🥹",
-    "Doain yang terbaik ✨",
-    "Siapa tau ini pertanda 🌸",
-    "Pelan-pelan aja 💗",
+    "Hope you always get along 🤍",
+    "It'd be cute if it were real 🥹",
+    "Wishing you the best ✨",
+    "Who knows, might be a sign 🌸",
+    "Take it slow 💗",
     "Enjoy the moment 🫶",
 ]
 
@@ -170,7 +170,7 @@ async def ship_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if chat.type == "private" or int(chat.id) > 0:
-        return await msg.reply_text("❌ Fitur ship hanya bisa dipakai di grup.")
+        return await msg.reply_text("❌ Ship feature can only be used in groups.")
 
     now = int(time.time())
     last_time = get_ship_last_time(chat.id)
@@ -178,8 +178,8 @@ async def ship_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if now - last_time < SHIP_COOLDOWN:
         remain = SHIP_COOLDOWN - (now - last_time)
         return await msg.reply_text(
-            f"⏳ <b>Ship masih cooldown</b>\n\n"
-            f"Pasangan berikutnya bisa dipilih dalam:\n"
+            f"⏳ <b>Ship is still on cooldown</b>\n\n"
+            f"Next couple can be picked in:\n"
             f"<code>{format_remaining(remain)}</code>",
             parse_mode="HTML",
         )
@@ -245,20 +245,20 @@ async def ship_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             if not partner:
                 if len([p for p in pool if p.get("id") is not None]) < 2:
-                    return await msg.reply_text("❌ Belum cukup orang buat di-ship.")
+                    return await msg.reply_text("❌ Not enough people to ship.")
                 return await msg.reply_text(
-                    "❌ Belum menemukan 2 member aktif untuk di-ship."
+                    "❌ Could not find 2 active members to ship."
                 )
             users = [who, partner]
     else:
         pool = get_users_pool(chat.id)
         pool = await _ensure_pool_has_members(context.bot, chat.id, pool)
         if len([p for p in pool if p.get("id") is not None]) < 2:
-            return await msg.reply_text("❌ Belum cukup orang buat di-ship.")
+            return await msg.reply_text("❌ Not enough people to ship.")
         picked = await _pick_two_active(context.bot, chat.id, pool)
         if len(picked) < 2:
             return await msg.reply_text(
-                "❌ Belum menemukan 2 member aktif untuk di-ship."
+                "❌ Could not find 2 active members to ship."
             )
         users = picked
 

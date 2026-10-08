@@ -1,13 +1,13 @@
-"""Handler /ask (via proxy OpenCode), /getmodel, dan /setmodel.
+"""Handler for /ask (via OpenCode proxy), /getmodel, /setmodel, /thinking, and /setsearch.
 
-Menggantikan pemanggilan Gemini cloud:
-  - Tidak perlu API key (upstream gratis via proxy OpenCode lokal)
-  - Mendukung streaming ke draft untuk private chat (DM)
-  - Mendukung RAG lokal + memory rolling per-user (gemini_memory)
-  - Model upstream dikontrol via /setmodel dan dicek via /getmodel
-  - Agentic grounding: model bisa memanggil web_search / read_page
-    (Jina AI) sendiri saat butuh info terbaru; system prompt selalu
-    membawa tanggal + timezone Asia/Jakarta.
+Replaces the cloud Gemini implementation:
+  - No API key required (free upstream via local OpenCode proxy)
+  - Streaming drafts for private chats (DMs)
+  - Local RAG + rolling user memory (gemini_memory)
+  - Upstream model controlled via /setmodel and listed via /getmodel
+  - Agentic grounding: model can call web_search / read_page
+    (Firecrawl / Jina AI) on demand; system prompt always injects real-time
+    date & Asia/Jakarta timezone.
 """
 import asyncio
 import html
@@ -108,24 +108,25 @@ def _system_instruction() -> str:
     )
 
 
-# Tool yang diekspos ke model. Hanya diaktifkan kalau JINA_API_KEY tersedia,
-# supaya tanpa key model tetap menjawab (tanpa grounding) alih-alih error.
+# Tools exposed to the model. Only activated when a search backend is
+# available (FIRECRAWL_API_KEY or JINA_API_KEY) — without one the model
+# answers normally (no grounding) instead of failing.
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "web_search",
             "description": (
-                "Cari informasi terbaru di internet. Gunakan untuk berita, kejadian "
-                "terkini, harga, skor, rilis, tokoh, atau data apapun yang bisa berubah "
-                "setelah masa pelatihan model."
+                "Search the web for fresh, current information: news, recent events, "
+                "prices, scores, releases, people, or any data that may have changed "
+                "after the model's training cutoff."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Kata kunci pencarian yang spesifik dan jelas.",
+                        "description": "Specific, clear search keywords.",
                     }
                 },
                 "required": ["query"],
@@ -136,13 +137,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_page",
-            "description": "Baca isi lengkap sebuah halaman web/artikel dari URL.",
+            "description": "Read the full content of a web page or article from a URL.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "URL lengkap halaman yang ingin dibaca (https://...).",
+                        "description": "Full page URL to read (https://...).",
                     }
                 },
                 "required": ["url"],
@@ -155,13 +156,13 @@ _MAX_TOOL_ROUNDS = 2
 
 
 def _active_engine() -> str:
-    """Engine grounding aktif: 'firecrawl' | 'jina' (runtime)."""
+    """Active grounding engine: 'firecrawl' | 'jina' (runtime)."""
     from handlers.proxy.client import get_search_engine
     return get_search_engine()
 
 
 async def _web_search(query: str) -> str:
-    """Pilih backend search berdasar SEARCH_ENGINE (runtime, bukan import-time)."""
+    """Pick the search backend based on SEARCH_ENGINE (runtime, not import-time)."""
     if _active_engine() == "jina":
         from utils.jina import web_search as _s
     else:
@@ -181,37 +182,37 @@ async def _execute_tool_call(name: str, args_json: str) -> str:
     try:
         args = json.loads(args_json or "{}")
     except Exception as e:
-        return f"Error: argumen JSON tidak valid ({e})"
+        return f"Error: invalid JSON arguments ({e})"
     if not isinstance(args, dict):
-        return "Error: argumen tool harus objek JSON."
+        return "Error: tool arguments must be a JSON object."
 
     engine = _active_engine()
 
     if name == "web_search":
         query = str(args.get("query") or "").strip()
         if not query:
-            return "Error: 'query' kosong."
+            return "Error: 'query' is empty."
         try:
             result = await _web_search(query)
             log.info("%s web_search | q=%s len=%s", engine.capitalize(), query, len(result))
             return result
         except Exception as e:
-            log.warning("%s web_search gagal | q=%s err=%r", engine.capitalize(), query, e)
-            return f"Pencarian gagal: {e}"
+            log.warning("%s web_search failed | q=%s err=%r", engine.capitalize(), query, e)
+            return f"Search failed: {e}"
 
     if name == "read_page":
         url = str(args.get("url") or "").strip()
         if not url:
-            return "Error: 'url' kosong."
+            return "Error: 'url' is empty."
         try:
             result = await _read_page(url)
             log.info("%s read_page | url=%s len=%s", engine.capitalize(), url, len(result))
             return result
         except Exception as e:
-            log.warning("%s read_page gagal | url=%s err=%r", engine.capitalize(), url, e)
-            return f"Gagal baca halaman: {e}"
+            log.warning("%s read_page failed | url=%s err=%r", engine.capitalize(), url, e)
+            return f"Failed to read page: {e}"
 
-    return f"Error: tool '{name}' tidak dikenal."
+    return f"Error: unknown tool '{name}'."
 
 
 async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_id=None):
@@ -223,7 +224,7 @@ async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_i
             try:
                 await bot.send_chat_action(**kwargs)
             except Exception as api_err:
-                log.warning("Typing action gagal | err=%r", api_err)
+                log.warning("Typing action failed | err=%r", api_err)
                 kwargs.pop("message_thread_id", None)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=4.0)
@@ -276,7 +277,7 @@ async def _reply_thread(bot, msg, text, parse_mode=None):
 
 
 async def _send_chunks(bot, msg, chunks: list[str]) -> Optional[int]:
-    """Kirim hasil markdown sebagai Rich Message, fallback ke HTML sendMessage."""
+    """Send markdown output as a Rich Message, fallback to HTML sendMessage."""
     from utils.rich_stream import send_rich_message
 
     if not chunks:
@@ -306,10 +307,10 @@ async def _send_chunks(bot, msg, chunks: list[str]) -> Optional[int]:
 
 
 async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[dict] | None]:
-    """Bangun messages + tools.
+    """Build messages + tools.
 
-    Tools aktif kalau ada backend search (Firecrawl diprioritaskan, Jina
-    fallback) — tanpa satupun key model tetap jawab normal alih-alih error.
+    Tools are active if a search backend exists (Firecrawl first, Jina
+    fallback) — without any key the model still answers normally instead of erroring.
     """
     sys_text = _system_instruction()
     try:
@@ -320,12 +321,12 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
     if contexts:
         sys_text += "\n\n=== KONTEKS LOKAL ===\n" + "\n".join(contexts) + "\n=== END KONTEKS ==="
 
-    # Baca runtime (bukan import-by-value) supaya tambah key di .env + /reload
-    # langsung kebaca tanpa restart penuh.
+    # Read at runtime (not import-by-value) so adding a key in .env + /reload
+    # takes effect without a full restart.
     has_backend = bool(app_config.FIRECRAWL_API_KEY) or bool(app_config.JINA_API_KEY)
     tools = TOOLS if has_backend else None
 
-    # URL langsung di prompt: hint ringan supaya model tahu bisa read_page.
+    # URL in prompt: light hint so the model knows it can use read_page.
     if tools and extract_urls(prompt):
         sys_text += "\nUser menyertakan URL. PAKAI `read_page` untuk membacanya sebelum menjawab."
 
@@ -342,11 +343,11 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
 
 
 async def _run_agentic(messages: list[dict], tools: list[dict] | None, status_cb=None) -> str:
-    """Jalankan satu atau beberapa putaran chat+tool sampai model selesai.
+    """Run one or more chat+tool rounds until the model finishes.
 
-    - tools None -> single non-stream call (perilaku lama).
-    - tools ada  -> loop: kalau model balas tool_calls, eksekusi lalu lanjut.
-    Kembalikan teks jawaban final.
+    - tools None -> single non-stream call (legacy behavior).
+    - tools set  -> loop: if the model returns tool_calls, execute then continue.
+    Returns the final answer text.
     """
     if not tools:
         return await proxy_chat(messages)
@@ -358,7 +359,7 @@ async def _run_agentic(messages: list[dict], tools: list[dict] | None, status_cb
         if not tool_calls:
             return (message.get("content") or "").strip()
 
-        # sisipkan pesan assistant berisi tool_calls, lalu hasil tiap tool
+        # Append the assistant message carrying tool_calls, then each tool result.
         convo.append({
             "role": "assistant",
             "content": message.get("content") or "",
@@ -379,7 +380,7 @@ async def _run_agentic(messages: list[dict], tools: list[dict] | None, status_cb
                 "content": result,
             })
 
-    # Habis putaran: minta jawaban final tanpa tools lagi.
+    # Rounds exhausted: request the final answer without tools.
     return await proxy_chat(convo)
 
 
@@ -395,10 +396,10 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
         app.bot_data[stop_key] = gen_stop
 
     async def gen():
-        """Aliran draft: tanpa tools -> stream langsung; dengan tools -> stream
-        jawaban final saja (tool-calling sudah selesai SEBELUM draft dibuka,
-        jadi aliran draft tidak pernah putus dan tidak ada teks status yang
-        ikut terkirim sebagai pesan).
+        """Draft stream: no tools -> stream directly; with tools -> stream only
+        the final answer (tool-calling already finished BEFORE the draft opens,
+        so the draft stream never stalls and no status text leaks into the
+        delivered message).
         """
         if final_convo is None:
             got = False
@@ -407,17 +408,17 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
                     got = True
                     yield chunk
             if not got:
-                yield "Model tidak memberikan jawaban."
+                yield "Model did not provide an answer."
             return
 
-        # Streaming jawaban final (tanpa tools lagi).
+        # Stream the final answer (without tools).
         async for chunk in proxy_chat_stream(final_convo):
             yield chunk
 
-    # Jalur agentic: selesaikan tool-calling DULU dengan indikator typing.
-    # Draft baru dibuka setelahnya, supaya jeda puluhan detik saat
-    # search/baca halaman tidak membuat draft kedaluwarsa di klien
-    # (yang terlihat seperti "pesan kehapus lalu muncul lagi").
+    # Agentic path: finish tool-calling FIRST with a typing indicator. The
+    # draft opens afterwards, so a long pause during search/page reads does
+    # not let the draft expire on the client (which looks like "message
+    # deleted then reappears").
     final_convo = None
     if tools:
         type_stop = asyncio.Event()
@@ -462,23 +463,23 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
             stop_event=gen_stop,
         )
         if gen_stop.is_set():
-            clean_md = sanitize_markdown(raw) or "⏹ Jawaban dibatalkan."
+            clean_md = sanitize_markdown(raw) or "Response cancelled."
             last_id = await _send_chunks(bot, msg, [clean_md])
             history.append({"user": prompt, "ai": clean_md})
             await gemini_memory.set_history(user_id, history, last_id)
             return
-        clean_md = sanitize_markdown(raw) or "Model tidak memberikan jawaban."
+        clean_md = sanitize_markdown(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         last_id = await _send_chunks(bot, msg, chunks)
         history.append({"user": prompt, "ai": clean_md})
         await gemini_memory.set_history(user_id, history, last_id)
     except RuntimeError as e:
-        if "tidak didukung" in str(e):
+        if "not supported in this chat" in str(e):
             stop = asyncio.Event()
             typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, None))
             try:
                 raw2 = await _run_agentic(messages, tools)
-                clean_md = sanitize_markdown(raw2) or "Model tidak memberikan jawaban."
+                clean_md = sanitize_markdown(raw2) or "Model did not provide an answer."
                 chunks = split_message(clean_md, 4000)
                 await _stop_typing_task(stop, typing)
                 last_id = await _send_chunks(bot, msg, chunks)
@@ -494,7 +495,7 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
 
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /ask — chat AI via OpenCode proxy (gratis, tanpa API key)."""
+    """Command /ask — chat with the AI via the OpenCode proxy (free, no API key)."""
     if not await require_join_or_block(update, context):
         return
     msg = update.message
@@ -514,7 +515,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await _reply_thread(
                 context.bot,
                 msg,
-                f"Contoh:\n<code>/ask apa itu relativitas?</code>\n\nModel aktif: <code>{html.escape(cur)}</code>",
+                f"Example:\n<code>/ask what is relativity?</code>\n\nActive model: <code>{html.escape(cur)}</code>",
                 parse_mode="HTML",
             )
     elif msg.reply_to_message:
@@ -524,7 +525,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await _reply_thread(
                 context.bot,
                 msg,
-                "😒 Lu siapa?\nGue belum ngobrol sama lu.\nKetik /ask dulu.",
+                "Who are you?\nI have not talked to you yet.\nUse /ask first.",
                 parse_mode="HTML",
             )
         prompt = (msg.text or "").strip()
@@ -547,7 +548,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, thread_id))
         raw = await _run_agentic(messages, tools)
 
-        clean_md = sanitize_markdown(raw) or "Model tidak memberikan jawaban."
+        clean_md = sanitize_markdown(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         await _stop_typing_task(stop, typing)
         last_sent_id = await _send_chunks(context.bot, msg, chunks)
@@ -557,13 +558,13 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await _stop_typing_task(stop, typing)
         log.warning("OpenCode proxy /ask failed | user_id=%s err=%r", user_id, e)
-        await _reply_thread(context.bot, msg, f"❌ Error: {html.escape(str(e))}", parse_mode="HTML")
+        await _reply_thread(context.bot, msg, f"Error: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def getmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /getmodel — tampilkan daftar model gratis dari proxy OpenCode.
+    """Command /getmodel — list free models from the OpenCode proxy.
 
-    Owner-only. Non-owner: silent (bot tidak merespon sama sekali).
+    Owner-only. Non-owner: silent (no response at all).
     """
     msg = update.effective_message
     user = update.effective_user
@@ -576,25 +577,25 @@ async def getmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.warning("getmodel_cmd failed | err=%r", e)
         return await msg.reply_text(
-            f"❌ <b>Gagal mengambil model dari proxy:</b>\n<code>{html.escape(str(e))}</code>",
+            f"<b>Failed to fetch models from proxy:</b>\n<code>{html.escape(str(e))}</code>",
             parse_mode="HTML",
         )
 
     if not models:
-        return await msg.reply_text("Tidak ada model yang dilaporkan oleh proxy.", parse_mode="HTML")
+        return await msg.reply_text("No models returned by proxy.", parse_mode="HTML")
 
     cur = get_model()
     lines = [
         "<b>OpenCode Models</b>",
-        f"Total: <code>{len(models)}</code> model gratis\n",
+        f"Total: <code>{len(models)}</code> free models\n",
     ]
     for mid in sorted(models):
         if mid == cur:
-            lines.append(f"• <code>{html.escape(mid)}</code> <b>[aktif]</b>")
+            lines.append(f"• <code>{html.escape(mid)}</code> <b>[active]</b>")
         else:
             lines.append(f"• <code>{html.escape(mid)}</code>")
 
-    lines.append("\n<i>Gunakan <code>/setmodel &lt;nama&gt;</code> untuk mengganti model aktif.</i>")
+    lines.append("\n<i>Use <code>/setmodel &lt;name&gt;</code> to set the active model.</i>")
     text = "\n".join(lines)
     chunks = split_message(text, 4000)
     for c in chunks:
@@ -602,9 +603,9 @@ async def getmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /setmodel <nama_model> — pilih model yang dipakai /ask.
+    """Command /setmodel <model_name> — pick the model used by /ask.
 
-    Owner-only. Non-owner: silent (bot tidak merespon sama sekali).
+    Owner-only. Non-owner: silent (no response at all).
     """
     msg = update.effective_message
     user = update.effective_user
@@ -616,12 +617,12 @@ async def setmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = get_model()
     args = context.args or []
     if not args:
-        cur_label = f"<code>{html.escape(cur)}</code>" if cur else "<i>(otomatis pilih yang pertama)</i>"
+        cur_label = f"<code>{html.escape(cur)}</code>" if cur else "<i>(auto-picks the first one)</i>"
         return await msg.reply_text(
-            f"<b>Model aktif saat ini:</b> {cur_label}\n\n"
-            "<b>Cara pakai:</b>\n"
-            "<code>/setmodel &lt;nama_model&gt;</code>\n\n"
-            "Ketik <code>/getmodel</code> untuk melihat daftar model yang tersedia.",
+            f"<b>Active model:</b> {cur_label}\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/setmodel &lt;model_name&gt;</code>\n\n"
+            "Type <code>/getmodel</code> to see available models.",
             parse_mode="HTML",
         )
 
@@ -629,39 +630,39 @@ async def setmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         available = await proxy_models()
     except Exception as e:
-        log.warning("Validasi setmodel ke proxy gagal | err=%r", e)
+        log.warning("setmodel validation failed | err=%r", e)
         available = []
 
     if available and target not in available:
-        # Rekomendasikan nama mirip
+        # Suggest similar names
         matches = [m for m in available if target.lower() in m.lower()][:5]
         hint = ""
         if matches:
-            hint = "\n\nMungkin maksud lu:\n" + "\n".join(f"• <code>{m}</code>" for m in matches)
+            hint = "\n\nDid you mean:\n" + "\n".join(f"• <code>{m}</code>" for m in matches)
         return await msg.reply_text(
-            f"❌ Model <code>{html.escape(target)}</code> tidak ada di proxy.{hint}\n\n"
-            "Ketik <code>/getmodel</code> untuk cek daftar model gratis.",
+            f"Model <code>{html.escape(target)}</code> not found in proxy.{hint}\n\n"
+            "Use <code>/getmodel</code> to see available models.",
             parse_mode="HTML",
         )
 
     try:
         set_model(target)
     except Exception as e:
-        return await msg.reply_text(f"❌ Gagal menyimpan model: {html.escape(str(e))}", parse_mode="HTML")
+        return await msg.reply_text(f"Failed to save model: {html.escape(str(e))}", parse_mode="HTML")
 
     log.info("OpenCode model changed | user_id=%s model=%s", user.id, target)
     await msg.reply_text(
-        f"✓ Model aktif berhasil diganti ke:\n<code>{html.escape(target)}</code>\n\n"
-        "Semua panggilan <code>/ask</code> sekarang menggunakan model ini.",
+        f"Active model changed to:\n<code>{html.escape(target)}</code>\n\n"
+        "Every <code>/ask</code> call now uses this model.",
         parse_mode="HTML",
     )
 
 
 async def thinking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /thinking [on|off|status] — toggle reasoning thinking model.
+    """Command /thinking [on|off|status] — toggle model reasoning.
 
-    Owner-only. Non-owner: silent (bot tidak merespon sama sekali).
-    Default: OFF (respons cepat, tanpa token reasoning yang memperlambat).
+    Owner-only. Non-owner: silent (no response at all).
+    Default: OFF (fast responses, without reasoning tokens that add latency).
     """
     msg = update.effective_message
     user = update.effective_user
@@ -674,14 +675,18 @@ async def thinking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current = is_thinking_enabled()
 
     if not args or args[0].lower() in ("status", "info"):
-        status_label = "<b>ON</b> (reasoning aktif, respon lebih lama)" if current else "<b>OFF</b> (respons cepat, default)"
+        status_label = (
+            "<b>ON</b> — reasoning enabled (slower, more thorough)"
+            if current
+            else "<b>OFF</b> — fast responses (default)"
+        )
         return await msg.reply_text(
-            f"<b>OpenCode Mode</b>\n\n"
-            f"Status saat ini: {status_label}\n\n"
-            "<b>Cara pakai:</b>\n"
-            "• <code>/thinking on</code> — aktifkan thinking/reasoning\n"
-            "• <code>/thinking off</code> — matikan thinking (cepat)\n"
-            "• <code>/thinking status</code> — cek status saat ini",
+            "<b>OpenCode Thinking Mode</b>\n\n"
+            f"Current status: {status_label}\n\n"
+            "<b>Usage:</b>\n"
+            "• <code>/thinking on</code> — enable thinking/reasoning\n"
+            "• <code>/thinking off</code> — disable thinking (fast)\n"
+            "• <code>/thinking status</code> — check current status",
             parse_mode="HTML",
         )
 
@@ -691,7 +696,7 @@ async def thinking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.info("OpenCode thinking mode changed | user_id=%s enabled=True", user.id)
         return await msg.reply_text(
             "Thinking mode: <b>ON</b>\n\n"
-            "Model reasoning.",
+            "Model will reason before answering (more thorough, slower).",
             parse_mode="HTML",
         )
 
@@ -700,26 +705,26 @@ async def thinking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.info("OpenCode thinking mode changed | user_id=%s enabled=False", user.id)
         return await msg.reply_text(
             "Thinking mode: <b>OFF</b>\n\n"
-            "Model akan langsung menjawab tanpa reasoning (respons jauh lebih cepat).",
+            "Model answers directly without reasoning (much faster).",
             parse_mode="HTML",
         )
 
     return await msg.reply_text(
-        "Gunakan <code>/thinking on</code> atau <code>/thinking off</code>.",
+        "Use <code>/thinking on</code> or <code>/thinking off</code>.",
         parse_mode="HTML",
     )
 
 
 async def setsearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /setsearch — pilih engine & kedalaman web search untuk /ask.
+    """Command /setsearch — pick the web search engine & depth for /ask.
 
-    Owner-only. Non-owner: silent (bot tidak merespon sama sekali).
+    Owner-only. Non-owner: silent (no response at all).
 
     Usage:
-      /setsearch                      -> status saat ini
-      /setsearch firecrawl            -> pakai Firecrawl (default, cepat)
-      /setsearch jina                 -> pakai Jina AI Reader
-      /setsearch fast                 -> Firecrawl SERP polos (~1s/query)
+      /setsearch                      -> current status
+      /setsearch firecrawl            -> use Firecrawl (default, fast)
+      /setsearch jina                 -> use Jina AI Reader
+      /setsearch fast                 -> Firecrawl SERP only (~1s/query)
       /setsearch content              -> Firecrawl SERP + scrape (~8s/query)
     """
     msg = update.effective_message
@@ -732,19 +737,19 @@ async def setsearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = get_search_engine()
     depth = get_search_depth()
     engine_label = "Firecrawl" if engine == "firecrawl" else "Jina AI"
-    depth_label = "fast" if depth == "fast" else "content"
+    depth_label = "fast (SERP only ~1s)" if depth == "fast" else "content (SERP + scrape ~8s)"
 
     args = context.args or []
     if not args:
         return await msg.reply_text(
-            f"<b>Web Search Engine</b>\n\n"
+            "<b>Web Search Engine</b>\n\n"
             f"Engine: <b>{engine_label}</b>\n"
-            f"Kedalaman: <b>{depth_label}</b>\n\n"
-            "<b>Cara pakai:</b>\n"
-            "• <code>/setsearch firecrawl</code> — Firecrawl\n"
+            f"Depth: <b>{depth_label}</b>\n\n"
+            "<b>Usage:</b>\n"
+            "• <code>/setsearch firecrawl</code> — Firecrawl (fast)\n"
             "• <code>/setsearch jina</code> — Jina AI Reader\n"
-            "• <code>/setsearch fast</code> — SERP\n"
-            "• <code>/setsearch content</code> — SERP + isi halaman",
+            "• <code>/setsearch fast</code> — SERP only (~1s)\n"
+            "• <code>/setsearch content</code> — SERP + full page scrape (~8s)",
             parse_mode="HTML",
         )
 
@@ -754,7 +759,7 @@ async def setsearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_search_engine("firecrawl")
         log.info("Search engine changed | user_id=%s engine=firecrawl", user.id)
         return await msg.reply_text(
-            "Engine: <b>Firecrawl</b>\n\nSERP + scrape on-demand via read_page.",
+            "Engine: <b>Firecrawl</b>\n\nFast SERP + on-demand scrape via read_page.",
             parse_mode="HTML",
         )
 
@@ -770,7 +775,7 @@ async def setsearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_search_depth("fast")
         log.info("Search depth changed | user_id=%s depth=fast", user.id)
         return await msg.reply_text(
-            "Kedalaman: <b>fast</b>\n\nSERP. Model baca detail lewat read_page bila perlu.",
+            "Depth: <b>fast</b>\n\nSERP only (~1s). Details fetched via read_page if needed.",
             parse_mode="HTML",
         )
 
@@ -778,11 +783,11 @@ async def setsearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_search_depth("content")
         log.info("Search depth changed | user_id=%s depth=content", user.id)
         return await msg.reply_text(
-            "Kedalaman: <b>content</b>\n\nSERP + markdown tiap hasil.",
+            "Depth: <b>content</b>\n\nSERP + markdown per result (~8s).",
             parse_mode="HTML",
         )
 
     return await msg.reply_text(
-        "Gunakan <code>/setsearch firecrawl|jina|fast|content</code>.",
+        "Use <code>/setsearch firecrawl|jina|fast|content</code>.",
         parse_mode="HTML",
     )

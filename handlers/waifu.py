@@ -105,17 +105,17 @@ async def waifu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not chat or not user:
         return
     if not _is_nsfw_enabled(chat.id, chat.type):
-        return await msg.reply_text("❌ NSFW tidak diaktifkan di grup ini.")
+        return await msg.reply_text("❌ NSFW is not enabled in this group.")
     if not context.args:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏷️ Daftar Tag Waifu", url="https://www.waifu.im/tags")]
+            [InlineKeyboardButton("🏷️ Waifu Tags List", url="https://www.waifu.im/tags")]
         ])
         return await msg.reply_text(
             "💖 <b>Waifu Command</b>\n\n"
             "• <code>/waifu random</code>\n"
             "• <code>/waifu maid</code>\n"
             "• <code>/waifu raiden-shogun</code>\n\n"
-            "Klik tombol di bawah untuk lihat tag 👇",
+            "Click the button below to see available tags 👇",
             parse_mode="HTML",
             disable_web_page_preview=True,
             reply_markup=keyboard
@@ -129,7 +129,7 @@ async def waifu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if status != 200:
         return await msg.reply_text(f"❌ API Error ({status})")
     if not img:
-        return await msg.reply_text("❌ Waifu tidak ditemukan 😭")
+        return await msg.reply_text("❌ Waifu not found 😭")
     _push(key, img)
     await msg.reply_photo(
         photo=img["url"],
@@ -152,7 +152,7 @@ async def waifu_next_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return await q.answer()
     if user.id != owner_id:
-        return await q.answer("Bukan punya lu goblok.", show_alert=True)
+        return await q.answer("This is not yours, idiot.", show_alert=True)
     key = _state_key(chat_id, owner_id)
     _cleanup(key)
     tag = _WAIFU_LAST_TAG.get(key)
@@ -182,11 +182,11 @@ async def waifu_pref_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return await q.answer()
     if user.id != owner_id:
-        return await q.answer("Bukan punya lu goblok.", show_alert=True)
+        return await q.answer("This is not yours, idiot.", show_alert=True)
     key = _state_key(chat_id, owner_id)
     img = _pop(key)
     if not img:
-        return await q.answer("Ga ada waifu sebelumnya.", show_alert=True)
+        return await q.answer("No previous waifu.", show_alert=True)
     tag = _WAIFU_LAST_TAG.get(key)
     await q.message.edit_media(
         media=InputMediaPhoto(media=img["url"], caption=_build_caption(img, tag), parse_mode="HTML"),

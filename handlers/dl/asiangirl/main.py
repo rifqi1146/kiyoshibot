@@ -101,7 +101,7 @@ async def asiangirl_download(
     title = probe.get("title") or "AsianGirlPorn Video"
     stream_url = probe.get("stream_url") or ""
     if not stream_url:
-        raise RuntimeError("Gagal mendapatkan link stream AsianGirlPorn.")
+        raise RuntimeError("Failed to get AsianGirlPorn stream link.")
 
     is_audio = fmt_key == "mp3"
     ext_name = "mp3" if is_audio else "mp4"

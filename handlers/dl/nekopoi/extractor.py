@@ -219,7 +219,7 @@ def _get(
             last = repr(e)
         if attempt < attempts - 1:
             time.sleep(1.0)
-    raise RuntimeError(f"Gagal mengambil sumber Nekopoi ({last}) | {urlsplit(url).hostname}")
+    raise RuntimeError(f"Failed to fetch Nekopoi source ({last}) | {urlsplit(url).hostname}")
 
 
 def _probe_direct_size(url: str, headers: dict) -> int:
@@ -380,7 +380,7 @@ def _bypass_ouo_form(url: str) -> str | None:
 
         return res.headers.get("Location")
     except Exception as e:
-        log.debug("Gagal bypass ouo.io (form) %s : %s", url, e)
+        log.debug("ouo.io bypass (form) failed %s : %s", url, e)
         return None
 
 
@@ -546,7 +546,7 @@ def bypass_ouo(url: str, retries: int = 1) -> str | None:
     if target:
         log.info("Bypass ouo.io sukses | %s -> %s", url, target)
     else:
-        log.debug("Gagal bypass ouo.io | %s", url)
+        log.debug("ouo.io bypass failed | %s", url)
     return target
 
 
@@ -632,7 +632,7 @@ def resolve_shortener(url: str) -> str | None:
     if target and _is_final_target(target):
         log.info("Shortener terresolusi via browser | %s -> %s", url, target)
         return target
-    log.debug("Gagal resolusi shortener | %s", url)
+    log.debug("shortener resolution failed | %s", url)
     return None
 
 
@@ -986,7 +986,7 @@ def list_resolutions(master_url: str, referer: str = "") -> list:
     text = _get(master_url, referer=referer, attempts=PROBE_ATTEMPTS, timeout=PROBE_TIMEOUT)
     variants = _parse_master(master_url, text)
     if not variants:
-        raise RuntimeError("Tidak ada varian resolusi di playlist Nekopoi")
+        raise RuntimeError("No resolution variants in Nekopoi playlist")
     _dbg("resolutions | count=%s heights=%s", len(variants), [v["height"] for v in variants])
     return variants
 
@@ -1011,7 +1011,7 @@ def list_variant_segments(variant_url: str, referer: str = "") -> list:
             raise RuntimeError("Playlist varian Nekopoi tidak valid (dekoy)")
         segs.append(seg_url)
     if not segs:
-        raise RuntimeError("Tidak ada segmen video di playlist Nekopoi")
+        raise RuntimeError("No video segments in Nekopoi playlist")
     return segs
 
 
@@ -1178,7 +1178,7 @@ def _run_ffmpeg(cmd: list) -> None:
     import subprocess
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=FFMPEG_TIMEOUT)
     if res.returncode != 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
 
 
 def _cleanup_segments(work_dir: str, count: int, concat_path: str):
@@ -1213,7 +1213,7 @@ async def download_variant(
             from handlers.dl.remux import download_hls_aes_ffmpeg
             await download_hls_aes_ffmpeg(variant_url, referer, out_path, user_agent=UA, audio_only=False)
             if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-                raise RuntimeError("Gagal merangkai video Nekopoi via AES ffmpeg (file kosong)")
+                raise RuntimeError("Failed to assemble Nekopoi video via AES ffmpeg (empty file)")
             return os.path.getsize(out_path)
         _dbg("segments | %s", len(seg_urls))
         concat_path, _ = await _download_segments(
@@ -1227,7 +1227,7 @@ async def download_variant(
             "-c", "copy", "-movflags", "+faststart", out_path,
         ])
         if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-            raise RuntimeError("Gagal merangkai video Nekopoi (file kosong)")
+            raise RuntimeError("Failed to assemble Nekopoi video (empty file)")
         return os.path.getsize(out_path)
     finally:
         import shutil
@@ -1255,7 +1255,7 @@ async def download_audio(
             from handlers.dl.remux import download_hls_aes_ffmpeg
             await download_hls_aes_ffmpeg(variant_url, referer, out_path, user_agent=UA, audio_only=True)
             if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-                raise RuntimeError("Gagal membuat MP3 dari Nekopoi via AES ffmpeg")
+                raise RuntimeError("Failed to create MP3 from Nekopoi via AES ffmpeg")
             return os.path.getsize(out_path)
             
         concat_path, _ = await _download_segments(

@@ -97,7 +97,7 @@ def scrape_post(url: str) -> dict:
     resp = session.get(url, timeout=HTTP_TIMEOUT)
 
     if resp.status_code == 404:
-        raise FileNotFoundError(f"Video tidak ditemukan (HTTP 404): {url}")
+        raise FileNotFoundError(f"Video not found (HTTP 404): {url}")
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code} saat mengakses AsianGirlPorn")
 
@@ -130,8 +130,8 @@ def scrape_post(url: str) -> dict:
     stream_url = _pick_stream_url(all_m3u8)
     if not stream_url:
         raise RuntimeError(
-            "Tidak ditemukan URL stream HLS di halaman AsianGirlPorn ini. "
-            "Pastikan video masih aktif."
+            "No HLS stream URL found on this AsianGirlPorn page. "
+            "Make sure the video is still active."
         )
 
     return {
@@ -158,7 +158,7 @@ def parse_hls(m3u8_url: str, session: curl_requests.Session) -> dict:
     r = session.get(m3u8_url, timeout=HTTP_TIMEOUT)
     if r.status_code != 200:
         raise RuntimeError(
-            f"Gagal mengambil playlist HLS (HTTP {r.status_code}): {m3u8_url}"
+            f"Failed to fetch HLS playlist (HTTP {r.status_code}): {m3u8_url}"
         )
     text = r.text
     base = m3u8_url.rsplit("/", 1)[0] + "/"
@@ -171,18 +171,18 @@ def parse_hls(m3u8_url: str, session: curl_requests.Session) -> dict:
             continue
         method = m.group(1).upper()
         if method != "AES-128":
-            raise RuntimeError(f"Metode enkripsi HLS tidak didukung: {method}")
+            raise RuntimeError(f"Unsupported HLS encryption method: {method}")
         key_uri = _resolve_segment_url(m.group(2), base)
         kr = session.get(key_uri, timeout=SEG_TIMEOUT)
         if kr.status_code != 200 or len(kr.content) != 16:
             raise RuntimeError(
-                f"Gagal mengambil kunci AES-128 (HTTP {kr.status_code})"
+                f"Failed to fetch AES-128 key (HTTP {kr.status_code})"
             )
         key_hex = kr.content
         iv_hex = bytes.fromhex(m.group(3)) if m.group(3) else None
         break
     if key_hex is None:
-        raise RuntimeError("Playlist HLS tidak memuat #EXT-X-KEY (AES-128)")
+        raise RuntimeError("HLS playlist has no #EXT-X-KEY (AES-128)")
 
     segs: list[str] = []
     duration = 0.0
@@ -192,7 +192,7 @@ def parse_hls(m3u8_url: str, session: curl_requests.Session) -> dict:
             continue
         segs.append(_resolve_segment_url(s, base))
     if not segs:
-        raise RuntimeError("Tidak ada segmen di playlist HLS")
+        raise RuntimeError("No segments in HLS playlist")
 
     try:
         duration = sum(float(d) for d in _EXTINF_RE.findall(text))
@@ -221,7 +221,7 @@ def _fetch_segment(url: str, session: curl_requests.Session) -> bytes:
         except Exception as e:
             last_err = repr(e)
         time.sleep(0.6 * (attempt + 1))
-    raise RuntimeError(f"Gagal mengunduh segmen ({last_err})")
+    raise RuntimeError(f"Failed to download segment ({last_err})")
 
 
 async def download_segments_aes(
@@ -350,7 +350,7 @@ def concat_segments(seg_files: list[str], out_path: str, work_dir: str) -> str:
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg concat timeout setelah {FFMPEG_TIMEOUT}s") from e
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg concat gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg concat failed: {(res.stderr or '').strip()[-400:]}")
     return out_path
 
 
@@ -372,5 +372,5 @@ def extract_audio(src_path: str, out_path: str, title: str = "") -> str:
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg audio extraction timeout setelah {FFMPEG_TIMEOUT}s") from e
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg audio extraction gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg audio extraction failed: {(res.stderr or '').strip()[-400:]}")
     return out_path

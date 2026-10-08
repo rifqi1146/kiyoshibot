@@ -82,7 +82,7 @@ def scrape_post(url: str) -> dict:
 
     r = _new_session().get(url.strip(), timeout=HTTP_TIMEOUT)
     if r.status_code == 404:
-        raise FileNotFoundError(f"Video tidak ditemukan (HTTP 404): {url}")
+        raise FileNotFoundError(f"Video not found (HTTP 404): {url}")
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} saat mengakses simontok.study")
 
@@ -98,7 +98,7 @@ def scrape_post(url: str) -> dict:
             embed_url = cand
             break
     if not embed_url:
-        raise RuntimeError("Iframe embed putarin/puterin tidak ditemukan di halaman post")
+        raise RuntimeError("putarin/puterin embed iframe not found on post page")
 
     return {
         "title": sanitize_filename(title or "Simontok Video", 100),
@@ -116,7 +116,7 @@ def _fetch_pk(session, origin: str, nonce: str, referer: str) -> bytes:
         raise RuntimeError(f"GET /api/pk HTTP {r.status_code}")
     text = (r.text or "").strip()
     if len(text) < 64:
-        raise RuntimeError("Respon /api/pk bukan kunci hex yang valid")
+        raise RuntimeError("/api/pk response is not a valid hex key")
     return bytes.fromhex(text[:64])
 
 
@@ -134,10 +134,10 @@ def resolve_hls(embed_url: str) -> dict:
 
             m = PX_RE.search(r.text)
             if not m:
-                raise RuntimeError("window.__PX tidak ditemukan di halaman embed")
+                raise RuntimeError("window.__PX not found on embed page")
             px = json.loads(m.group(1))
             if not px.get("n") or not px.get("d"):
-                raise RuntimeError("config embed tidak punya nonce/ciphertext")
+                raise RuntimeError("embed config has no nonce/ciphertext")
 
             key = _fetch_pk(session, origin, px["n"], embed_url)
             blob = base64.b64decode(px["d"])
@@ -150,7 +150,7 @@ def resolve_hls(embed_url: str) -> dict:
 
             file_url = player.get("file") or player.get("key") or ""
             if not file_url:
-                raise RuntimeError("config player tidak punya file/key")
+                raise RuntimeError("player config has no file/key")
             if file_url.startswith("/"):
                 file_url = origin + file_url
             return {
@@ -160,9 +160,9 @@ def resolve_hls(embed_url: str) -> dict:
             }
         except Exception as e:
             last_err = e
-            log.debug("resolve_hls attempt=%s gagal | origin=%s err=%r", attempt + 1, origin, e)
+            log.debug("resolve_hls attempt=%s failed | origin=%s err=%r", attempt + 1, origin, e)
             time.sleep(1.0)
-    raise RuntimeError(f"Gagal membuka config player Simontok ({last_err})")
+    raise RuntimeError(f"Failed to open Simontok player config ({last_err})")
 
 
 def parse_segments(m3u8_url: str, referer: str) -> dict:
@@ -175,12 +175,12 @@ def parse_segments(m3u8_url: str, referer: str) -> dict:
     if r.status_code != 200:
         raise RuntimeError(f"GET m3u8 HTTP {r.status_code}")
     if "#EXT-X-KEY" in r.text:
-        raise RuntimeError("Playlist HLS terenkripsi (#EXT-X-KEY) — belum didukung")
+        raise RuntimeError("HLS playlist is encrypted (#EXT-X-KEY) — not supported yet")
 
     duration = sum(float(d) for d in EXTINF_RE.findall(r.text))
     init_seg = EXTMAP_RE.search(r.text)
     if init_seg:
-        raise RuntimeError("Playlist HLS fMP4 (#EXT-X-MAP) — belum didukung")
+        raise RuntimeError("fMP4 HLS playlist (#EXT-X-MAP) — not supported yet")
 
     base = m3u8_url.rsplit("/", 1)[0] + "/"
     segs = []
@@ -194,7 +194,7 @@ def parse_segments(m3u8_url: str, referer: str) -> dict:
             line = urljoin(base, line)
         segs.append(line)
     if not segs:
-        raise RuntimeError("Tidak ada segmen di playlist")
+        raise RuntimeError("No segments in playlist")
 
     return {"segments": segs, "duration": int(duration)}
 
@@ -214,7 +214,7 @@ def _download_one_segment(url: str, referer: str, out_path: str) -> int:
         except Exception as e:
             last_err = repr(e)
         time.sleep(0.6 * (attempt + 1))
-    raise RuntimeError(f"Gagal mengunduh segmen ({last_err})")
+    raise RuntimeError(f"Failed to download segment ({last_err})")
 
 
 async def download_segments(
@@ -312,7 +312,7 @@ def concat_segments(seg_files: list, out_path: str, work_dir: str) -> str:
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg timeout setelah {FFMPEG_TIMEOUT}s") from e
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
     return out_path
 
 
@@ -328,7 +328,7 @@ def extract_audio(src_path: str, out_path: str) -> str:
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg timeout setelah {FFMPEG_TIMEOUT}s") from e
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
     return out_path
 
 
@@ -361,7 +361,7 @@ def download_thumb(url: str, out_path: str) -> str | None:
                 f.write(r.content)
             return out_path
     except Exception as e:
-        log.debug("download_thumb Simontok gagal | %r", e)
+        log.debug("Simontok download_thumb failed | %r", e)
     return None
 
 

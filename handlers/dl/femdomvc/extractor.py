@@ -75,7 +75,7 @@ def scrape_post(url: str) -> dict:
     resp = session.get(url, timeout=HTTP_TIMEOUT)
 
     if resp.status_code == 404:
-        raise FileNotFoundError(f"Video tidak ditemukan (HTTP 404): {url}")
+        raise FileNotFoundError(f"Video not found (HTTP 404): {url}")
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code} saat mengakses FemdomVC")
 
@@ -145,8 +145,8 @@ def scrape_post(url: str) -> dict:
 
     if not dl_url:
         raise RuntimeError(
-            "Tidak ditemukan tautan download MP4 di halaman FemdomVC ini. "
-            "Pastikan video masih aktif dan dapat diunduh publik."
+            "No MP4 download link found on this FemdomVC page. "
+            "Make sure the video is still active and publicly downloadable."
         )
 
     filesize = _probe_direct_size(dl_url, url, session)
@@ -272,7 +272,7 @@ async def download_video(
     post = await asyncio.to_thread(scrape_post, url)
     dl_url = post.get("download_url") or ""
     if not dl_url:
-        raise RuntimeError("Gagal mendapatkan link download FemdomVC.")
+        raise RuntimeError("Failed to get FemdomVC download link.")
 
     total = int(post.get("filesize") or 0)
     if total > MAX_TG_SIZE:

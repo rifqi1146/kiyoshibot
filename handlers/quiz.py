@@ -122,14 +122,14 @@ async def _generate_question_bank() -> list:
         timeout=aiohttp.ClientTimeout(total=30),
     ) as resp:
         if resp.status != 200:
-            raise RuntimeError("Gagal generate soal")
+            raise RuntimeError("Failed to generate quiz questions")
         data = await resp.json()
 
     raw = _strip_codeblock(data["choices"][0]["message"]["content"])
     bank = json.loads(raw)
 
     if not isinstance(bank, list) or len(bank) < QUIZ_TOTAL:
-        raise RuntimeError("Bank soal tidak valid")
+        raise RuntimeError("Invalid question bank")
 
     out = []
     for it in bank:
@@ -151,7 +151,7 @@ async def _generate_question_bank() -> list:
         out.append({"question": q, "options": opt, "answer": ans})
 
     if len(out) < QUIZ_TOTAL:
-        raise RuntimeError("Bank soal tidak valid")
+        raise RuntimeError("Invalid question bank")
 
     return out[:QUIZ_TOTAL]
 
@@ -209,7 +209,7 @@ async def _send_or_edit_question(update: Update, context: ContextTypes.DEFAULT_T
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=quiz["message_id"],
-                    text="<b>Quiz selesai!</b>\n\nMenghitung skor...",
+                    text="<b>Quiz finished!</b>\n\nCalculating scores...",
                     parse_mode="HTML",
                     disable_web_page_preview=True,
                 )
@@ -223,7 +223,7 @@ async def _send_or_edit_question(update: Update, context: ContextTypes.DEFAULT_T
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=quiz["message_id"],
-                text="<b>Waktu habis!</b>\n\nLanjut ke soal berikutnya...",
+                text="<b>Time's up!</b>\n\nNext question...",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
@@ -265,18 +265,18 @@ async def _end_quiz(context: ContextTypes.DEFAULT_TYPE, quiz: dict):
 
     scores = quiz["scores"]
     if not scores:
-        text = "Quiz selesai. Tidak ada yang menjawab."
+        text = "Quiz finished. Nobody answered."
     else:
         ranking = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-        lines = ["🏆 <b>HASIL QUIZ</b>\n"]
+        lines = ["🏆 <b>QUIZ RESULTS</b>\n"]
         for i, (uid, score) in enumerate(ranking, 1):
             try:
                 member = await context.bot.get_chat_member(chat_id, uid)
                 name = html.escape(member.user.full_name or "User")
-                lines.append(f"{i}. <a href='tg://user?id={uid}'>{name}</a> — <b>{score}</b> poin")
+                lines.append(f"{i}. <a href='tg://user?id={uid}'>{name}</a> — <b>{score}</b> pts")
             except Exception:
-                lines.append(f"{i}. <code>{uid}</code> — <b>{score}</b> poin")
+                lines.append(f"{i}. <code>{uid}</code> — <b>{score}</b> pts")
 
         text = "\n".join(lines)
 
@@ -312,7 +312,7 @@ async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         bank = await _generate_question_bank()
     except Exception:
-        return await msg.reply_text("Gagal membuat soal quiz (Groq error).")
+        return await msg.reply_text("Failed to create quiz questions (Groq error).")
 
     quiz = {
         "chat_id": chat_id,
@@ -344,23 +344,23 @@ async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     quiz = _ACTIVE_QUIZ.get(chat_id)
     if not quiz:
-        return await q.answer("Quiz sudah selesai", show_alert=True)
+        return await q.answer("Quiz is already over", show_alert=True)
 
     if q.message is None or q.message.message_id != quiz.get("message_id"):
-        return await q.answer("Tombol ini sudah tidak valid", show_alert=True)
+        return await q.answer("This button is no longer valid", show_alert=True)
 
     if qidx != quiz["current"]:
         return await q.answer("Itu pertanyaan lama 😄", show_alert=True)
 
     if chosen not in ("A", "B", "C", "D"):
-        return await q.answer("Pilihan tidak valid", show_alert=True)
+        return await q.answer("Invalid choice", show_alert=True)
 
     uid = q.from_user.id
     if uid in quiz["answered"]:
         return await q.answer("Lu udah jawab 😤", show_alert=True)
 
     if time.time() - quiz["start"] > QUIZ_TIMEOUT:
-        return await q.answer("Waktu habis!", show_alert=True)
+        return await q.answer("Time's up!", show_alert=True)
 
     quiz["answered"].add(uid)
 
@@ -369,9 +369,9 @@ async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chosen == correct:
         quiz["scores"][uid] = quiz["scores"].get(uid, 0) + 1
-        await q.answer("✅ Benar!", show_alert=False)
+        await q.answer("✅ Correct!", show_alert=False)
     else:
-        await q.answer(f"❌ Salah. Jawaban: {correct}", show_alert=False)
+        await q.answer(f"❌ Incorrect. Answer: {correct}", show_alert=False)
 
     if quiz.get("lock"):
         return
@@ -399,7 +399,7 @@ async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=quiz["message_id"],
-                text="<b>Quiz selesai!</b>\n\nMenghitung skor...",
+                text="<b>Quiz finished!</b>\n\nCalculating scores...",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )

@@ -151,7 +151,7 @@ def _resolve_embed_streak(
         re.I,
     )
     if not src_m:
-        raise RuntimeError("Tag <source> tidak ditemukan di embed bdsmstreak")
+        raise RuntimeError("<source> tag not found in bdsmstreak embed")
     poster_m = re.search(
         r"<video[^>]+poster\s*=\s*[\"']([^\"']+)[\"']",
         text,
@@ -175,7 +175,7 @@ def _resolve_embed_bdsmx(
     # `vid-bx.com` me-redirect ke `bdsmx.tube`; ambil video_id dari path.
     m = re.search(r"/embed/(\d+)", url)
     if not m:
-        raise RuntimeError(f"ID video tidak ditemukan pada embed: {url}")
+        raise RuntimeError(f"Video ID not found in embed: {url}")
     video_id = m.group(1)
 
     api_url = f"https://bdsmx.tube/api/videofile.php?video_id={video_id}"
@@ -192,7 +192,7 @@ def _resolve_embed_bdsmx(
     except Exception as e:
         raise RuntimeError(f"Respons API videofile bukan JSON: {e}") from e
     if not data or not isinstance(data, list):
-        raise RuntimeError("Respons API videofile kosong / format salah")
+        raise RuntimeError("Videofile API response empty / wrong format")
     entry = data[0]
     raw_b64 = entry.get("video_url") or ""
     if not raw_b64:
@@ -213,7 +213,7 @@ def scrape_post(url: str) -> dict:
     resp = session.get(url, timeout=HTTP_TIMEOUT)
 
     if resp.status_code == 404:
-        raise FileNotFoundError(f"Video tidak ditemukan (HTTP 404): {url}")
+        raise FileNotFoundError(f"Video not found (HTTP 404): {url}")
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code} saat mengakses BDSMLust")
 
@@ -297,8 +297,8 @@ def scrape_post(url: str) -> dict:
 
     if not download_url:
         raise RuntimeError(
-            "Tidak ditemukan embed video pada post BDSMLust ini. "
-            "Mungkin post telah dihapus atau menggunakan host yang belum didukung."
+            "No video embed found on this BDSMLust post. "
+            "The post may have been deleted or uses an unsupported host."
         )
 
     # 6. HEAD probe ukuran
@@ -430,7 +430,7 @@ async def download_video(
     post = await asyncio.to_thread(scrape_post, url)
     dl_url = post.get("download_url") or ""
     if not dl_url:
-        raise RuntimeError("Gagal mendapatkan link download BDSMLust.")
+        raise RuntimeError("Failed to get BDSMLust download link.")
     referer = post.get("referer") or url
 
     total = int(post.get("filesize") or 0)

@@ -64,7 +64,7 @@ async def punishworld_download(
         sources = post.get("sources") or []
 
         if not sources:
-            raise RuntimeError("Tidak ada video yang bisa diunduh di post ini")
+            raise RuntimeError("No video to download in this post")
 
         item = ext.pick_best(sources)
         url = item["url"]

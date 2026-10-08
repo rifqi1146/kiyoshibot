@@ -695,7 +695,7 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
         return
 
     if not QUOTE_API_URI:
-        return await msg.reply_text("⚠️ Quote API belum dikonfigurasi.")
+        return await msg.reply_text("⚠️ Quote API is not configured.")
 
     target = msg.reply_to_message
     if target:
@@ -711,7 +711,7 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
         if candidates:
             target = candidates[-1]
         else:
-            return await msg.reply_text("❌ Reply ke pesan yang ingin dijadikan quote.")
+            return await msg.reply_text("❌ Reply to the message you want to quote.")
 
     # Determine command name
     raw_cmd = ""
@@ -733,7 +733,7 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
         cmd_msg_id=msg.message_id,
     )
     if not messages:
-        return await msg.reply_text("❌ Pesan tidak ditemukan.")
+        return await msg.reply_text("❌ Message not found.")
 
     # Build payload messages
     api_messages = []
@@ -802,7 +802,7 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
         if m.get("text") or m.get("media") or m.get("voice") or m.get("document") or m.get("audio")
     ]
     if not valid_messages:
-        return await msg.reply_text("❌ Tidak ada konten yang bisa dijadikan quote.")
+        return await msg.reply_text("❌ No content available to quote.")
 
     kwargs = {}
     if getattr(msg, "message_thread_id", None):
@@ -846,7 +846,7 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
 
     except Exception as e:
         log.error("Quote generation failed: %s", e, exc_info=True)
-        await msg.reply_text(f"❌ Gagal membuat quote: {e}")
+        await msg.reply_text(f"❌ Failed to create quote: {e}")
 
 
 async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -113,7 +113,7 @@ async def bunkr_download(
 
             if fmt_key == "mp3":
                 if not videos:
-                    raise RuntimeError("Tidak ada video di album untuk dijadikan MP3")
+                    raise RuntimeError("No video in album to convert to MP3")
                 info = await asyncio.to_thread(ext.resolve_file, videos[0]["page"])
                 src = os.path.join(work_dir, "source" + ext.extension_for(info["name"], ".mp4"))
                 await ext.download_to_file(

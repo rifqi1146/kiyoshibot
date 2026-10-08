@@ -151,7 +151,7 @@ def scrape_album(url: str) -> dict:
         title = re.sub(r"\s*\|\s*Bunkr\s*$", "", title).strip() or "Bunkr"
         items = parse_album_html(text, base)
         if not items:
-            raise RuntimeError("Album Bunkr tidak berisi media")
+            raise RuntimeError("Bunkr album contains no media")
         return {"title": _fix_name(title), "items": items, "url": url}
     finally:
         sess.close()
@@ -187,7 +187,7 @@ def resolve_file(page_url: str, *, retries: int = 3) -> dict:
                         None,
                     )
                     if dl is None:
-                        raise RuntimeError("link halaman download tidak ada")
+                        raise RuntimeError("download page link missing")
                     r = sess.get(
                         urljoin(page_url, dl),
                         headers={"User-Agent": UA, "Referer": page_url},
@@ -202,7 +202,7 @@ def resolve_file(page_url: str, *, retries: int = 3) -> dict:
 
                 data_id = btn.get("data-id") if btn is not None else None
                 if not data_id:
-                    raise RuntimeError("download-btn data-id tidak ada")
+                    raise RuntimeError("download-btn data-id missing")
 
                 m_name = re.search(r'ogname\s*=\s*"([^"]*)"', text)
                 ogname = m_name.group(1) if m_name else ""
@@ -223,7 +223,7 @@ def resolve_file(page_url: str, *, retries: int = 3) -> dict:
                 mediafiles = (meta.get("mediafiles") or "").rstrip("/")
                 path = meta.get("path") or ""
                 if not mediafiles or not path:
-                    raise RuntimeError(f"meta tidak lengkap: {meta!r}")
+                    raise RuntimeError(f"incomplete meta: {meta!r}")
 
                 sign = sess.get(
                     SIGN_URL + "?path=" + quote(path),
@@ -346,7 +346,7 @@ async def download_to_file(
             write_task.cancel()
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError("Gagal mengunduh file Bunkr (kosong)")
+        raise RuntimeError("Failed to download Bunkr file (empty)")
 
     downloaded = os.path.getsize(out_path)
     stats.sample(downloaded)
@@ -385,7 +385,7 @@ async def download_album(
     medias = [m for m in (medias_list or []) if m.get("page")]
     total = len(medias)
     if not total:
-        raise RuntimeError("Tidak ada media yang bisa diunduh di post ini")
+        raise RuntimeError("No media to download in this post")
 
     interval = _album_interval(total)
     escaped_title = html_mod.escape(sanitize_filename(title, 80))
@@ -458,10 +458,10 @@ async def download_album(
 
     if not items:
         raise RuntimeError(
-            f"Semua media Bunkr gagal diunduh ({failures}/{total} gagal)"
+            f"All Bunkr media failed to download ({failures}/{total} failed)"
         )
     if failures:
-        log.warning("Bunkr album selesai dengan kegagalan | ok=%d gagal=%d", len(items), failures)
+        log.warning("Bunkr album finished with failures | ok=%d failed=%d", len(items), failures)
     return {"items": items, "title": sanitize_filename(title or "Bunkr", 100)}
 
 
@@ -477,5 +477,5 @@ def extract_audio(src_path: str, out_path: str) -> str:
         text=True, timeout=600,
     )
     if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError(f"ffmpeg gagal: {(res.stderr or '').strip()[-400:]}")
+        raise RuntimeError(f"ffmpeg failed: {(res.stderr or '').strip()[-400:]}")
     return out_path

@@ -80,7 +80,7 @@ def _best_variant(playlist: str, base_url: str) -> str:
 
 def _parse_media(playlist: str, base_url: str) -> dict:
     if "#EXT-X-KEY" in playlist:
-        raise RuntimeError("Playlist HLS Cossora terenkripsi (#EXT-X-KEY) — belum didukung")
+        raise RuntimeError("Cossora HLS playlist is encrypted (#EXT-X-KEY) — not supported yet")
     duration = sum(float(d) for d in _EXTINF_RE.findall(playlist))
     base = base_url.rsplit("/", 1)[0] + "/"
     segments = []
@@ -94,7 +94,7 @@ def _parse_media(playlist: str, base_url: str) -> dict:
             line = urljoin(base, line)
         segments.append(line)
     if not segments:
-        raise RuntimeError("Tidak ada segmen di playlist Cossora")
+        raise RuntimeError("No segments in Cossora playlist")
     return {"segments": segments, "duration": int(duration)}
 
 
@@ -119,7 +119,7 @@ def resolve_embed(embed_url: str) -> dict:
             m_video = _VIDEO_RE.search(html)
             m_key = _KEY_RE.search(html)
             if not m_video or not m_key:
-                raise RuntimeError("videoURL/kunci Cossora tidak ditemukan di halaman embed")
+                raise RuntimeError("videoURL/Cossora key not found on embed page")
 
             playlist = _decrypt(m_video.group(1), m_key.group(1))
 
@@ -129,14 +129,14 @@ def resolve_embed(embed_url: str) -> dict:
                 try:
                     poster = _decrypt(m_portada.group(1), m_key.group(1))
                 except Exception as e:
-                    log.debug("Decrypt poster Cossora gagal | err=%r", e)
+                    log.debug("Cossora poster decrypt failed | err=%r", e)
 
             return {"playlist_url": playlist, "poster": poster, "referer": embed_url}
         except Exception as e:
             last_err = e
-            log.debug("resolve_embed Cossora attempt=%s gagal | err=%r", attempt + 1, e)
+            log.debug("resolve_embed Cossora attempt=%s failed | err=%r", attempt + 1, e)
             time.sleep(1.0)
-    raise RuntimeError(f"Gagal membuka video Cossora ({last_err})")
+    raise RuntimeError(f"Failed to open Cossora video ({last_err})")
 
 
 def probe_stream(playlist_url: str, referer: str) -> dict:
@@ -188,4 +188,4 @@ def download_segment(url: str, referer: str, out_path: str, retries: int = 3) ->
         except Exception as e:
             last_err = repr(e)
         time.sleep(0.6 * (attempt + 1))
-    raise RuntimeError(f"Gagal mengunduh segmen Cossora ({last_err})")
+    raise RuntimeError(f"Failed to download Cossora segment ({last_err})")

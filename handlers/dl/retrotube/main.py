@@ -70,7 +70,7 @@ async def retrotube_download(
             try:
                 t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
             except Exception as e:
-                _dbg("scrape gagal | %s %r", page_url, e)
+                _dbg("scrape failed | %s %r", page_url, e)
                 continue
             if idx == 0 or title is None:
                 title = t
@@ -82,7 +82,7 @@ async def retrotube_download(
                     candidate_pairs.append((c, page_url))
 
         if not candidate_pairs:
-            raise RuntimeError("URL video (embed) tidak ditemukan di halaman")
+            raise RuntimeError("Video (embed) URL not found on page")
 
         pref = [p for p in candidate_pairs if any(_host(p[0]) == h or _host(p[0]).endswith("." + h) for h in _PREFERRED_HOSTS)]
         rest = [p for p in candidate_pairs if p not in pref]
@@ -154,7 +154,7 @@ async def retrotube_download(
             except FileSizeLimitExceeded:
                 raise
             except Exception as e:
-                _dbg("kandidat %s gagal (prefer_gdrive=%s): %r", cand, prefer_gdrive, e)
+                _dbg("candidate %s failed (prefer_gdrive=%s): %r", cand, prefer_gdrive, e)
                 last_error = e
                 # Bersihkan file kerja sebelum mencoba kandidat berikutnya
                 for item in os.listdir(work_dir):
@@ -167,7 +167,7 @@ async def retrotube_download(
                 continue
 
         if not downloaded:
-            raise RuntimeError(f"Tidak ada sumber video yang bisa diunduh ({last_error or 'semua kandidat gagal'})")
+            raise RuntimeError(f"No video source available to download ({last_error or 'all candidates failed'})")
 
         result = {"path": final_path, "title": title}
 

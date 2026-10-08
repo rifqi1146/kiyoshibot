@@ -41,7 +41,7 @@ def _read_settings() -> dict:
     except FileNotFoundError:
         return {}
     except Exception as e:
-        log.warning("Gagal baca settings proxy | err=%r", e)
+        log.warning("Failed to read proxy settings | err=%r", e)
         return {}
 
 
@@ -83,7 +83,7 @@ def get_search_engine() -> str:
 def set_search_engine(engine: str) -> None:
     engine = (engine or "").strip().lower()
     if engine not in _ENGINES:
-        raise ValueError(f"engine tidak dikenal: {engine}")
+        raise ValueError(f"unknown engine: {engine}")
     data = _read_settings()
     data["search_engine"] = engine
     _write_settings(data)
@@ -101,7 +101,7 @@ def get_search_depth() -> str:
 def set_search_depth(depth: str) -> None:
     depth = (depth or "").strip().lower()
     if depth not in _DEPTHS:
-        raise ValueError(f"depth tidak dikenal: {depth}")
+        raise ValueError(f"unknown depth: {depth}")
     data = _read_settings()
     data["search_depth"] = depth
     _write_settings(data)
@@ -117,7 +117,7 @@ def get_model() -> str:
     except FileNotFoundError:
         pass
     except Exception as e:
-        log.warning("Gagal baca model proxy | err=%r", e)
+        log.warning("Failed to read proxy model | err=%r", e)
     return DEFAULT_MODEL
 
 
@@ -176,7 +176,7 @@ async def _resolve_model(model: str | None) -> str:
         return use_model
     models = await proxy_models()
     if not models:
-        raise RuntimeError("Proxy tidak mengembalikan model apapun.")
+        raise RuntimeError("Proxy returned no models.")
     return models[0]
 
 
@@ -221,7 +221,7 @@ async def proxy_chat_raw(
         assert isinstance(message, dict)
         return message, use_model
     except (KeyError, IndexError, TypeError, AssertionError, AttributeError):
-        raise RuntimeError(f"Respon proxy tidak terduga: {str(data)[:300]}")
+        raise RuntimeError(f"Unexpected proxy response: {str(data)[:300]}")
 
 
 async def proxy_chat(messages: list[dict], model: str | None = None, timeout: int = 180) -> str:
