@@ -8,7 +8,13 @@ from handlers.cookies import cookies_cmd
 from handlers.dl.router import dl_cmd, autodl_cmd
 from handlers.donate import donate_cmd
 from handlers.fasttelethon import fasttelethon_cmd
-from handlers.gemini import ai_cmd
+from handlers.proxy.ask import (
+    ask_cmd as ai_cmd,
+    getmodel_cmd,
+    setmodel_cmd,
+    setsearch_cmd,
+    thinking_cmd,
+)
 from handlers.getsticker import getsticker_cmd
 from handlers.groq import groq_query
 from handlers.groups import groups_cmd
@@ -111,6 +117,7 @@ COMMAND_HANDLERS = [
     ("domain", domain_cmd, True),
     ("donate", donate_cmd, False),
     ("fasttelethon", fasttelethon_cmd, False),
+    ("getmodel", getmodel_cmd, False),
     ("getsticker", getsticker_cmd, False),
     ("groq", groq_query, False),
     ("groups", groups_cmd, False),
@@ -156,6 +163,9 @@ COMMAND_HANDLERS = [
     ("rmsudo", rmsudo_cmd, False),
     ("susunkata", susunkata_cmd, False),
     ("settings", setting_cmd, False),
+    ("setmodel", setmodel_cmd, False),
+    ("setsearch", setsearch_cmd, False),
+    ("thinking", thinking_cmd, False),
     ("ship", ship_cmd, True),
     ("speedtest", speedtest_cmd, False),
     ("start", start_cmd, True),

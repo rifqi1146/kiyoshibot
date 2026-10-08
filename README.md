@@ -121,6 +121,23 @@ GEMINI_API_URL="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI
 GROQ_API_KEY=
 
 
+# Optional - OpenCode AI Proxy (/ask)
+# Bot starts a local OpenAI-compatible proxy for free opencode.ai models.
+# No API key needed. Owner-only toggles: /getmodel /setmodel /thinking /setsearch
+OPENCODE_PROXY=1
+OPENCODE_PROXY_HOST=127.0.0.1
+OPENCODE_PROXY_PORT=20130
+OPENCODE_MODEL=
+OPENCODE_THINKING=off
+
+
+# Optional - Web Grounding for /ask (Jina AI + Firecrawl)
+JINA_API_KEY=
+FIRECRAWL_API_KEY=
+SEARCH_ENGINE=firecrawl
+SEARCH_DEPTH=fast
+
+
 # Optional - Google Search
 # Required only if you use Google Search feature.
 # Get GOOGLE_API_KEY from Google Cloud Console.
@@ -205,6 +222,9 @@ This project uses and depends on the following tools and services:
 
 - [Groq Cloud](https://console.groq.com/home)
 - [Google Gemini](https://ai.google.dev/)
+- [OpenCode](https://opencode.ai)
+- [Jina AI](https://jina.ai)
+- [Firecrawl](https://www.firecrawl.dev)
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [godv bot](https://github.com/govdbot/govd)

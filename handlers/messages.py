@@ -15,7 +15,7 @@ from utils.logger import log_commands
 from utils.recent_messages import remember as remember_recent_message
 from utils.stop_draft import stopped_generation_handler
 from utils.user_collector import user_collector
-from handlers.gemini import ai_cmd
+from handlers.proxy.ask import ask_cmd as ai_cmd
 from utils.gemini_memory import get_last_message_id as ai_db_get_last_message_id
 from utils.gemini_memory import has_last_message_id as ai_db_has_last_message_id
 from handlers.groq import groq_query

@@ -27,7 +27,6 @@ from utils.config import BOT_TOKEN
 from handlers.dl.mtproto_uploader import warmup_mtproto_uploader,shutdown_mtproto_uploader
 from handlers.dl.pyrogram_uploader import warmup_pyrogram_uploader,shutdown_pyrogram_uploader
 from handlers.welcome import start_welcome_server
-
 BOT_USERNAME=None
 LOCAL_BOT_API_HOST=os.getenv("LOCAL_BOT_API_HOST","127.0.0.1")
 LOCAL_BOT_API_PORT=int(os.getenv("LOCAL_BOT_API_PORT","8081"))
@@ -55,7 +54,7 @@ BOT_COMMANDS=[
     ("dl","Download video"),
     ("premiumbenefit","List premium features and commands"),
     ("manga","Read manga"),
-    ("ask","Ask Gemini AI"),
+    ("ask","Ask AI (OpenCode proxy)"),
     ("music","Search music"),
     ("nekopoi","Search & download from Nekopoi"),
     ("simontok","Search & download from Simontok"),
@@ -161,6 +160,31 @@ def _local_bot_api_available(host:str,port:int,timeout:float=1.0)->bool:
         log.debug("Local Telegram Bot API check failed | host=%s port=%s err=%r",host,port,e)
         return False
 
+def _start_opencode_proxy():
+    """Nyalakan proxy OpenCode free-tier di thread daemon (dipakai /ask).
+
+    Idempoten: kalau port sudah dipakai proxy lain (mis. standalone), skip
+    dengan pesan jelas — bot tetap jalan, /ask tinggal memakai proxy itu.
+    Matikan otomatis lewat env OPENCODE_PROXY=0.
+    """
+    if os.getenv("OPENCODE_PROXY","1").strip().lower() in ("0","false","no"):
+        log.info("OpenCode proxy disabled via env (OPENCODE_PROXY=0)")
+        return
+    host=os.getenv("OPENCODE_PROXY_HOST","127.0.0.1")
+    try:
+        port=int(os.getenv("OPENCODE_PROXY_PORT","20130"))
+    except ValueError:
+        port=20130
+    try:
+        from handlers.proxy.opencode_v1 import start_proxy_thread
+        srv=start_proxy_thread(host,port)
+        if srv is not None:
+            log.info("✓ OpenCode proxy active | http://%s:%s",host,port)
+        else:
+            log.info("OpenCode proxy port %s already in use, using existing proxy",port)
+    except Exception:
+        log.exception("Failed to start OpenCode proxy (bot continues without it)")
+
 async def post_init(app):
     global BOT_USERNAME
     try:
@@ -254,6 +278,7 @@ def _allowed_updates():
 def main():
     setup_logger()
     log.info("Initializing bot")
+    _start_opencode_proxy()
     app=_build_application()
     register_commands(app)
     register_messages(app)

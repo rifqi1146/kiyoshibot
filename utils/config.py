@@ -39,6 +39,10 @@ SUPPORT_CHANNEL_LINK = os.getenv("SUPPORT_CH_LINK")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+JINA_API_KEY = os.getenv("JINA_API_KEY", "").strip()
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
+SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "firecrawl").strip().lower()
+SEARCH_DEPTH = os.getenv("SEARCH_DEPTH", "fast").strip().lower()
 
 # groq & caca
 GROQ_KEY = os.getenv("GROQ_API_KEY")
