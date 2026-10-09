@@ -314,13 +314,13 @@ async def buypremium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Group / supergroup: route the user to a private chat for privacy.
+    # A `url` button cannot be locked down (anyone in the group could press it),
+    # so we use a callback button bound to the invoker's user id and verify it.
     if chat.type in ("group", "supergroup") or int(chat.id) < 0:
-        bot_user = await context.bot.get_me()
-        bot_username = bot_user.username or ""
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "Buy Premium via QRIS",
-                url=f"https://t.me/{bot_username}?start=buypremium",
+                callback_data=f"buyprem:open:{user.id}",
             )]
         ])
         return await msg.reply_text(
@@ -520,6 +520,17 @@ async def buyprem_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) < 2:
         return
     action = parts[1]
+
+    # Group button deep link: locked to the user who invoked /buypremium
+    if action == "open":
+        if len(parts) < 3:
+            return
+        target_uid = int(parts[2]) if parts[2].isdigit() else 0
+        if int(user.id) != target_uid:
+            return await q.answer("This is not your button.", show_alert=True)
+        bot_user = await context.bot.get_me()
+        bot_username = bot_user.username or ""
+        return await q.answer(url=f"https://t.me/{bot_username}?start=buypremium")
 
     if action == "new":
         await q.answer()
