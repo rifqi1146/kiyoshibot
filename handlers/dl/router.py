@@ -38,6 +38,30 @@ TIKTOK_LOCK=asyncio.Semaphore(6)
 YTDLP_SEM=asyncio.Semaphore(8)
 _MAX_FLOOD_RETRY=2
 
+# ── Admission control (perbaikan unbounded create_task) ─────────────────────
+# Batasi TOTAL download worker yang aktif bersamaan. Task dibuat hanya setelah
+# slot global bebas, sehingga banjir pesan tidak men-spawn ratusan coroutine
+# yang semuanya parkir di semaphore dalam + memegang file sementara.
+_DL_GLOBAL_SEM = asyncio.Semaphore(int(os.getenv("DL_GLOBAL_CONCURRENCY", "6")))
+
+# Batasi download yang SEDANG BERJALAN per user (di luar cooldown non-premium).
+# Mencegah 1 user menduduki semua slot global.
+_DL_PER_USER = int(os.getenv("DL_PER_USER_CONCURRENCY", "2"))
+_USER_DL_SEM: "dict[int, asyncio.Semaphore]" = {}
+
+def _get_user_sem(user_id: int) -> asyncio.Semaphore:
+    sem = _USER_DL_SEM.get(user_id)
+    if sem is None:
+        if len(_USER_DL_SEM) >= 2000:  # batasi ukuran map (LRU kasar: buang terlama)
+            try:
+                oldest = next(iter(_USER_DL_SEM))
+                _USER_DL_SEM.pop(oldest, None)
+            except StopIteration:
+                pass
+        sem = asyncio.Semaphore(_DL_PER_USER)
+        _USER_DL_SEM[user_id] = sem
+    return sem
+
 DL_LIMIT_CACHE = {}
 
 def _cleanup_dl_cache():
@@ -64,7 +88,7 @@ def prune_runtime_caches():
     _cleanup_dl_cache()
     _cleanup_limit_cache()
 
-def _check_and_consume_limit(user_id: int) -> int:
+def _check_and_consume_limit(user_id: int, count: int = 1) -> int:
     now = time.time()
 
     # Cleanup cache selalu jalan (premium maupun bukan) — dulu di belakang
@@ -76,10 +100,11 @@ def _check_and_consume_limit(user_id: int) -> int:
 
     history = DL_LIMIT_CACHE.get(user_id, [])
     history = [ts for ts in history if now - ts < 60]
-    if len(history) >= 3:
+    # Batch dihitung per-URL (count), bukan 1 token per pesan.
+    if len(history) + count > 3:
         DL_LIMIT_CACHE[user_id] = history
         return max(1, 60 - int(now - history[0]))
-    history.append(now)
+    history.extend([now] * count)
     DL_LIMIT_CACHE[user_id] = history
     return 0
 
@@ -291,25 +316,50 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
     chat_id = data.get("chat_id")
     status_msg_id = message.message_id if message else None
 
-    context.application.create_task(
-        _dl_worker(
-            app=context.application,
-            chat_id=chat_id,
-            reply_to=data.get("reply_to"),
-            raw_url=data["url"],
-            fmt_key=fmt_key,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            engine=engine,
-            message_thread_id=data.get("message_thread_id",getattr(message,"message_thread_id",None) if message else None),
-            metadata_ready=status_ready,
-            user_id=data.get("user"),
-            known_size=known_size,
-            chat_type=data.get("chat_type", "private"),
-            msg_date=float(data.get("msg_date") or 0.0),
-        )
-    )
+    async def _spawn():
+        # Admission control: tunggu slot global + slot user sebelum task di-spawn.
+        uid = data.get("user")
+        async with _DL_GLOBAL_SEM:
+            sem = _get_user_sem(int(uid)) if uid else None
+            if sem is not None:
+                async with sem:
+                    await _dl_worker(
+                        app=context.application,
+                        chat_id=chat_id,
+                        reply_to=data.get("reply_to"),
+                        raw_url=data["url"],
+                        fmt_key=fmt_key,
+                        status_msg_id=status_msg_id,
+                        format_id=format_id,
+                        has_audio=has_audio,
+                        engine=engine,
+                        message_thread_id=data.get("message_thread_id", getattr(message, "message_thread_id", None) if message else None),
+                        metadata_ready=status_ready,
+                        user_id=data.get("user"),
+                        known_size=known_size,
+                        chat_type=data.get("chat_type", "private"),
+                        msg_date=float(data.get("msg_date") or 0.0),
+                    )
+            else:
+                await _dl_worker(
+                    app=context.application,
+                    chat_id=chat_id,
+                    reply_to=data.get("reply_to"),
+                    raw_url=data["url"],
+                    fmt_key=fmt_key,
+                    status_msg_id=status_msg_id,
+                    format_id=format_id,
+                    has_audio=has_audio,
+                    engine=engine,
+                    message_thread_id=data.get("message_thread_id", getattr(message, "message_thread_id", None) if message else None),
+                    metadata_ready=status_ready,
+                    user_id=data.get("user"),
+                    known_size=known_size,
+                    chat_type=data.get("chat_type", "private"),
+                    msg_date=float(data.get("msg_date") or 0.0),
+                )
+
+    context.application.create_task(_spawn())
 
 async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str|None=None,status_ready:bool=False):
     res_list,reason=await get_resolutions_detailed(data["url"],engine=engine)
@@ -503,7 +553,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
             ok,reason=_premium_link_allowed(u,user_id,chat.id,chat.type)
             if not ok:
                 return await msg.reply_text(_premium_link_block_text("batch",reason),parse_mode="HTML")
-        wait_time=_check_and_consume_limit(user_id)
+        wait_time=_check_and_consume_limit(user_id, count=len(batch_urls))
         if wait_time>0:
             return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
         auto_choice=str(settings.get("autodl_format") or "ask").lower()
@@ -516,19 +566,20 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         else:
             try: await msg.set_reaction("😍")
             except Exception: pass
-        context.application.create_task(
-            _batch_dl_worker(
-                app=context.application,
-                chat_id=chat.id,
-                reply_to=msg.message_id,
-                urls=batch_urls,
-                status_msg_id=status_msg.message_id if status_msg else None,
-                fmt_key=fmt_key,
-                message_thread_id=getattr(msg,"message_thread_id",None),
-                user_id=user_id,
-                chat_type=chat.type,
-            )
-        )
+        async def _spawn_batch():
+            async with _DL_GLOBAL_SEM:
+                await _batch_dl_worker(
+                    app=context.application,
+                    chat_id=chat.id,
+                    reply_to=msg.message_id,
+                    urls=batch_urls,
+                    status_msg_id=status_msg.message_id if status_msg else None,
+                    fmt_key=fmt_key,
+                    message_thread_id=getattr(msg,"message_thread_id",None),
+                    user_id=user_id,
+                    chat_type=chat.type,
+                )
+        context.application.create_task(_spawn_batch())
         return
 
     text=normalize_url(msg.text)
@@ -943,26 +994,27 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             ok,reason=_premium_link_allowed(u, user_id, chat.id, chat.type)
             if not ok:
                 return await msg.reply_text(_premium_link_block_text("batch",reason), parse_mode="HTML")
-        wait_time = _check_and_consume_limit(user_id)
+        wait_time = _check_and_consume_limit(user_id, count=len(all_batch_urls))
         if wait_time > 0:
             return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
         settings = get_user_settings(user_id)
         auto_choice = str(settings.get("autodl_format") or "video").lower()
         fmt_key = "mp3" if auto_choice == "mp3" else "video"
         status_msg = await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(all_batch_urls)}</code> done", parse_mode="HTML")
-        context.application.create_task(
-            _batch_dl_worker(
-                app=context.application,
-                chat_id=msg.chat.id,
-                reply_to=msg.message_id,
-                urls=all_batch_urls,
-                status_msg_id=status_msg.message_id if status_msg else None,
-                fmt_key=fmt_key,
-                message_thread_id=getattr(msg, "message_thread_id", None),
-                user_id=user_id,
-                chat_type=msg.chat.type,
-            )
-        )
+        async def _spawn_batch():
+            async with _DL_GLOBAL_SEM:
+                await _batch_dl_worker(
+                    app=context.application,
+                    chat_id=msg.chat.id,
+                    reply_to=msg.message_id,
+                    urls=all_batch_urls,
+                    status_msg_id=status_msg.message_id if status_msg else None,
+                    fmt_key=fmt_key,
+                    message_thread_id=getattr(msg, "message_thread_id", None),
+                    user_id=user_id,
+                    chat_type=msg.chat.type,
+                )
+        context.application.create_task(_spawn_batch())
         return
 
     url=context.args[0]

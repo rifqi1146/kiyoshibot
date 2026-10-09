@@ -299,15 +299,28 @@ async def download_to_file(
     stats = TransferStats(total)
 
     def _write():
-        with open(out_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 256):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                status["downloaded"] += len(chunk)
-                if status["downloaded"] > MAX_TG_SIZE:
-                    resp.close()
-                    raise FileSizeLimitExceeded("File exceeds 2GB limit. Download canceled.")
+        try:
+            with open(out_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    status["downloaded"] += len(chunk)
+                    if status["downloaded"] > MAX_TG_SIZE:
+                        resp.close()
+                        raise FileSizeLimitExceeded("File exceeds 2GB limit. Download canceled.")
+        except BaseException:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            # Buang file parsial supaya tidak menunggu sweeper.
+            try:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+            except OSError:
+                pass
+            raise
         try:
             resp.close()
         except Exception:

@@ -933,7 +933,20 @@ async def _cleanup_caches_loop():
             for k in expired_locks:
                 VERIFY_LOCKS.pop(k, None)
                 VERIFY_LOCK_TIMES.pop(k, None)
-                
+
+            # VERIFIED_USERS adalah cache dari DB (load_verified), jadi aman
+            # dipangkas. Tanpa ini setiap user yang pernah verify menetap di
+            # RAM selamanya untuk lifetime proses.
+            _MAX_VERIFIED_PER_CHAT = 5000
+            for cid in list(VERIFIED_USERS.keys()):
+                users = VERIFIED_USERS.get(cid)
+                if users and len(users) > _MAX_VERIFIED_PER_CHAT:
+                    overflow = len(users) - _MAX_VERIFIED_PER_CHAT
+                    for uid in list(users)[:max(1, overflow + _MAX_VERIFIED_PER_CHAT // 10)]:
+                        users.discard(uid)
+                    if not users:
+                        VERIFIED_USERS.pop(cid, None)
+
             if BOT_INSTANCE and getattr(BOT_INSTANCE, "_recent_joins", None):
                 joins = BOT_INSTANCE._recent_joins
                 expired_joins = [k for k, ts in joins.items() if now - ts > 300]

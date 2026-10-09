@@ -31,6 +31,12 @@ def _ship_db_init():
             )
             """
         )
+        # Index untuk query pool /ship (WHERE chat_id ORDER BY updated_at DESC).
+        # Tanpa ini tiap /ship men-scan + sort seluruh anggota grup.
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_chat_updated "
+            "ON users(chat_id, updated_at DESC)"
+        )
         # Bersihkan sisa data DM (id positif) yang pernah masuk pool ship
         con.execute("DELETE FROM users WHERE chat_id > 0")
         con.execute("DELETE FROM ship_state WHERE chat_id > 0")

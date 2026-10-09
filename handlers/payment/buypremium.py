@@ -23,6 +23,7 @@ FLOW:
 5. Cancel button: stops polling and marks the invoice CANCELLED.
 """
 
+import asyncio
 import html
 import io
 import logging
@@ -48,7 +49,6 @@ _CHECK_LOCKS: dict[str, "asyncio.Lock"] = {}
 
 
 def _get_lock(short_id: str):
-    import asyncio
     lock = _CHECK_LOCKS.get(short_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -153,14 +153,6 @@ def _build_success_caption(amount: int, trx_id: str) -> str:
     ])
 
 
-def _success_pm_text() -> str:
-    return (
-        "<b>Payment successful</b>\n\n"
-        "Thank you for your purchase. Your account is now <b>PREMIUM</b>.\n"
-        "Use /premiumbenefit to see every premium benefit."
-    )
-
-
 def _job_name(short_id: str) -> str:
     return f"poll_payment:{short_id}"
 
@@ -169,8 +161,14 @@ def _stop_polling_job(context: ContextTypes.DEFAULT_TYPE, short_id: str):
     jq = getattr(context.application, "job_queue", None)
     if not jq:
         return
+    removed = False
     for job in jq.get_jobs_by_name(_job_name(short_id)):
         job.schedule_removal()
+        removed = True
+    # Evict the per-invoice lock: the invoice is terminal (PAID/EXPIRED/CANCELLED)
+    # so the lock will never be acquired again — prevents unbounded dict growth.
+    if removed:
+        _CHECK_LOCKS.pop(short_id, None)
 
 
 def _schedule_polling_job(app, short_id: str, chat_id: int, message_id: int, user_id: int):
@@ -214,14 +212,8 @@ async def _close_as_paid(context: ContextTypes.DEFAULT_TYPE, inv: dict):
     except Exception as e:
         log.debug("Failed to edit success caption | short_id=%s err=%r", short_id, e)
 
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=_success_pm_text(),
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        log.debug("Failed to send success PM | user_id=%s err=%r", user_id, e)
+    # Tidak ada PM kedua: kartu invoice di atas sudah diedit menjadi kartu
+    # "Payment successful" — pesan tambahan hanya duplikat spam.
 
     log.info("Premium payment success | user_id=%s trx_id=%s amount=%s",
              user_id, inv["trx_id"], inv["amount"])

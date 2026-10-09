@@ -9,6 +9,7 @@ import aiohttp
 from urllib.parse import urlparse, parse_qs
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from handlers.dl.utils import sanitize_filename
+from utils.http import get_http_session
 
 log = logging.getLogger(__name__)
 
@@ -95,12 +96,15 @@ async def _download_file(session: aiohttp.ClientSession, url: str, dest_path: st
             if r.status != 200:
                 log.warning("Failed to fetch image | status=%s url=%s", r.status, url)
                 return False
-            data = await r.read()
-            if not data:
-                return False
+            # Stream ke disk alih-alih menampung seluruh gambar di RAM.
             with open(dest_path, "wb") as f:
-                f.write(data)
-            return True
+                size = 0
+                async for chunk in r.content.iter_chunked(256 * 1024):
+                    size += len(chunk)
+                    if size > MAX_TG_SIZE:
+                        return False
+                    f.write(chunk)
+            return size > 0
     except Exception as e:
         log.warning("Error downloading image | url=%s err=%r", url, e)
         return False
@@ -116,109 +120,109 @@ async def download_youtube_post(
     target_url = f"https://www.youtube.com/post/{post_id}" if post_id else url
     log.info("Fetching YouTube community post | url=%s post_id=%s", url, post_id)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(target_url, headers=WEB_HEADERS, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=25)) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"YouTube returned HTTP {resp.status} for community post")
-            html_text = await resp.text()
+    session = await get_http_session()
+    async with session.get(target_url, headers=WEB_HEADERS, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=25)) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"YouTube returned HTTP {resp.status} for community post")
+        html_text = await resp.text()
 
-        m = re.search(r'var ytInitialData\s*=\s*(\{.*?\});</script>', html_text, re.S)
-        if not m:
-            # Fallback inline data
-            m = re.search(r'window\["ytInitialData"\]\s*=\s*(\{.*?\});</script>', html_text, re.S)
-        if not m:
-            raise RuntimeError("Failed to extract YouTube Community Post data")
+    m = re.search(r'var ytInitialData\s*=\s*(\{.*?\});</script>', html_text, re.S)
+    if not m:
+        # Fallback inline data
+        m = re.search(r'window\["ytInitialData"\]\s*=\s*(\{.*?\});</script>', html_text, re.S)
+    if not m:
+        raise RuntimeError("Failed to extract YouTube Community Post data")
 
-        try:
-            data = json.loads(m.group(1))
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse YouTube Community Post JSON: {e}")
+    try:
+        data = json.loads(m.group(1))
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse YouTube Community Post JSON: {e}")
 
-        post = None
-        for k, v in _walk_json(data):
-            if k in ("backstagePostRenderer", "sharedPostRenderer") and isinstance(v, dict):
-                post = v
-                break
+    post = None
+    for k, v in _walk_json(data):
+        if k in ("backstagePostRenderer", "sharedPostRenderer") and isinstance(v, dict):
+            post = v
+            break
 
-        if not post:
-            raise RuntimeError("YouTube community post not found or already deleted")
+    if not post:
+        raise RuntimeError("YouTube community post not found or already deleted")
 
-        author_runs = post.get("authorText", {}).get("runs", [])
-        author = "".join(r.get("text", "") for r in author_runs).strip()
-        content_runs = post.get("contentText", {}).get("runs", [])
-        content = "".join(r.get("text", "") for r in content_runs).strip()
+    author_runs = post.get("authorText", {}).get("runs", [])
+    author = "".join(r.get("text", "") for r in author_runs).strip()
+    content_runs = post.get("contentText", {}).get("runs", [])
+    content = "".join(r.get("text", "") for r in content_runs).strip()
 
-        # Attachment parsing
-        attachment = post.get("backstageAttachment", {})
-        image_urls: list[str] = []
+    # Attachment parsing
+    attachment = post.get("backstageAttachment", {})
+    image_urls: list[str] = []
 
-        # Case 1: single image
-        single = attachment.get("backstageImageRenderer", {}).get("image", {}).get("thumbnails", [])
-        if single:
-            best = max(single, key=lambda t: t.get("width", 0))
-            best_url = _to_full_res_url(best.get("url", ""))
-            if best_url:
-                image_urls.append(best_url)
+    # Case 1: single image
+    single = attachment.get("backstageImageRenderer", {}).get("image", {}).get("thumbnails", [])
+    if single:
+        best = max(single, key=lambda t: t.get("width", 0))
+        best_url = _to_full_res_url(best.get("url", ""))
+        if best_url:
+            image_urls.append(best_url)
 
-        # Case 2: carousel / multi-image
-        multi = attachment.get("postMultiImageRenderer", {}).get("images", [])
-        if multi:
-            for item in multi:
-                thumbs = item.get("backstageImageRenderer", {}).get("image", {}).get("thumbnails", [])
-                if thumbs:
-                    b = max(thumbs, key=lambda t: t.get("width", 0))
-                    b_url = _to_full_res_url(b.get("url", ""))
-                    if b_url:
-                        image_urls.append(b_url)
+    # Case 2: carousel / multi-image
+    multi = attachment.get("postMultiImageRenderer", {}).get("images", [])
+    if multi:
+        for item in multi:
+            thumbs = item.get("backstageImageRenderer", {}).get("image", {}).get("thumbnails", [])
+            if thumbs:
+                b = max(thumbs, key=lambda t: t.get("width", 0))
+                b_url = _to_full_res_url(b.get("url", ""))
+                if b_url:
+                    image_urls.append(b_url)
 
-        title_parts = []
-        if author:
-            title_parts.append(author)
-        if content:
-            title_parts.append(content)
-        caption_text = "\n\n".join(title_parts).strip() or "YouTube Community Post"
+    title_parts = []
+    if author:
+        title_parts.append(author)
+    if content:
+        title_parts.append(content)
+    caption_text = "\n\n".join(title_parts).strip() or "YouTube Community Post"
 
-        os.makedirs(TMP_DIR, exist_ok=True)
-        job_id = uuid.uuid4().hex[:10]
+    os.makedirs(TMP_DIR, exist_ok=True)
+    job_id = uuid.uuid4().hex[:10]
 
-        if not image_urls:
-            # Case 3: text-only post (tidak ada gambar)
-            log.info("YouTube community post is text-only | post_id=%s", post_id)
-            if bot and chat_id:
-                safe_author = html.escape(author or "YouTube Post")
-                safe_content = html.escape(content) if content else "<i>(Postingan tanpa teks)</i>"
-                msg_text = (
-                    f"📝 <b>{safe_author}</b>\n\n"
-                    f"{safe_content}"
-                )
-                await bot.send_message(chat_id=chat_id, text=msg_text, parse_mode="HTML")
-                return {"handled": True, "title": caption_text}
-            raise RuntimeError("This community post only contains text (no media to download).")
+    if not image_urls:
+        # Case 3: text-only post (tidak ada gambar)
+        log.info("YouTube community post is text-only | post_id=%s", post_id)
+        if bot and chat_id:
+            safe_author = html.escape(author or "YouTube Post")
+            safe_content = html.escape(content) if content else "<i>(Postingan tanpa teks)</i>"
+            msg_text = (
+                f"📝 <b>{safe_author}</b>\n\n"
+                f"{safe_content}"
+            )
+            await bot.send_message(chat_id=chat_id, text=msg_text, parse_mode="HTML")
+            return {"handled": True, "title": caption_text}
+        raise RuntimeError("This community post only contains text (no media to download).")
 
-        # Download semua gambar
-        saved_paths: list[str] = []
-        for idx, i_url in enumerate(image_urls):
-            dest = f"{TMP_DIR}/{job_id}_{idx}.jpg"
-            ok = await _download_file(session, i_url, dest)
-            if ok and os.path.exists(dest) and os.path.getsize(dest) > 0:
-                saved_paths.append(dest)
+    # Download semua gambar
+    saved_paths: list[str] = []
+    for idx, i_url in enumerate(image_urls):
+        dest = f"{TMP_DIR}/{job_id}_{idx}.jpg"
+        ok = await _download_file(session, i_url, dest)
+        if ok and os.path.exists(dest) and os.path.getsize(dest) > 0:
+            saved_paths.append(dest)
 
-        if not saved_paths:
-            raise RuntimeError("Failed to download image from YouTube community post")
+    if not saved_paths:
+        raise RuntimeError("Failed to download image from YouTube community post")
 
-        if len(saved_paths) == 1:
-            log.info("YouTube community post downloaded 1 image | file=%s", saved_paths[0])
-            return {
-                "path": saved_paths[0],
-                "title": caption_text,
-                "source": "youtube",
-                "kind": "photo",
-            }
-
-        log.info("YouTube community post downloaded %d images | job_id=%s", len(saved_paths), job_id)
+    if len(saved_paths) == 1:
+        log.info("YouTube community post downloaded 1 image | file=%s", saved_paths[0])
         return {
-            "items": [{"path": p, "type": "photo"} for p in saved_paths],
+            "path": saved_paths[0],
             "title": caption_text,
             "source": "youtube",
-            "kind": "album",
+            "kind": "photo",
         }
+
+    log.info("YouTube community post downloaded %d images | job_id=%s", len(saved_paths), job_id)
+    return {
+        "items": [{"path": p, "type": "photo"} for p in saved_paths],
+        "title": caption_text,
+        "source": "youtube",
+        "kind": "album",
+    }

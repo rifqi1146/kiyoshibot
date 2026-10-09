@@ -144,6 +144,7 @@ async def reencode_mp3(src_path:str, cover_path:str|None=None, title:str="", art
             ["ffmpeg","-y","-i",src_path,"-vn","-acodec","libmp3lame","-ab","192k","-ar","44100",fixed_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=300,
         )
         if result.returncode!=0:
             raise RuntimeError(f"FFmpeg re-encode failed with exit code {result.returncode}")
@@ -222,7 +223,11 @@ async def _ensure_photo_size(file_path: str):
             "-vf", "scale='min(3840,iw)':'min(3840,ih)':force_original_aspect_ratio=decrease",
             "-q:v", "4", tmp_path
         ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+        if result.returncode != 0:
+            _delete_file_silent(tmp_path)
+            log.warning("Photo compression failed, keeping original | file=%s rc=%s", os.path.basename(file_path), result.returncode)
+            return
         
     await asyncio.to_thread(_run)
     

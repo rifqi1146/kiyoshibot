@@ -26,10 +26,20 @@ def _log_background_result(task:asyncio.Task,name:str):
         log.exception("%s failed | err=%r",name,e)
 
 def _create_background_task(app,coro,name:str):
-    try:
+    # `app.create_task()` di PTB mem-warn ("Tasks created via Application.create_task
+    # while the application is not running won't be automatically awaited") bila
+    # dipanggil saat application belum running — yang memang terjadi karena ini
+    # dijadwalkan dari post_init. Task ini berumur panjang (selama proses hidup),
+    # jadi pakai loop task biasa supaya tidak memicu warning dan tetap di-await
+    # lewat done_callback. Bila app sudah running, tetap pakai app.create_task
+    # agar task ikut dilacak & dibatalkan rapi saat shutdown.
+    if getattr(app, "running", False):
         task=app.create_task(coro)
-    except Exception:
-        task=asyncio.create_task(coro)
+    else:
+        try:
+            task=asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            task=asyncio.create_task(coro)
     task.add_done_callback(lambda t:_log_background_result(t,name))
     return task
 

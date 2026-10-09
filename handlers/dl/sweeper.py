@@ -8,8 +8,12 @@ from .constants import TMP_DIR
 
 log = logging.getLogger(__name__)
 
-DOWNLOADS_TTL_SEC = int(os.getenv("DOWNLOADS_TTL_SEC", "7200"))
-DOWNLOADS_SWEEP_INTERVAL_SEC = int(os.getenv("DOWNLOADS_SWEEP_INTERVAL_SEC", "1800"))
+DOWNLOADS_TTL_SEC = int(os.getenv("DOWNLOADS_TTL_SEC", "3600"))
+DOWNLOADS_SWEEP_INTERVAL_SEC = int(os.getenv("DOWNLOADS_SWEEP_INTERVAL_SEC", "600"))
+# Grace period: jangan sapu file yang baru saja tersentuh walau TTL di-set rendah,
+# supaya download yang masih jalan tidak dihapus. mtime file progresif berubah,
+# jadi ini hanya pengaman ekstra di atas fd-guard.
+DOWNLOADS_GRACE_SEC = int(os.getenv("DOWNLOADS_GRACE_SEC", "300"))
 
 # Profil browser sementara milik scrapling/camoufox ikut menumpuk di /tmp
 # (folder besar, di luar TMP_DIR). Jatuhnya kalau browser crash / tidak ditutup
@@ -46,12 +50,19 @@ def sweep_downloads_once(ttl_sec: int | None = None) -> int:
         try:
             if os.path.islink(path):
                 continue
-            if now - os.path.getmtime(path) >= ttl:
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                else:
-                    os.remove(path)
-                removed += 1
+            age = now - os.path.getmtime(path)
+            if age < ttl:
+                continue
+            # Guard: jangan hapus bila masih dipakai proses hidup (mirror
+            # _in_use untuk profil /tmp). Worker download bisa menahan file
+            # lebih lama dari TTL pada transfer besar.
+            if _in_use(path):
+                continue
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            removed += 1
         except OSError as e:
             log.warning("Downloads sweep failed to remove | path=%s err=%r", path, e)
     if removed:

@@ -22,6 +22,11 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
+# Batasi PDF generation yang berjalan bersamaan (tiap PDF menampung semua
+# halaman di RAM + build PDF in-memory). Tanpa ini klik tombol berulang men-spawn
+# banyak task yang masing-masing mengakumulasi images_bytes.
+_PDF_SEM = asyncio.Semaphore(int(os.getenv("MANGA_PDF_CONCURRENCY", "2")))
+
 MANGADEX_API = "https://api.mangadex.org"
 UPLOADS_URL = "https://uploads.mangadex.org"
 MAID_URL = "https://www.maid.my.id"
@@ -206,6 +211,10 @@ def enforce_telegram_photo_limits(img_bytes):
         return img_bytes
 
 async def send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source=""):
+    async with _PDF_SEM:
+        await _send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source)
+
+async def _send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source=""):
     log.info(f"Starting PDF generation for '{title}' ({len(urls)} pages) from '{source}'")
     status_msg = await context.bot.send_message(
         chat_id=chat_id,

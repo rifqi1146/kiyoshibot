@@ -17,6 +17,7 @@ from PIL import Image, ImageOps
 from handlers.dl.constants import MAX_TG_SIZE, TMP_DIR
 from handlers.dl.progress import PROGRESS_LOG_INTERVAL, TransferStats, edit_status, render_progress_text
 from handlers.dl.utils import FileSizeLimitExceeded, sanitize_filename
+from utils.http import get_http_session
 from . import cossora, extractor
 from .constants import (
     COSSORA_FFMPEG_TIMEOUT,
@@ -77,12 +78,13 @@ async def _download_photos(raw_url: str, photos: list[str], title: str, bot, cha
                 eta_seconds=stats.eta_seconds,
                 pct=done * 100 / len(photos), extra=f'{done}/{len(photos)} photos'))
 
-    async def one(session, index, url):
+    async def one(session, index, url, headers):
         nonlocal done
         path = paths[index]
         size = 0
         async with sem:
-            async with session.get(url, allow_redirects=False) as response:
+            async with session.get(url, allow_redirects=False, headers=headers,
+                                   timeout=aiohttp.ClientTimeout(total=_HTTP_TIMEOUT)) as response:
                 if response.status != 200:
                     raise RuntimeError(f'Cosplaytele image HTTP {response.status}')
                 if (response.content_length or 0) > MAX_TG_SIZE:
@@ -109,18 +111,18 @@ async def _download_photos(raw_url: str, photos: list[str], title: str, bot, cha
     tasks = []
     try:
         await progress(force=True)
-        async with aiohttp.ClientSession(
-            headers={'User-Agent': UA, 'Referer': raw_url},
-            timeout=aiohttp.ClientTimeout(total=_HTTP_TIMEOUT),
-        ) as session:
-            tasks = [asyncio.create_task(one(session, i, url)) for i, url in enumerate(photos)]
-            try:
-                await asyncio.gather(*tasks)
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+        # Gunakan shared session (get_http_session) + header per-request agar
+        # tidak membuka TLS handshake baru per album.
+        session = await get_http_session()
+        _headers = {'User-Agent': UA, 'Referer': raw_url}
+        tasks = [asyncio.create_task(one(session, i, url, _headers)) for i, url in enumerate(photos)]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         stats.total = stats.downloaded
         await progress(force=True)
         stats.log_done('Cosplaytele photos', label=title)

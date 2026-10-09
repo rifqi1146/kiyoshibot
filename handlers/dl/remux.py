@@ -17,6 +17,10 @@ FFMPEG_THUMB_TIMEOUT=int(os.getenv("FFMPEG_THUMB_TIMEOUT","45"))
 # 35 segmen/menit; 900s cukup longgar untuk post 10+ menit.
 FFMPEG_HLS_TIMEOUT=int(os.getenv("FFMPEG_HLS_TIMEOUT","900"))
 
+# Batasi fan-out ffprobe/ffmpeg saat menyiapkan album (items banyak). Tanpa ini
+# album 30 video men-spawn ~60 proses ffmpeg sekaligus -> CPU & thread-pool habis.
+_PREP_ITEM_SEM = asyncio.Semaphore(max(1, min(4, (os.cpu_count() or 2))))
+
 def _run_cmd(cmd:list[str],timeout:int|float|None=None)->str:
     if not cmd:
         raise RuntimeError("Empty command")
@@ -296,32 +300,33 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
         p = item.get("path")
         if not p or not os.path.exists(p):
             return item
-        was_gif = p.lower().endswith(".gif")
-        if was_gif:
-            p = await asyncio.to_thread(convert_gif_to_mp4, p)
-            item["path"] = p
-        if detect_media_type(p) == "video":
-            item["type"] = "animation" if was_gif else "video"
-            # Jalur cepat: downloader sudah menghasilkan MP4 faststart
-            # (ditandai "remux_done": True) -> lewati ffmpeg kedua.
-            if item.get("remux_done"):
-                meta = await asyncio.to_thread(video_meta, p)
-                thumb_path = item.get("thumb")
-                if not (thumb_path and os.path.exists(thumb_path)):
-                    thumb_path = await asyncio.to_thread(make_video_thumbnail, p)
+        async with _PREP_ITEM_SEM:
+            was_gif = p.lower().endswith(".gif")
+            if was_gif:
+                p = await asyncio.to_thread(convert_gif_to_mp4, p)
+                item["path"] = p
+            if detect_media_type(p) == "video":
+                item["type"] = "animation" if was_gif else "video"
+                # Jalur cepat: downloader sudah menghasilkan MP4 faststart
+                # (ditandai "remux_done": True) -> lewati ffmpeg kedua.
+                if item.get("remux_done"):
+                    meta = await asyncio.to_thread(video_meta, p)
+                    thumb_path = item.get("thumb")
+                    if not (thumb_path and os.path.exists(thumb_path)):
+                        thumb_path = await asyncio.to_thread(make_video_thumbnail, p)
+                    if thumb_path:
+                        item["thumb"] = thumb_path
+                    if meta:
+                        item["meta"] = meta
+                    return item
+                new_path, thumb_path, meta = await remux_and_thumbnail_parallel(p)
+                item["path"] = new_path
                 if thumb_path:
                     item["thumb"] = thumb_path
                 if meta:
                     item["meta"] = meta
-                return item
-            new_path, thumb_path, meta = await remux_and_thumbnail_parallel(p)
-            item["path"] = new_path
-            if thumb_path:
-                item["thumb"] = thumb_path
-            if meta:
-                item["meta"] = meta
-        else:
-            item["path"] = await asyncio.to_thread(_prepare_single_path, p)
+            else:
+                item["path"] = await asyncio.to_thread(_prepare_single_path, p)
         return item
 
     if isinstance(result,dict) and result.get("items"):

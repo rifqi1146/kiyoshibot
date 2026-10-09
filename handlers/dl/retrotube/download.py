@@ -284,14 +284,36 @@ def _download_direct(url: str, referer: str, out_path: str) -> int:
     if r.status_code != 200:
         raise RuntimeError(f"Failed to download file ({r.status_code})")
     
+    # Pre-check ukuran via Content-Length sebelum menulis apa pun — hindari
+    # membakar bandwidth/disk untuk file > 2GB yang pasti ditolak nanti.
+    try:
+        _hdr_total = int(r.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        _hdr_total = 0
+    if _hdr_total > MAX_TG_SIZE:
+        r.close()
+        raise FileSizeLimitExceeded(
+            f"File melebihi batas 2GB ({_hdr_total / 1024 ** 3:.2f} GB)"
+        )
+
     total = 0
-    with open(out_path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
-                total += len(chunk)
-                if total > MAX_TG_SIZE:
-                    raise FileSizeLimitExceeded("File melebihi batas 2GB")
+    try:
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+                    total += len(chunk)
+                    if total > MAX_TG_SIZE:
+                        raise FileSizeLimitExceeded("File melebihi batas 2GB")
+    except BaseException:
+        # Hapus file parsial supaya tidak menunggu sweeper (dan tidak bikin
+        # disk penuh saat banyak kegagalan).
+        try:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+        except OSError:
+            pass
+        raise
     if total <= 0:
         raise RuntimeError(f"Failed to download file (empty)")
     return total
@@ -343,13 +365,21 @@ def _download_gdrive(gid: str, out_path: str) -> int:
         raise RuntimeError(f"Google Drive did not return a video ({r.status_code}, {ct or 'no ct'})")
 
     total = 0
-    with open(out_path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
-                total += len(chunk)
-                if total > MAX_TG_SIZE:
-                    raise FileSizeLimitExceeded("File melebihi batas 2GB")
+    try:
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+                    total += len(chunk)
+                    if total > MAX_TG_SIZE:
+                        raise FileSizeLimitExceeded("File melebihi batas 2GB")
+    except BaseException:
+        try:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+        except OSError:
+            pass
+        raise
     if total <= 0:
         raise RuntimeError("Google Drive mengembalikan file kosong")
     return total

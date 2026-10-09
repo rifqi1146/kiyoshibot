@@ -8,6 +8,17 @@ log = logging.getLogger(__name__)
 
 CACA_DB_PATH = "data/caca.sqlite3"
 _MODE_CACHE: dict[int, str] = {}
+_MODE_CACHE_MAX = int(__import__("os").getenv("CACA_MODE_CACHE_MAX", "5000"))
+
+
+def _mode_cache_set(user_id: int, mode: str):
+    """Bounded insert into the in-memory Caca mode cache (LRU-ish eviction)."""
+    _MODE_CACHE[int(user_id)] = str(mode)
+    if len(_MODE_CACHE) > _MODE_CACHE_MAX:
+        # Drop the oldest 10% (dicts preserve insertion order) to avoid a full clear.
+        overflow = len(_MODE_CACHE) - _MODE_CACHE_MAX
+        for k in list(_MODE_CACHE.keys())[: max(1, overflow + _MODE_CACHE_MAX // 10)]:
+            _MODE_CACHE.pop(k, None)
 
 def _caca_db_init():
     with db_session(CACA_DB_PATH) as con:
@@ -166,7 +177,7 @@ def get_mode(user_id: int) -> str:
 async def set_mode(user_id: int, mode: str):
     user_id = int(user_id)
     mode = str(mode)
-    _MODE_CACHE[user_id] = mode
+    _mode_cache_set(user_id, mode)
     await asyncio.to_thread(_caca_db_upsert_mode, user_id, mode)
 
 async def remove_mode(user_id: int):

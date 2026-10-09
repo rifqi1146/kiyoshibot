@@ -31,9 +31,11 @@ def _emo():
     return random.choice(_EMOS)
 
 def _cleanup_cooldown(now:float):
-    if len(_last_req)<500:
+    # Bersihkan entri basi secara berkala — bukan cuma saat len>=500, supaya
+    # tidak ada entri stale yang menahan memori di antara 0..500.
+    if len(_last_req)<64 and not any(now-ts>max(COOLDOWN*10,300) for ts in list(_last_req.values())):
         return
-    expired=[uid for uid,ts in _last_req.items() if now-ts>max(COOLDOWN*10,300)]
+    expired=[uid for uid,ts in list(_last_req.items()) if now-ts>max(COOLDOWN*10,300)]
     for uid in expired:
         _last_req.pop(uid,None)
 
