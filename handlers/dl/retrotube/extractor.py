@@ -146,6 +146,93 @@ def _mirror_urls(raw_url: str) -> list:
     return out
 
 
+_VOE_RESOLVE_CACHE: dict = {}
+_VOE_CACHE_TTL = 300.0
+_VOE_CACHE_MAX = 500
+
+
+def _prune_voe_cache():
+    now = time.time()
+    if len(_VOE_RESOLVE_CACHE) > _VOE_CACHE_MAX:
+        for k in [k for k, v in list(_VOE_RESOLVE_CACHE.items()) if now - v[1] > _VOE_CACHE_TTL]:
+            _VOE_RESOLVE_CACHE.pop(k, None)
+
+
+def _is_challenge_page(text: str) -> bool:
+    """Deteksi halaman JS challenge (DDoS-Guard/Cloudflare) yang perlu browser.
+
+    Hanya tanda tangan tantangan yang memicu fallback browser — halaman 404/error
+    biasa TIDAK boleh membuang ~20 detik membuka headless browser yang sia-sia.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    return (
+        "ddos-guard" in low
+        or "checking your browser" in low
+        or "challenges.cloudflare.com" in low
+        or "just a moment" in low
+    )
+
+
+def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 60000) -> str:
+    """Fallback browser stealth (Scrapling/Camoufox) untuk halaman VOE.
+
+    `voe.sx` sejak Okt 2026 ada di belakang DDoS-Guard JS challenge: client HTTP
+    polos (curl_cffi, yt-dlp, requests) SELALU balas `HTTP 403` (body
+    `<title>DDoS-Guard</title>`) dari IP datacenter, sehingga player HTML tidak
+    pernah didapat dan deobfuscate JSON tak bisa jalan. Browser stealth
+    menyelesaikan challenge + eksekusi JS player, baru `page.content()` memuat
+    blok `<script type="application/json">` yang dibutuhkan
+    `_deobfuscate_voe_json`.
+
+    Return HTML halaman (string). String kosong kalau Scrapling tak tersedia
+    atau fetch gagal. Blocking (~15-25s) -> panggil dari thread.
+    """
+    try:
+        from scrapling import StealthyFetcher
+    except Exception as e:
+        _dbg("Scrapling tidak tersedia untuk VOE: %r", e)
+        return ""
+
+    holder = {"html": ""}
+
+    def _auto(page):
+        try:
+            # Halaman voe.sx langsung navigasi ke mirror player setelah
+            # DDoS-Guard lolos -> `page.content()` sempat melempar
+            # "Unable to retrieve content because the page is navigating".
+            # Poll cepat (0.5s) supaya JSON diambil begitu muncul, bukan
+            # menunggu network_idle penuh + delay tetap.
+            for _ in range(90):
+                try:
+                    c = page.content()
+                except Exception:
+                    page.wait_for_timeout(500)
+                    continue
+                if 'type="application/json"' in c and len(c) > 2000:
+                    holder["html"] = c
+                    return
+                page.wait_for_timeout(500)
+            try:
+                holder["html"] = page.content()
+            except Exception:
+                pass
+        except Exception as e:
+            _dbg("VOE browser aksi gagal | %s : %r", embed_url, e)
+
+    try:
+        StealthyFetcher.fetch(
+            embed_url, headless=True, timeout=timeout_ms,
+            block_ads=True, network_idle=True, wait=0, page_action=_auto,
+        )
+    except Exception as e:
+        _dbg("VOE browser fetch gagal | %s : %r", embed_url, e)
+        return ""
+
+    return holder["html"] or ""
+
+
 def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
     """-> (kind, media_url, thumb) dengan kind di {'hls','mp4'}, atau (None,None,None)."""
     
@@ -192,6 +279,32 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         except Exception as e:
             _dbg("resolve fetch failed (attempt %s) | %s %r", attempt + 1, embed_url, e)
             time.sleep(1.0)
+
+    # Fallback: DDoS-Guard/VOE challenge -> browser stealth.
+    # Dipakai HANYA kalau HTTP polos gagal/tidak menghasilkan media, supaya
+    # jalur cepat (2 request) tetap jadi primadona.
+    #
+    # GUARD PERFORMA: jangan buka browser untuk sembarang kegagalan. Hanya:
+    #   a) embed VOE (`voe.sx`) yang HTML-nya tidak memuat blok JSON player, atau
+    #   b) respons berupa halaman challenge (DDoS-Guard/Cloudflare "Just a moment").
+    # Halaman 404/mati biasa langsung menyerah -> tidak ada 20 detik terbuang.
+    voe_needs = is_voe and not (text and (_PACKER_RE.search(text) or "application/json" in text))
+    needs_browser = bool(voe_needs or _is_challenge_page(text or ""))
+    if needs_browser:
+        cache_key = f"{embed_url}::{referer}"
+        cached = _VOE_RESOLVE_CACHE.get(cache_key)
+        if cached and (time.time() - cached[1]) < _VOE_CACHE_TTL:
+            browser_html = cached[0]
+            _dbg("VOE cache hit | %s", embed_url)
+        else:
+            _dbg("VOE/embed HTTP polos gagal, fallback browser stealth | %s", embed_url)
+            browser_html = _fetch_voe_browser(embed_url, referer=referer)
+            if browser_html:
+                _prune_voe_cache()
+                _VOE_RESOLVE_CACHE[cache_key] = (browser_html, time.time())
+        if browser_html:
+            text = browser_html
+
     if not text:
         return None, None, None
 
