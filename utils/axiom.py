@@ -23,6 +23,14 @@ hit an edge node whose upstream origin fails the TLS handshake and returns
 HTTP 525 while the next request on the same host returns 200 (measured ~17/30
 success on a single burst). Cloudflare 520/521/522/523/524/525/526 and 503 are
 therefore retried with a short backoff before the error is surfaced.
+
+TRANSPORT:
+Requests go through `curl_cffi` with `impersonate="chrome"` instead of plain
+`aiohttp`. The Cloudflare WAF in front of the portal raises a Turnstile
+challenge (HTTP 403 "Just a moment...") for plain clients coming from
+datacenter IPs; a real Chrome TLS/JA3 fingerprint passes. `curl_cffi` ships the
+same Chrome signature, so the WAF sees a browser. Do not swap this back to
+aiohttp: it works from a clean IP and fails from a flagged one.
 """
 
 import asyncio
@@ -31,7 +39,7 @@ import random
 import time
 from datetime import datetime, timezone
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
 
 from utils.config import AXIOM_API_KEY, AXIOM_BASE_URL
 
@@ -43,10 +51,16 @@ CHECK_TIMEOUT = 15
 MIN_AMOUNT = 1
 MAX_AMOUNT = 10_000_000
 
-# Gateway origin failures worth retrying (Cloudflare edge <-> origin errors).
-RETRY_STATUSES = {429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
+# Gateway origin failures worth retrying (Cloudflare edge <-> origin errors)
+# plus 403, which is the Turnstile challenge that appears when a datacenter IP
+# is flagged; a retry with the Chrome fingerprint usually clears it.
+RETRY_STATUSES = {403, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
 MAX_ATTEMPTS = 5
 BASE_BACKOFF = 0.4
+
+# Chrome impersonation profile used for every request (mirrors the header the
+# docs assume: an authenticated backend call, not a browser session).
+IMPERSONATE = "chrome"
 
 
 class AxiomError(RuntimeError):
@@ -101,58 +115,61 @@ async def _request(
 
     for attempt in range(1, attempts + 1):
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.request(
+            async with AsyncSession(impersonate=IMPERSONATE) as session:
+                resp = await session.request(
                     method,
                     url,
                     headers=headers,
                     json=json_body,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as resp:
-                    status = resp.status
-                    text = await resp.text()
+                    timeout=timeout,
+                )
+                status = resp.status_code
+                text = resp.text
 
-                    # Cloudflare edge-to-origin flapping (525/520/522/503/etc) or 429 rate limit
-                    if status in RETRY_STATUSES:
-                        retry_after = resp.headers.get("Retry-After")
-                        delay = float(retry_after) if retry_after and retry_after.isdigit() else (
-                            BASE_BACKOFF * (1.6 ** (attempt - 1)) + random.uniform(0.1, 0.3)
+                # Cloudflare Turnstile challenge (403), origin flapping (525/520/522/503/etc),
+                # or rate limiting (429).
+                if status in RETRY_STATUSES:
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = float(retry_after) if retry_after and retry_after.isdigit() else (
+                        BASE_BACKOFF * (1.6 ** (attempt - 1)) + random.uniform(0.1, 0.3)
+                    )
+                    last_err = AxiomError(
+                        f"Axiom gateway unavailable (HTTP {status}).",
+                        status=status,
+                    )
+                    if attempt < attempts:
+                        log.info(
+                            "Axiom gateway HTTP %s, retrying (%d/%d) in %.2fs | path=%s",
+                            status, attempt, attempts, delay, path,
                         )
-                        last_err = AxiomError(
-                            f"Axiom gateway unavailable (HTTP {status}).",
-                            status=status,
-                        )
-                        if attempt < attempts:
-                            log.info(
-                                "Axiom gateway HTTP %s, retrying (%d/%d) in %.2fs | path=%s",
-                                status, attempt, attempts, delay, path,
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-                        raise last_err
+                        await asyncio.sleep(delay)
+                        continue
+                    raise last_err
 
-                    if status >= 500:
-                        raise AxiomError(
-                            f"Axiom gateway unavailable (HTTP {status}).",
-                            status=status,
-                        )
+                if status >= 500:
+                    raise AxiomError(
+                        f"Axiom gateway unavailable (HTTP {status}).",
+                        status=status,
+                    )
 
-                    try:
-                        data = await resp.json(content_type=None)
-                    except Exception:
-                        raise AxiomError(
-                            f"Unexpected Axiom response (HTTP {status}): {text[:200]}",
-                            status=status,
-                        )
+                try:
+                    data = resp.json()
+                except Exception:
+                    raise AxiomError(
+                        f"Unexpected Axiom response (HTTP {status}): {text[:200]}",
+                        status=status,
+                    )
 
-                    if status >= 400:
-                        raise AxiomError(
-                            str(data.get("message") or f"Axiom error HTTP {status}"),
-                            status=status,
-                            data=data.get("data") or {},
-                        )
-                    return data
-        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                if status >= 400:
+                    raise AxiomError(
+                        str(data.get("message") or f"Axiom error HTTP {status}"),
+                        status=status,
+                        data=data.get("data") or {},
+                    )
+                return data
+        except Exception as e:
+            if isinstance(e, AxiomError):
+                raise
             last_err = AxiomError(f"Axiom network error: {e}")
             if attempt < attempts:
                 delay = BASE_BACKOFF * (1.6 ** (attempt - 1)) + random.uniform(0.1, 0.3)
