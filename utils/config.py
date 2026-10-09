@@ -55,6 +55,11 @@ COOLDOWN = int(os.getenv("GROQ_COOLDOWN", "2"))
 # donate
 DONATE_URL = os.getenv("DONATE_URL")
 
+# Axiom Payment (QRIS gateway for /buypremium)
+AXIOM_BASE_URL = os.getenv("AXIOM_BASE_URL", "https://portal.axiomcreative.xyz").strip().rstrip("/")
+AXIOM_API_KEY = os.getenv("AXIOM_API_KEY", "").strip()
+AXIOM_PREMIUM_AMOUNT = int(os.getenv("AXIOM_PREMIUM_AMOUNT", "20000"))
+
 # fonts
 FONT_DIR = os.getenv("FONT_DIR")
 

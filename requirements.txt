@@ -30,3 +30,4 @@ tgcrypto-pyrofork
 FastTelethonHelper
 curl_cffi>=0.7.0
 scrapling>=0.4.0
+qrcode>=7.4

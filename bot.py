@@ -36,6 +36,7 @@ BOT_COMMANDS=[
     ("start","Check bot status"),
     ("aidetect","Detect AI-generated image"),
     ("aitext","Detect AI-generated text"),
+    ("buypremium","Buy premium via QRIS"),
     ("donate","Support bot"),
     ("help","Show help menu"),
     ("settings","User settings"),

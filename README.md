@@ -10,6 +10,7 @@ A multi-function Telegram bot built with Python and `python-telegram-bot`, provi
 
 - AI chat and assistant commands
 - Media downloader for multiple platforms
+- QRIS payment gateway integration (`/buypremium` via Axiom Payment)
 - Google search integration
 - Networking and utility tools
 - Moderation and administration features
@@ -158,6 +159,17 @@ SUPPORT_CH_LINK="https://t.me/"
 DONATE_URL="https://t.me/"
 
 
+# Optional - Axiom Payment (QRIS gateway for /buypremium)
+# Docs: https://portal.axiomcreative.xyz/docs
+# AXIOM_BASE_URL is the gateway origin. AXIOM_API_KEY comes from the Axiom
+# dashboard (Kunci API). Keep the key server-side only: never expose it to
+# users, browsers, URLs, or logs.
+# AXIOM_PREMIUM_AMOUNT is the premium price in rupiah (integer 1..10000000).
+AXIOM_BASE_URL=https://portal.axiomcreative.xyz
+AXIOM_API_KEY=
+AXIOM_PREMIUM_AMOUNT=20000
+
+
 # Optional - Quote API
 # Required only if you use quote/sticker quote renderer.
 # Default is local quote API server.
@@ -232,3 +244,4 @@ This project uses and depends on the following tools and services:
 - [Sonzai Api](http://api.sonzaix.indevs.in)
 - [TikWm](https://www.tikwm.com/)
 - [Pyrofork](https://github.com/Mayuri-Chan/pyrofork)
+- [Axiom Payment](https://portal.axiomcreative.xyz)

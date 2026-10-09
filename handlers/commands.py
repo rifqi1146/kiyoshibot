@@ -5,6 +5,7 @@ from handlers.backup import backup_cmd, restore_cmd, autobackup_cmd
 from handlers.blacklist import blacklist_cmd
 from handlers.broadcast import broadcast_cmd
 from handlers.cookies import cookies_cmd
+from handlers.payment.buypremium import buypremium_cmd
 from handlers.dl.router import dl_cmd, autodl_cmd
 from handlers.donate import donate_cmd
 from handlers.fasttelethon import fasttelethon_cmd
@@ -109,6 +110,7 @@ COMMAND_HANDLERS = [
     ("ban", ban_cmd, False),
     ("blacklist", blacklist_cmd, False),
     ("broadcast", broadcast_cmd, False),
+    ("buypremium", buypremium_cmd, False),
     ("caca", meta_query, False),
     ("cacaa", cacaa_cmd, False),
     ("cookies", cookies_cmd, False),

@@ -127,6 +127,7 @@ HELP_TEXT = {
         "- `/aitext` — Detect AI-generated text\n"
         "- `/asupan` — Random TikTok content\n"
         "- `/becekku` — Search & download from Becekku\n"
+        "- `/buypremium` — Buy premium access via dynamic QRIS\n"
         "- `/dl` — Download videos from supported platforms\n"
         "- `/gsearch` — Search on Google\n"
         "- `/getsticker` — Get sticker as PNG or WEBM file\n"
