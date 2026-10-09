@@ -58,10 +58,29 @@ def _collect_embed_candidates(html_text: str) -> list:
 def _scrape_post(url: str, _depth: int = 0) -> tuple:
     """-> (title, thumb_url, [embed_candidates]) dari halaman post.
     Jika ini ternyata halaman kategori/listing, otomatis loncat ke post video pertama."""
-    r = curl_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome", timeout=_HTTP_TIMEOUT)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code} saat mengambil halaman")
-    html_text = r.text
+    html_text = ""
+    last_err = None
+    for attempt in range(2):
+        try:
+            r = curl_requests.get(
+                url,
+                headers={"User-Agent": UA},
+                impersonate="chrome",
+                timeout=_HTTP_TIMEOUT,
+                allow_redirects=True,
+            )
+            if r.status_code == 200:
+                html_text = r.text
+                break
+            _dbg("scrape post non-200 (attempt %s) | %s %s", attempt + 1, url, r.status_code)
+        except Exception as e:
+            last_err = e
+            _dbg("scrape post fetch failed (attempt %s) | %s %r", attempt + 1, url, e)
+            if attempt == 0:
+                time.sleep(0.8)
+
+    if not html_text:
+        raise RuntimeError(f"Gagal mengambil halaman post ({last_err or 'non-200'})")
 
     title = None
     for pat in (

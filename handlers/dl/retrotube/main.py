@@ -71,7 +71,18 @@ async def retrotube_download(
                 t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
             except Exception as e:
                 _dbg("scrape failed | %s %r", page_url, e)
-                continue
+                # Post utama flaky (host becekku kadang timeout 1x): retry sekali
+                # sebelum lompat ke mirror, supaya tidak berujung "0 kandidat"
+                # padahal halaman post valid.
+                if idx == 0 and not candidate_pairs:
+                    _dbg("retry scrape post utama | %s", page_url)
+                    try:
+                        t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
+                    except Exception as e2:
+                        _dbg("retry scrape gagal | %s %r", page_url, e2)
+                        continue
+                else:
+                    continue
             if idx == 0 or title is None:
                 title = t
             if thumb and not page_thumb:
