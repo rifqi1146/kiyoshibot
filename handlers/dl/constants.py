@@ -74,6 +74,10 @@ PREMIUM_ONLY_DOMAINS = {
     "cosplaytele.com",
 }
 
+PREMIUM_NO_NSFW_DOMAINS = {
+    "drakorid.co",
+}
+
 AUTO_DOWNLOAD_DOMAINS = {
     "music.youtube.com",
     "v.douyin.com",
@@ -157,4 +161,5 @@ AUTO_DOWNLOAD_DOMAINS = {
     "bdsmlust.com",
     "heavy-r.com",
     "cosplaytele.com",
+    "drakorid.co",
 }

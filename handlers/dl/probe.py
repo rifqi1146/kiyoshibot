@@ -56,8 +56,20 @@ def supports_darknessporn_resolution(url: str) -> bool:
         host = host[4:]
     return host == "darknessporn.com"
 
+def supports_drakorid_resolution(url: str) -> bool:
+    host = _host(url)
+    if host.startswith("www."):
+        host = host[4:]
+    return host == "drakorid.co"
+
 def supports_resolution_picker(url: str) -> bool:
-    return supports_ytdlp_resolution(url) or supports_nekopoi_resolution(url) or supports_cosxplay_resolution(url) or supports_darknessporn_resolution(url)
+    return (
+        supports_ytdlp_resolution(url)
+        or supports_nekopoi_resolution(url)
+        or supports_cosxplay_resolution(url)
+        or supports_darknessporn_resolution(url)
+        or supports_drakorid_resolution(url)
+    )
 
 def supports_both_resolution_engines(url: str) -> bool:
     return False
@@ -318,6 +330,15 @@ async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple
             return (probe.get("res_list") or []), None
         except Exception as e:
             log.warning("DarknessPorn probe failed | url=%s err=%r", url, e)
+            return [], str(e)
+
+    if chosen == "drakorid" or (not chosen and supports_drakorid_resolution(url)):
+        try:
+            from .drakorid.main import probe_drakorid
+            probe = await asyncio.to_thread(probe_drakorid, url)
+            return (probe.get("res_list") or []), None
+        except Exception as e:
+            log.warning("Drakor.id probe failed | url=%s err=%r", url, e)
             return [], str(e)
 
     # Jalur lama: engine ytdlp. Nekopoi tidak pernah lewat sini.

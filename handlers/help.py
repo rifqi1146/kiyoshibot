@@ -129,6 +129,7 @@ HELP_TEXT = {
         "- `/becekku` — Search & download from Becekku\n"
         "- `/buypremium` — Buy premium access via dynamic QRIS\n"
         "- `/dl` — Download videos from supported platforms\n"
+        "- `/drakorid` — Browse & search Asian dramas on Drakor.id\n"
         "- `/gsearch` — Search on Google\n"
         "- `/getsticker` — Get sticker as PNG or WEBM file\n"
         "- `/igstalk` — Stalking Instagram account\n"

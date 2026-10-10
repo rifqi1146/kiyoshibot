@@ -59,6 +59,7 @@ BOT_COMMANDS=[
     ("music","Search music"),
     ("nekopoi","Search & download from Nekopoi"),
     ("simontok","Search & download from Simontok"),
+    ("drakorid","Browse & search Korean dramas"),
     ("caca","Chat with Caca"),
     ("groq","Ask Groq AI"),
     ("gsearch","Google search"),

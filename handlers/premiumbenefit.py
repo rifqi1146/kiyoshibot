@@ -4,7 +4,7 @@ from html import escape
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from handlers.dl.constants import PREMIUM_ONLY_DOMAINS
+from handlers.dl.constants import PREMIUM_ONLY_DOMAINS, PREMIUM_NO_NSFW_DOMAINS
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ BENEFITS = (
             ("/lendirqu", "Search and download from LendirQu."),
             ("/becekku", "Search and download from Becekku."),
             ("/simontok", "Search and download from Simontok."),
+            ("/drakorid", "Search and browse Korean dramas on Drakor.id."),
         ),
     ),
     ("Manga", (("/manga nh", "Read NH / nhentai manga."),)),
@@ -54,7 +55,7 @@ def _domain_rows(domains: list[str]) -> str:
 
 def _build_rich_message() -> dict:
     """Build an InputRichMessage using Rich HTML from Bot API 10.3."""
-    plain = _display_domains(PREMIUM_ONLY_DOMAINS)
+    plain = _display_domains(PREMIUM_ONLY_DOMAINS | PREMIUM_NO_NSFW_DOMAINS)
     total = len(plain)
 
     sections = [
@@ -93,7 +94,7 @@ def _build_rich_message() -> dict:
 
 def _build_plain_text() -> str:
     """Plain HTML version as fallback for older Bot API servers."""
-    plain = _display_domains(PREMIUM_ONLY_DOMAINS)
+    plain = _display_domains(PREMIUM_ONLY_DOMAINS | PREMIUM_NO_NSFW_DOMAINS)
     total = len(plain)
 
     parts = ["<b>Premium Benefits</b>", "", "Benefits available for <b>Donors 😋</b>."]

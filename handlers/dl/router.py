@@ -11,7 +11,7 @@ from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from utils.config import OWNER_ID
 from database.premium import init_premium_db
-from .constants import TMP_DIR,PREMIUM_ONLY_DOMAINS,AUTO_DOWNLOAD_DOMAINS
+from .constants import TMP_DIR,PREMIUM_ONLY_DOMAINS,PREMIUM_NO_NSFW_DOMAINS,AUTO_DOWNLOAD_DOMAINS
 from .stages import stage
 from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
@@ -19,7 +19,7 @@ from database.spoiler_db import is_spoiler_enabled
 from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
-from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution
+from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution
 from .nekopoi.main import is_nekopoi_url
 from .cosxplay.main import is_cosxplay_url
 from .tiktok.main import is_tiktok,tiktok_download
@@ -135,12 +135,16 @@ def _host_match(host:str,domain:str)->bool:
 def _premium_link_allowed(url:str,user_id:int,chat_id:int,chat_type:str)->tuple[bool, str]:
     """Cek apakah link dari domain premium-only boleh diunduh.
 
-    Syarat ganda untuk domain premium:
-      1. User HARUS premium.
-      2. Tempat HARUS aman (private chat ATAU grup yang mengaktifkan NSFW).
-      
+    1. Domain premium non-NSFW: user HARUS premium, tanpa syarat NSFW/grup.
+    2. Domain premium NSFW: user HARUS premium DAN tempat aman (private chat / NSFW enabled).
+
     Returns: (is_allowed, error_reason_type)
     """
+    if is_premium_required(url, PREMIUM_NO_NSFW_DOMAINS):
+        if not is_premium_user(user_id):
+            return False, "not_premium"
+        return True, ""
+
     if not is_premium_required(url,PREMIUM_ONLY_DOMAINS):
         return True, ""
         
@@ -158,7 +162,10 @@ def _premium_link_allowed(url:str,user_id:int,chat_id:int,chat_type:str)->tuple[
         
     return False, "not_nsfw"
 
-def _premium_link_block_text(kind:str, reason:str)->str:
+def _premium_link_block_text(kind:str, reason:str, url:str="")->str:
+    if url and is_premium_required(url, PREMIUM_NO_NSFW_DOMAINS):
+        return "<b>Premium Required</b>\n\nThis feature or link is restricted to <b>Premium Users</b> only."
+
     head="🔞 <b>Premium-only website</b>\n\n"
     if kind=="batch":
         head="🔞 <b>One of these links is from a premium-only website</b>\n\n"
@@ -233,6 +240,7 @@ def _platform_label(url:str)->str:
         (("bdsmlust.com",),"BDSMLust"),
         (("heavy-r.com",),"HeavyR"),
         (("cosplaytele.com",),"Cosplaytele"),
+        (("drakorid.co",),"Drakor.id"),
         ((
             "bokepcrot.*",
             "lendirqu.*",
@@ -463,6 +471,11 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
                 await message.edit_text(_metadata_status(url),parse_mode="HTML")
                 status_ready=True
             return await _show_resolution_picker(context,message,dl_id,data,engine="darknessporn",status_ready=status_ready)
+        if supports_drakorid_resolution(url):
+            if not status_ready and message:
+                await message.edit_text(_metadata_status(url),parse_mode="HTML")
+                status_ready=True
+            return await _show_resolution_picker(context,message,dl_id,data,engine="drakorid",status_ready=status_ready)
     DL_CACHE.pop(dl_id,None)
     return await _start_dl_task(context=context,message=message,data=data,fmt_key=choice,format_id=None,has_audio=False,status_ready=status_ready)
 
