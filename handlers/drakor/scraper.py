@@ -17,6 +17,7 @@ import time
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 
+from .auth import get_auth_cookies
 from .constants import BASE_URL, MAX_RESULTS, UA
 from .state import CATEGORIES_CACHE
 
@@ -26,8 +27,19 @@ _CARD_TITLE_RE = re.compile(r"title")
 _TITLE_TRIM = ("Sub Indo", "Drakor.id", "Nonton", " - ")
 
 
-def http_get(url: str) -> str:
+def make_session() -> curl_requests.Session:
+    """Session `curl_cffi` dengan kuki login Drakor.id bila tersedia."""
     sess = curl_requests.Session(impersonate="chrome")
+    try:
+        for name, value in (get_auth_cookies() or {}).items():
+            sess.cookies.set(name, value, domain="drakorid.co")
+    except Exception as e:
+        log.debug("Drakor.id auth cookie attach failed | err=%r", e)
+    return sess
+
+
+def http_get(url: str) -> str:
+    sess = make_session()
     try:
         resp = sess.get(url, headers={"User-Agent": UA, "Referer": f"{BASE_URL}/"}, timeout=20)
         return resp.text if resp.status_code == 200 else ""

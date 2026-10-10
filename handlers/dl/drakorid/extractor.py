@@ -67,7 +67,14 @@ _CACHE_TTL = 300.0
 
 
 def _new_session() -> curl_requests.Session:
-    return curl_requests.Session(impersonate="chrome", headers={"User-Agent": UA})
+    sess = curl_requests.Session(impersonate="chrome", headers={"User-Agent": UA})
+    try:
+        from handlers.drakor.auth import get_auth_cookies
+        for name, value in (get_auth_cookies() or {}).items():
+            sess.cookies.set(name, value, domain="drakorid.co")
+    except Exception as e:
+        log.debug("Drakor.id auth cookie attach failed | err=%r", e)
+    return sess
 
 
 def parse_url(url: str) -> tuple[str, int]:
