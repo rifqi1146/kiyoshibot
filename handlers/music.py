@@ -134,7 +134,6 @@ def _build_results_message(payload: dict, page: int) -> tuple[str, str, InlineKe
 
     rows = []
     plain_blocks = []
-    keyboard = []
     for idx, entry in enumerate(entries[start:end], start=start):
         number = idx + 1
         title = html.escape(entry["title"])
@@ -149,18 +148,25 @@ def _build_results_message(payload: dict, page: int) -> tuple[str, str, InlineKe
         plain_blocks.append(
             f"<b>{number}.</b> {title_cell}\n   By: {uploader} ({duration})"
         )
-        keyboard.append([
-            InlineKeyboardButton(f"Select {number}", callback_data=f"music_download:{owner_id}:{token}:{idx}")
-        ])
 
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("Prev", callback_data=f"music_page:{owner_id}:{token}:{page-1}"))
+    nav.append(InlineKeyboardButton("Cancel", callback_data=f"music_cancel:{owner_id}:{token}"))
     if page < pages - 1:
         nav.append(InlineKeyboardButton("Next", callback_data=f"music_page:{owner_id}:{token}:{page+1}"))
-    if nav:
-        keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton("Cancel", callback_data=f"music_cancel:{owner_id}:{token}")])
+
+    keyboard = []
+    row_nums = [
+        InlineKeyboardButton(
+            str(idx + 1),
+            callback_data=f"music_download:{owner_id}:{token}:{idx}",
+        )
+        for idx in range(start, end)
+    ]
+    if row_nums:
+        keyboard.append(row_nums)
+    keyboard.append(nav)
 
     rich_html = (
         "<h1>🎵 Music Search</h1>"
