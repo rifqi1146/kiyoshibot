@@ -5,9 +5,9 @@ from contextlib import asynccontextmanager
 import json
 import time
 import os
-from scrapling.fetchers import StealthyFetcher
 from curl_cffi import requests as curl_requests
 from utils.http import get_http_session
+from utils import scrapling_browser as _sb
 from .constants import DEFAULT_ASUPAN_KEYWORDS
 
 log = logging.getLogger(__name__)
@@ -244,13 +244,10 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
         except Exception as e:
             log.warning("Failed to evaluate JS priming: %s", e)
 
-    fetcher = StealthyFetcher()
-    fetcher.fetch(
+    _sb.fetch_html(
         TIKWM_HOME,
-        headless=True,
-        solve_cloudflare=True,
-        timeout=40000,
-        page_action=page_action
+        timeout_ms=40000,
+        page_action=page_action,
     )
 
     return result_container

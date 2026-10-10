@@ -49,6 +49,7 @@ from bs4 import BeautifulSoup
 from handlers.dl.utils import sanitize_filename, progress_bar, format_size, format_speed, format_eta, FileSizeLimitExceeded
 from handlers.dl.constants import MAX_TG_SIZE
 from handlers.dl.retrotube.packer import _PACKER_RE, _unpack_eval
+from utils import scrapling_browser as _sb
 from handlers.dl.progress import (
     render_progress_text,
     edit_status,
@@ -394,15 +395,8 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
       `disabled` dilepas), jadi tunggu sampai aktif lalu klik.
     - shortener lain (`linkpoi.me`, dsb.) — markupnya tak diketahui; klik
       kandidat tombol/link pertama yang aktif lalu lihat apakah URL pindah.
-    `block_ads=True` wajib: tanpa itu klik bisa mendarat di redirect iklan
-    (mis. sgkk8.info) alih-alih host tujuan.
+    Popup iklan ditutup via page.on("popup") di page_action.
     """
-    try:
-        from scrapling import StealthyFetcher
-    except Exception as e:
-        log.debug("Scrapling tidak tersedia untuk bypass ouo: %r", e)
-        return None
-
     start_host = (urlsplit(url).hostname or "").lower()
     result = {"url": None}
     deadline = time.time() + timeout_ms / 1000.0
@@ -511,9 +505,10 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
             log.debug("Aksi stealth shortener gagal %s : %r", url, e)
 
     try:
-        StealthyFetcher.fetch(
-            url, headless=True, timeout=timeout_ms,
-            block_ads=True, page_action=_auto,
+        _sb.fetch_html(
+            url,
+            timeout_ms=timeout_ms,
+            page_action=_auto,
         )
     except Exception as e:
         log.debug("Stealth fetcher gagal untuk %s : %r", url, e)
@@ -832,12 +827,6 @@ def _probe_doodstream_browser(embed_url: str, title_hint: str = "") -> dict | No
     Browser stealth menyelesaikan Turnstile lalu klik tombol play, baru
     `page.content()` memuat pass_md5. Blocking -> panggil dari thread.
     """
-    try:
-        from scrapling import StealthyFetcher
-    except Exception as e:
-        log.debug("Scrapling tidak tersedia untuk DoodStream: %r", e)
-        return None
-
     holder = {"html": ""}
 
     def _auto(page):
@@ -860,16 +849,9 @@ def _probe_doodstream_browser(embed_url: str, title_hint: str = "") -> dict | No
         except Exception as e:
             log.debug("DoodStream browser aksi gagal | %s : %r", embed_url, e)
 
-    try:
-        StealthyFetcher.fetch(
-            embed_url, headless=True, timeout=60000,
-            block_ads=True, page_action=_auto,
-        )
-    except Exception as e:
-        log.debug("DoodStream browser fetch gagal | %s : %r", embed_url, e)
-        return None
-
-    html = holder["html"]
+    html = _sb.fetch_html(embed_url, timeout_ms=60000, page_action=_auto)
+    if not html:
+        html = holder["html"]
     if not html or "/pass_md5/" not in html:
         return None
     return _dood_variant_from_html(embed_url, html, title_hint)

@@ -4,6 +4,8 @@ import logging
 from urllib.parse import urlsplit, urlunsplit, urljoin
 from curl_cffi import requests as curl_requests
 
+from utils import scrapling_browser as _sb
+
 from .constants import (
     UA,
     _HTTP_TIMEOUT,
@@ -172,9 +174,41 @@ _VOE_CACHE_MAX = 500
 
 def _prune_voe_cache():
     now = time.time()
+    # 1) buang semua entri yang sudah lewat TTL
+    for k in [k for k, v in list(_VOE_RESOLVE_CACHE.items()) if now - v[1] > _VOE_CACHE_TTL]:
+        _VOE_RESOLVE_CACHE.pop(k, None)
+    # 2) kalau masih melebihi batas (entri fresh semua), buang yang paling tua
+    #    supaya map tidak tumbuh tanpa batas.
     if len(_VOE_RESOLVE_CACHE) > _VOE_CACHE_MAX:
-        for k in [k for k, v in list(_VOE_RESOLVE_CACHE.items()) if now - v[1] > _VOE_CACHE_TTL]:
+        overflow = len(_VOE_RESOLVE_CACHE) - _VOE_CACHE_MAX
+        oldest = sorted(_VOE_RESOLVE_CACHE.items(), key=lambda kv: kv[1][1])[: max(1, overflow)]
+        for k, _ in oldest:
             _VOE_RESOLVE_CACHE.pop(k, None)
+
+
+# ── Cookie clearance & browser session → dipusatkan di utils/scrapling_browser ──
+# (satu StealthySession global dibagi semua downloader; cookie reuse untuk
+#  jalur cepat curl_cffi). Wrapper tipis di bawah menjaga API lama extractor ini.
+
+def _drop_host_cookies(host: str):
+    _sb.clear_cookies(host)
+
+
+def _http_get(url: str, referer: str = ""):
+    """GET cepat via curl_cffi, ikut bawa cookie clearance kalau pernah solve."""
+    kwargs = {}
+    ck = _sb.cookies_for(_host(url))
+    if ck:
+        kwargs["cookies"] = ck
+        _dbg("cookie reuse | %s", _host(url))
+    return curl_requests.get(
+        url,
+        headers={"User-Agent": UA, "Referer": referer or url},
+        impersonate="chrome",
+        timeout=_HTTP_TIMEOUT,
+        allow_redirects=True,
+        **kwargs,
+    )
 
 
 def _is_challenge_page(text: str) -> bool:
@@ -194,62 +228,65 @@ def _is_challenge_page(text: str) -> bool:
     )
 
 
-def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 60000) -> str:
-    """Fallback browser stealth (Scrapling/Camoufox) untuk halaman VOE.
+def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 45000) -> dict:
+    """Resolve halaman VOE lewat shared StealthySession (utils/scrapling_browser).
 
-    `voe.sx` sejak Okt 2026 ada di belakang DDoS-Guard JS challenge: client HTTP
-    polos (curl_cffi, yt-dlp, requests) SELALU balas `HTTP 403` (body
-    `<title>DDoS-Guard</title>`) dari IP datacenter, sehingga player HTML tidak
-    pernah didapat dan deobfuscate JSON tak bisa jalan. Browser stealth
-    menyelesaikan challenge + eksekusi JS player, baru `page.content()` memuat
-    blok `<script type="application/json">` yang dibutuhkan
-    `_deobfuscate_voe_json`.
-
-    Return HTML halaman (string). String kosong kalau Scrapling tak tersedia
-    atau fetch gagal. Blocking (~15-25s) -> panggil dari thread.
+    -> {"html": str, "m3u8": str|None}
     """
-    try:
-        from scrapling import StealthyFetcher
-    except Exception as e:
-        _dbg("Scrapling tidak tersedia untuk VOE: %r", e)
-        return ""
+    holder = {"html": "", "m3u8": None}
 
-    holder = {"html": ""}
+    def _on_request(req):
+        u = getattr(req, "url", "") or ""
+        if ".m3u8" in u and not holder["m3u8"]:
+            holder["m3u8"] = u
+
+    def _setup(page):
+        try:
+            if getattr(page, "_rt_m3u8_hook", False):
+                return
+            page.on("request", _on_request)
+            page._rt_m3u8_hook = True
+        except Exception as e:
+            _dbg("pasang listener m3u8 gagal | %r", e)
 
     def _auto(page):
-        try:
-            # Halaman voe.sx langsung navigasi ke mirror player setelah
-            # DDoS-Guard lolos -> `page.content()` sempat melempar
-            # "Unable to retrieve content because the page is navigating".
-            # Poll cepat (0.5s) supaya JSON diambil begitu muncul, bukan
-            # menunggu network_idle penuh + delay tetap.
-            for _ in range(90):
-                try:
-                    c = page.content()
-                except Exception:
-                    page.wait_for_timeout(500)
-                    continue
-                if 'type="application/json"' in c and len(c) > 2000:
-                    holder["html"] = c
-                    return
-                page.wait_for_timeout(500)
+        for _ in range(90):
+            if holder["m3u8"]:
+                break
             try:
-                holder["html"] = page.content()
+                c = page.content()
             except Exception:
-                pass
-        except Exception as e:
-            _dbg("VOE browser aksi gagal | %s : %r", embed_url, e)
+                page.wait_for_timeout(300)
+                continue
+            if 'type="application/json"' in c and len(c) > 2000:
+                holder["html"] = c
+                break
+            page.wait_for_timeout(300)
+        else:
+            if not holder["m3u8"] and not holder["html"]:
+                try:
+                    holder["html"] = page.content()
+                except Exception:
+                    pass
 
-    try:
-        StealthyFetcher.fetch(
-            embed_url, headless=True, timeout=timeout_ms,
-            block_ads=True, network_idle=True, wait=0, page_action=_auto,
-        )
-    except Exception as e:
-        _dbg("VOE browser fetch gagal | %s : %r", embed_url, e)
-        return ""
+    html = _sb.fetch_html(
+        embed_url,
+        page_action=_auto,
+        page_setup=_setup,
+        referer=referer,
+        timeout_ms=timeout_ms,
+    )
+    if not holder["html"] and html:
+        holder["html"] = html
+    return holder
 
-    return holder["html"] or ""
+
+def warmup_rt_browser() -> bool:
+    return _sb.warmup_browser()
+
+
+def close_rt_browser():
+    _sb.close_browser()
 
 
 def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
@@ -262,15 +299,15 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
     text = None
     for attempt in range(2):
         try:
-            r = curl_requests.get(
-                embed_url,
-                headers={"User-Agent": UA, "Referer": referer or embed_url},
-                impersonate="chrome",
-                timeout=_HTTP_TIMEOUT,
-                allow_redirects=True,
-            )
+            r = _http_get(embed_url, referer or embed_url)
             if r.status_code == 200:
                 text = r.text
+
+                if _is_challenge_page(text):
+                    # cookie sudah expired/ditolak -> buang supaya tidak dipakai lagi
+                    _drop_host_cookies(_host(embed_url))
+                    break  # text = challenge -> memicu fallback browser
+
                 # voe.sx first returns a tiny JS page that redirects to a current
                 # player mirror (the host rotates; e.g. teresapoliticallearn.com).
                 if is_voe:
@@ -281,18 +318,23 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
                     )
                     if redirect:
                         player_url = redirect.group(1)
-                        player = curl_requests.get(
-                            player_url,
-                            headers={"User-Agent": UA, "Referer": referer or embed_url},
-                            impersonate="chrome",
-                            timeout=_HTTP_TIMEOUT,
-                            allow_redirects=True,
-                        )
+                        player = _http_get(player_url, referer or embed_url)
                         if player.status_code == 200:
                             text = player.text
                             embed_url = player_url
                         else:
                             _dbg("VOE mirror non-200 | %s %s", player_url, player.status_code)
+                            # non-200 tapi body-nya challenge -> tetap lempar ke browser
+                            if _is_challenge_page(getattr(player, "text", "") or ""):
+                                _drop_host_cookies(_host(player_url))
+                                text = player.text
+                break
+
+            # non-200: kalau body-nya halaman challenge, paksa jalur browser
+            body = getattr(r, "text", "") or ""
+            if _is_challenge_page(body):
+                _drop_host_cookies(_host(embed_url))
+                text = body
                 break
             _dbg("resolve non-200 | %s %s", embed_url, r.status_code)
         except Exception as e:
@@ -310,19 +352,26 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
     voe_needs = is_voe and not (text and (_PACKER_RE.search(text) or "application/json" in text))
     needs_browser = bool(voe_needs or _is_challenge_page(text or ""))
     if needs_browser:
-        cache_key = f"{embed_url}::{referer}"
+        cache_key = embed_url  # referer tidak mengubah isi HTML -> miss lebih sedikit
         cached = _VOE_RESOLVE_CACHE.get(cache_key)
+        browser_data = None
         if cached and (time.time() - cached[1]) < _VOE_CACHE_TTL:
-            browser_html = cached[0]
+            browser_data = cached[0]
             _dbg("VOE cache hit | %s", embed_url)
         else:
-            _dbg("VOE/embed HTTP polos gagal, fallback browser stealth | %s", embed_url)
-            browser_html = _fetch_voe_browser(embed_url, referer=referer)
-            if browser_html:
+            _dbg("HTTP polos gagal, resolve via StealthySession | %s", embed_url)
+            browser_data = _fetch_voe_browser(embed_url, referer=referer)
+            if browser_data and (browser_data.get("html") or browser_data.get("m3u8")):
                 _prune_voe_cache()
-                _VOE_RESOLVE_CACHE[cache_key] = (browser_html, time.time())
-        if browser_html:
-            text = browser_html
+                _VOE_RESOLVE_CACHE[cache_key] = (browser_data, time.time())
+
+        if browser_data:
+            # m3u8 ketangkap dari request player -> langsung pakai, skip deobfuscate
+            if browser_data.get("m3u8"):
+                _dbg("m3u8 via request capture | %s", browser_data["m3u8"])
+                return "hls", browser_data["m3u8"], None
+            if browser_data.get("html"):
+                text = browser_data["html"]
 
     if not text:
         return None, None, None

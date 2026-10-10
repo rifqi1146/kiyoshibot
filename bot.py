@@ -236,6 +236,12 @@ async def post_shutdown(app):
         await shutdown_pyrogram_uploader(app)
     except Exception:
         log.exception("Failed to shutdown Pyrogram uploader")
+    try:
+        import asyncio as _asyncio
+        from utils import scrapling_browser
+        await _asyncio.to_thread(scrapling_browser.close_browser)
+    except Exception:
+        log.exception("Failed to close Scrapling browser")
     await close_http_session()
     log.info("HTTP session closed")
 

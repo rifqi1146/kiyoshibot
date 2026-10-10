@@ -58,7 +58,6 @@ DEFAULT_ASUPAN_KEYWORDS = [
     "user150612018306",
     "cutedouyin01",
     "notriissaaa",
-    "capybarinnn",
     "noncakeith",
     "zayaofficial2",
     "fluffyaa_",

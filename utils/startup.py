@@ -14,6 +14,7 @@ from handlers.backup import start_auto_backup
 from database import premium
 from handlers import caca
 from handlers.dl.sweeper import start_downloads_sweeper
+from utils import scrapling_browser
 
 log=logging.getLogger(__name__)
 
@@ -124,4 +125,10 @@ async def startup_tasks(app):
         log.exception("Auto backup init failed")
     _create_background_task(app,_startup_asupan(app),"Startup asupan")
     _create_background_task(app,start_downloads_sweeper(),"Downloads sweeper")
+    # Warmup browser stealth di background agar launch pertama tidak
+    # membebani user pertama yang minta download VOE/Nekopoi/Asupan.
+    async def _warmup():
+        await asyncio.to_thread(scrapling_browser.warmup_browser)
+        log.info("✓ Scrapling browser warmed up")
+    _create_background_task(app,_warmup(),"Scrapling warmup")
     log.info("✓ Startup background tasks scheduled")
