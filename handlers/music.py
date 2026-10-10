@@ -1,10 +1,12 @@
-import asyncio, os, shutil, glob, html, tempfile, time, uuid
+import asyncio, os, shutil, glob, html, tempfile, time, uuid, warnings, logging
 from urllib.parse import urlparse, parse_qs
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from database.user_settings_db import get_user_settings
+
+log_music = logging.getLogger(__name__)
 
 try:
     from ytSearch import VideosSearch
@@ -119,24 +121,38 @@ def _make_token() -> str:
 def _get_cached_music(context, token):
     return _music_store(context).get(token)
 
-def _build_results_message(payload: dict, page: int) -> tuple[str, InlineKeyboardMarkup]:
+def _build_results_message(payload: dict, page: int) -> tuple[str, str, InlineKeyboardMarkup]:
     entries = payload["entries"]
     owner_id = payload["owner_id"]
     token = payload["token"]
+    query = payload.get("query") or ""
     total = len(entries)
     pages = max((total + MUSIC_PAGE_SIZE - 1) // MUSIC_PAGE_SIZE, 1)
     page = max(0, min(page, pages - 1))
     start = page * MUSIC_PAGE_SIZE
     end = min(start + MUSIC_PAGE_SIZE, total)
-    text = f"<b>Music Search Results</b>\n<i>Page {page+1}/{pages}</i>\n\n"
+
+    rows = []
+    plain_blocks = []
     keyboard = []
     for idx, entry in enumerate(entries[start:end], start=start):
         number = idx + 1
         title = html.escape(entry["title"])
         uploader = html.escape(entry["uploader"])
         duration = html.escape(_format_duration(entry.get("duration")))
-        text += f"{number}. <b>{title}</b>\n   By: {uploader} ({duration})\n\n"
-        keyboard.append([InlineKeyboardButton(f"Select {number}", callback_data=f"music_download:{owner_id}:{token}:{idx}")])
+        link = html.escape(str(entry.get("link") or ""), quote=True)
+
+        title_cell = f'<a href="{link}">{title}</a>' if link else title
+        rows.append(
+            f"<tr><td><b>{number}</b></td><td>{title_cell}</td><td><code>{duration}</code></td><td>{uploader}</td></tr>"
+        )
+        plain_blocks.append(
+            f"<b>{number}.</b> {title_cell}\n   By: {uploader} ({duration})"
+        )
+        keyboard.append([
+            InlineKeyboardButton(f"Select {number}", callback_data=f"music_download:{owner_id}:{token}:{idx}")
+        ])
+
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("Prev", callback_data=f"music_page:{owner_id}:{token}:{page-1}"))
@@ -145,7 +161,56 @@ def _build_results_message(payload: dict, page: int) -> tuple[str, InlineKeyboar
     if nav:
         keyboard.append(nav)
     keyboard.append([InlineKeyboardButton("Cancel", callback_data=f"music_cancel:{owner_id}:{token}")])
-    return text, InlineKeyboardMarkup(keyboard)
+
+    rich_html = (
+        "<h1>🎵 Music Search</h1>"
+        f"<p>Query: <code>{html.escape(query)}</code> • Page {page+1}/{pages} • {total} results</p>"
+        "<hr/>"
+        "<table bordered compact>"
+        "<tr><th>#</th><th>Title</th><th>Time</th><th>Channel</th></tr>"
+        f"{''.join(rows)}"
+        "</table>"
+        "<hr/>"
+        "<aside>💡 Select a song below to download the audio.</aside>"
+    )
+
+    separator = "─" * 24
+    plain_html = (
+        f"<b>🎵 Music Search</b>\n<code>{html.escape(query)}</code>\n\n"
+        + "\n\n".join(plain_blocks)
+        + f"\n\n{separator}\n<i>Page {page+1}/{pages} • {total} results</i>"
+    )
+
+    return rich_html, plain_html, InlineKeyboardMarkup(keyboard)
+
+
+def _markup_dict(markup):
+    if markup is None:
+        return None
+    if hasattr(markup, "to_dict"):
+        return markup.to_dict()
+    return markup if isinstance(markup, dict) else None
+
+
+async def _edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_html: str, markup):
+    payload = {"chat_id": chat_id, "message_id": message_id, "rich_message": {"html": rich_html}}
+    md = _markup_dict(markup)
+    if md:
+        payload["reply_markup"] = md
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return await bot.do_api_request("editMessageText", payload)
+    except Exception as e:
+        log_music.debug("music editMessageText rich fallback | err=%r", e)
+    try:
+        return await bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id, text=plain_html,
+            reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log_music.debug("music edit_message_text fallback failed | err=%r", e)
+        return None
 
 async def _search_music(search_query: str, limit: int = MUSIC_MAX_RESULTS) -> list[dict]:
     if VideosSearch is None:
@@ -215,8 +280,8 @@ async def music_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         token = _make_token()
         payload = {"token": token, "owner_id": user_id, "query": query, "entries": entries, "created_at": time.time()}
         _music_store(context)[token] = payload
-        text, markup = _build_results_message(payload, 0)
-        await status_msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
+        rich_html, plain_html, markup = _build_results_message(payload, 0)
+        await _edit_rich(context.bot, status_msg.chat_id, status_msg.message_id, rich_html, plain_html, markup)
     except Exception as e:
         await status_msg.edit_text(f"<b>Failed to search music</b>\n\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
@@ -246,9 +311,12 @@ async def music_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = int(parts[3])
         except Exception:
             page = 0
-        text, markup = _build_results_message(payload, page)
+        rich_html, plain_html, markup = _build_results_message(payload, page)
         await query.answer()
-        return await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+        return await _edit_rich(
+            context.bot, query.message.chat_id, query.message.message_id,
+            rich_html, plain_html, markup,
+        )
     if action == "music_cancel":
         _music_store(context).pop(token, None)
         await query.answer("Cancelled.")
@@ -271,7 +339,13 @@ async def music_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     output_format = str(settings.get("music_format") or "flac").lower()
     job_dir = None
     try:
-        await query.edit_message_text("⏳ <b>Downloading music...</b>\n\nOutput format: <b>{}</b>".format(html.escape(output_format.upper())), parse_mode="HTML")
+        dl_status = (
+            "<h1>⏳ Downloading music…</h1>"
+            f"<p>Format: <code>{html.escape(output_format.upper())}</code></p>"
+            "<hr/>"
+            "<aside>💡 Please wait, this can take a moment.</aside>"
+        )
+        await _edit_rich(context.bot, chat_id, query.message.message_id, dl_status, "⏳ <b>Downloading music...</b>", None)
         entry_info, file_path, job_dir = await asyncio.to_thread(_download_music_sync, video_id, output_format)
         title = str(entry_info.get("title") or entry.get("title") or "Audio")
         performer = str(entry_info.get("uploader") or entry_info.get("channel") or entry.get("uploader") or "Unknown")
