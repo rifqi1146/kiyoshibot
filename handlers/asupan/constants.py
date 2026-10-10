@@ -46,7 +46,6 @@ DEFAULT_ASUPAN_KEYWORDS = [
     "arakedua__",
     "cebelassimutt",
     "dee308550",
-    "kecoa.imuttt",
     "notmeyy._",
     "ssnappy1",
     "vbynad_ia",

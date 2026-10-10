@@ -464,12 +464,16 @@ async def _acquire_item(keyword: str | None) -> dict | None:
         return None
 
 
-async def _acquire_item_scraper(keyword: str | None) -> dict | None:
+async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str | None]:
     """Ambil 1 video dari pool SCRAPER (vendored); isi pool sekali per keyword.
 
     Sama seperti `_acquire_item` (tikwm) tetapi sumbernya `tiktoksource`: satu
     search mengembalikan ~20 video dan DISIMPAN di pool, sehingga 20 asupan
     berikutnya memakai keyword yang sama tanpa search ulang.
+
+    Return `(video, keyword_used)`. `keyword_used` = keyword yang BENAR-BENAR
+    dipakai (berguna saat pemanggil meminta keyword=None tetapi pool memilih
+    keyword acak default) supaya log bisa menunjuk keyword aslinya.
     """
     global _DEFAULT_KEYWORD_SCRAPER
 
@@ -482,14 +486,14 @@ async def _acquire_item_scraper(keyword: str | None) -> dict | None:
             async with lock:
                 item = _pop_pool(norm)
                 if item:
-                    return item
+                    return item, q
                 log.info("Mengisi pool asupan (scraper) | query=%s", q)
                 new_videos = await tiktoksource.search_videos(q)
                 if not new_videos:
-                    return None
+                    return None, q
                 _VIDEO_POOLS[norm] = new_videos
                 log.info("Pool asupan (scraper) keyword=%r terisi: %s video", q, len(new_videos))
-                return _pop_pool(norm)
+                return _pop_pool(norm), q
         finally:
             if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
                 _POOL_LOCKS.pop(norm, None)
@@ -499,7 +503,7 @@ async def _acquire_item_scraper(keyword: str | None) -> dict | None:
         if _DEFAULT_KEYWORD_SCRAPER:
             item = _pop_pool("scraper:" + _DEFAULT_KEYWORD_SCRAPER.lower())
             if item:
-                return item
+                return item, _DEFAULT_KEYWORD_SCRAPER
 
         for _ in range(3):
             kw = random.choice(DEFAULT_ASUPAN_KEYWORDS)
@@ -509,9 +513,9 @@ async def _acquire_item_scraper(keyword: str | None) -> dict | None:
                 _DEFAULT_KEYWORD_SCRAPER = kw
                 _VIDEO_POOLS["scraper:" + kw.lower()] = new_videos
                 log.info("Pool asupan (scraper) keyword=%r terisi: %s video", kw, len(new_videos))
-                return _pop_pool("scraper:" + kw.lower())
+                return _pop_pool("scraper:" + kw.lower()), kw
 
-        return None
+        return None, None
 
 
 async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
@@ -528,12 +532,12 @@ async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
     if tiktoksource.configured():
         try:
             for _ in range(5):
-                vid = await _acquire_item_scraper(keyword)
+                vid, kw_used = await _acquire_item_scraper(keyword)
                 if not vid:
                     break
                 url = await _prime_and_get_url(vid)
                 if url:
-                    log.info("[ASUPAN] source=scraper | keyword=%r id=%s", keyword, vid.get("id"))
+                    log.info("[ASUPAN] source=scraper | keyword=%r id=%s", kw_used, vid.get("id"))
                     return url
             log.info("[ASUPAN] source=scraper kosong -> fallback tikwm")
         except Exception as e:
