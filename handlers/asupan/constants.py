@@ -116,7 +116,6 @@ DEFAULT_ASUPAN_KEYWORDS = [
     "nasluvt",
     "dimpledtataww",
     "lvme4awaa",
-    "liveid63",
     "cewe cantik",
     "cewe sma",
     "rerereyaaa",

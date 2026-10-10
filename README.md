@@ -241,7 +241,6 @@ This project uses and depends on the following tools and services:
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [godv bot](https://github.com/govdbot/govd)
 - [gallery-dl](https://github.com/mikf/gallery-dl)
-- [Sonzai Api](http://api.sonzaix.indevs.in)
 - [TikWm](https://www.tikwm.com/)
 - [Pyrofork](https://github.com/Mayuri-Chan/pyrofork)
 - [Axiom Payment](https://portal.axiomcreative.xyz)
