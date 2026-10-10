@@ -131,4 +131,13 @@ async def startup_tasks(app):
         await asyncio.to_thread(scrapling_browser.warmup_browser)
         log.info("✓ Scrapling browser warmed up")
     _create_background_task(app,_warmup(),"Scrapling warmup")
+    # Warmup sumber pencarian TikTok vendored (asupan utama).
+    async def _warmup_tiktokapi():
+        from handlers.asupan import tiktoksource
+        if not tiktoksource.configured():
+            log.info("tiktokapi asupan disabled, pakai tikwm")
+            return
+        ok = await tiktoksource.warmup()
+        log.info("✓ tiktokapi asupan source %s", "ready" if ok else "TIDAK siap")
+    _create_background_task(app,_warmup_tiktokapi(),"tiktokapi warmup")
     log.info("✓ Startup background tasks scheduled")

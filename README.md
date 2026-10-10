@@ -245,3 +245,9 @@ This project uses and depends on the following tools and services:
 - [TikWm](https://www.tikwm.com/)
 - [Pyrofork](https://github.com/Mayuri-Chan/pyrofork)
 - [Axiom Payment](https://portal.axiomcreative.xyz)
+- [omkarcloud/tiktok-scraper](https://github.com/omkarcloud/tiktok-scraper) — MIT License,
+  Copyright (c) 2026 Chetan Jain. Vendored TikTok web-API client under
+  `handlers/asupan/tiktokapi/` (used by the Asupan feature for keyword search).
+- [Evil0ctal/Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)
+  — Apache-2.0. The pure-Python `webmssdk` signer (`X-Dynosaur` / `X-Gnarly`)
+  in `handlers/asupan/tiktokapi/signer.py` is ported/vendored from here.

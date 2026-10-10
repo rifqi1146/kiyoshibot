@@ -8,6 +8,7 @@ import os
 from curl_cffi import requests as curl_requests
 from utils.http import get_http_session
 from utils import scrapling_browser as _sb
+from . import tiktoksource
 from .constants import DEFAULT_ASUPAN_KEYWORDS
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,9 @@ _VIDEO_POOLS: dict[str, list[dict]] = {}
 # Keyword default yang sedang aktif. Dipakai ulang sampai pool-nya habis supaya
 # 1x search melayani banyak video (tidak search 20 video tiap kali ganti asupan).
 _DEFAULT_KEYWORD: str | None = None
+# Keyword default khusus sumber SCRAPER (dipisah dari `_DEFAULT_KEYWORD` tikwm
+# supaya kedua jalur tidak saling menimpa pilihan keyword).
+_DEFAULT_KEYWORD_SCRAPER: str | None = None
 # Satu lock per keyword: keyword berbeda boleh search bergantian tanpa saling
 # menunggu selesai (jarak request tetap dijaga _api_gate), tapi keyword yang
 # sama tidak akan memicu search berkali-kali (thundering herd).
@@ -460,13 +464,82 @@ async def _acquire_item(keyword: str | None) -> dict | None:
         return None
 
 
+async def _acquire_item_scraper(keyword: str | None) -> dict | None:
+    """Ambil 1 video dari pool SCRAPER (vendored); isi pool sekali per keyword.
+
+    Sama seperti `_acquire_item` (tikwm) tetapi sumbernya `tiktoksource`: satu
+    search mengembalikan ~20 video dan DISIMPAN di pool, sehingga 20 asupan
+    berikutnya memakai keyword yang sama tanpa search ulang.
+    """
+    global _DEFAULT_KEYWORD_SCRAPER
+
+    if keyword and keyword.strip():
+        q = keyword.strip()
+        norm = "scraper:" + q.lower()
+        _prune_pools()
+        lock = _POOL_LOCKS.setdefault(norm, asyncio.Lock())
+        try:
+            async with lock:
+                item = _pop_pool(norm)
+                if item:
+                    return item
+                log.info("Mengisi pool asupan (scraper) | query=%s", q)
+                new_videos = await tiktoksource.search_videos(q)
+                if not new_videos:
+                    return None
+                _VIDEO_POOLS[norm] = new_videos
+                log.info("Pool asupan (scraper) keyword=%r terisi: %s video", q, len(new_videos))
+                return _pop_pool(norm)
+        finally:
+            if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
+                _POOL_LOCKS.pop(norm, None)
+
+    # Tanpa keyword: satu keyword default aktif sampai pool-nya habis.
+    async with _DEFAULT_META_LOCK:
+        if _DEFAULT_KEYWORD_SCRAPER:
+            item = _pop_pool("scraper:" + _DEFAULT_KEYWORD_SCRAPER.lower())
+            if item:
+                return item
+
+        for _ in range(3):
+            kw = random.choice(DEFAULT_ASUPAN_KEYWORDS)
+            log.info("Mengisi pool asupan (scraper) | query=%s", kw)
+            new_videos = await tiktoksource.search_videos(kw)
+            if new_videos:
+                _DEFAULT_KEYWORD_SCRAPER = kw
+                _VIDEO_POOLS["scraper:" + kw.lower()] = new_videos
+                log.info("Pool asupan (scraper) keyword=%r terisi: %s video", kw, len(new_videos))
+                return _pop_pool("scraper:" + kw.lower())
+
+        return None
+
+
 async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
     """Ambil 1 video asupan dan kembalikan URL CDN langsung (bukan file).
 
-    Video diambil HANYA dari pool milik keyword yang diminta, jadi keyword user
-    yang berbeda tidak akan saling tabrakan. Keyword None memakai satu keyword
-    default aktif sampai pool-nya habis.
+    SUMBER UTAMA = library TikTok vendored (`tiktoksource` / `tiktokapi/`) untuk
+    PENCARIAN video (hasil ~20 video DISIMPAN di pool, jadi satu search melayani
+    banyak asupan); URL play di-resolve lewat tikwm `/api/` karena play_link
+    dari library menolak stream tanpa cookie/region yang cocok (HTTP 403).
+
+    Kalau sumber vendored tidak tersedia/gagal, seluruh alur jatuh ke tikwm penuh.
     """
+    # ── Jalur utama: pool scraper (vendored) ────────────────────────────────
+    if tiktoksource.configured():
+        try:
+            for _ in range(5):
+                vid = await _acquire_item_scraper(keyword)
+                if not vid:
+                    break
+                url = await _prime_and_get_url(vid)
+                if url:
+                    log.info("[ASUPAN] source=scraper | keyword=%r id=%s", keyword, vid.get("id"))
+                    return url
+            log.info("[ASUPAN] source=scraper kosong -> fallback tikwm")
+        except Exception as e:
+            log.warning("[ASUPAN] source=scraper error (%r) -> fallback", e)
+
+    # ── Fallback: tikwm penuh (jalur lama) ──────────────────────────────────
     for _ in range(5):
         video_item = await _acquire_item(keyword)
         if not video_item:
@@ -474,6 +547,7 @@ async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
 
         final_url = await _prime_and_get_url(video_item)
         if final_url:
+            log.info("[ASUPAN] source=tikwm | id=%s", video_item.get("id"))
             return final_url
         log.warning("Failed to resolve video id=%s, trying another video", video_item.get("id"))
 
