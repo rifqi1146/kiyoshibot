@@ -4,7 +4,7 @@ import logging
 import math
 import uuid
 import time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import ContextTypes
 from urllib.parse import quote_plus
 from curl_cffi import requests as curl_requests
@@ -17,6 +17,7 @@ from handlers.dl.router import (
     _premium_link_block_text,
     _metadata_status,
 )
+from utils.rich_search import build_search_content, edit_search_rich, send_search_rich
 
 log = logging.getLogger(__name__)
 
@@ -115,59 +116,12 @@ async def _do_search(site_key: str, query: str):
 
 def _render_page(site_key: str, search_id: str, data: dict):
     site = SITES[site_key]
-    prefix = site["prefix"]
-    page = data["page"]
-    results = data["results"]
-    total = len(results)
-    max_page = max(1, math.ceil(total / PER_PAGE))
-
-    start = page * PER_PAGE
-    chunk = results[start:start + PER_PAGE]
-
-    # NBSP (U+00A0) dipakai supaya indentasi tetap terlihat di Telegram.
-    indent = "\u00a0\u00a0\u00a0"
-    separator = "─" * 24
-
-    text = (
-        f"<b>{site['label']} Search</b>\n"
-        f"<code>{html.escape(data['query'])}</code>\n\n"
-    )
-    if not results:
-        text += "<i>No results found.</i>"
-        return text, None
-
-    blocks = []
-    for i, item in enumerate(chunk):
-        idx = start + i + 1
-        meta = _result_meta(item)
-        block = (
-            f"<b>{idx}.</b> "
-            f"<a href=\"{html.escape(item['url'], quote=True)}\">{html.escape(item['title'])}</a>"
-        )
-        if meta:
-            block += f"\n{indent}└─ {meta}"
-        blocks.append(block)
-
-    text += "\n\n".join(blocks)
-    text += f"\n\n{separator}\n<i>Page {page + 1} of {max_page}</i>"
-
-    keyboard = []
-    row_nums = [
-        InlineKeyboardButton(str(start + i + 1), callback_data=f"{prefix}:dl:{search_id}:{start + i}")
-        for i in range(len(chunk))
-    ]
-    if row_nums:
-        keyboard.append(row_nums)
-
-    row_nav = []
-    if page > 0:
-        row_nav.append(InlineKeyboardButton("Prev", callback_data=f"{prefix}:nav:{search_id}:{page - 1}"))
-    row_nav.append(InlineKeyboardButton("Close", callback_data=f"{prefix}:close:{search_id}:0"))
-    if page < max_page - 1:
-        row_nav.append(InlineKeyboardButton("Next", callback_data=f"{prefix}:nav:{search_id}:{page + 1}"))
-    keyboard.append(row_nav)
-
-    return text, InlineKeyboardMarkup(keyboard)
+    # Siapkan field `meta` untuk tiap item agar tabel Info terisi
+    results = data.get("results") or []
+    for it in results:
+        if "meta" not in it:
+            it["meta"] = _result_meta(it)
+    return build_search_content(site["label"], site["prefix"], search_id, data, per_page=PER_PAGE)
 
 
 def _purge_expired_cache():
@@ -238,10 +192,8 @@ def make_site_cmd(site_key: str):
             "chat_id": chat.id,
         }
 
-        text, markup = _render_page(site_key, search_id, _SEARCH_CACHE[search_id])
-        await status.edit_text(
-            text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True
-        )
+        rich_html, plain_html, markup = _render_page(site_key, search_id, _SEARCH_CACHE[search_id])
+        await edit_search_rich(context.bot, chat.id, status.message_id, rich_html, plain_html, markup)
 
     site_cmd.__name__ = f"{site_key}_cmd"
     return site_cmd
@@ -282,10 +234,8 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, s
             data["page"] = int(arg)
         except (TypeError, ValueError):
             return await q.answer("Invalid page.", show_alert=True)
-        text, markup = _render_page(site_key, search_id, data)
-        await q.edit_message_text(
-            text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True
-        )
+        rich_html, plain_html, markup = _render_page(site_key, search_id, data)
+        await edit_search_rich(context.bot, q.message.chat.id, q.message.message_id, rich_html, plain_html, markup)
         return await q.answer()
 
     if action == "dl":
