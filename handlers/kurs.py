@@ -1,8 +1,10 @@
 import aiohttp
+import html
 from telegram import Update
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from utils.http import get_http_session
+from utils.rich_msg import Report, edit_rich, send_rich
 
 ECB_SOURCE_URL = "https://data.ecb.europa.eu/currency-converter"
 
@@ -41,18 +43,39 @@ async def kurs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if r.status != 200:
                     return await msg.reply_text("Failed to fetch currency list.")
                 data = await r.json()
-            lines = ["💱 <b>Currency List</b>\n"]
-            for code, name in sorted(data.items()):
-                lines.append(f"• <b>{code}</b> — {name}")
-            lines.append(
-                "\n🌐 Data source: "
-                f"<a href=\"{ECB_SOURCE_URL}\">European Central Bank</a>"
+            # Bangun tabel 2 kolom (kode | nama) agar ringkas.
+            items = sorted(data.items())
+            rows = []
+            for i in range(0, len(items), 2):
+                left = items[i]
+                right = items[i + 1] if i + 1 < len(items) else None
+                l_cell = f"<code>{html.escape(left[0])}</code> — {html.escape(str(left[1]))}"
+                r_cell = (
+                    f"<code>{html.escape(right[0])}</code> — {html.escape(str(right[1]))}"
+                    if right else ""
+                )
+                rows.append((l_cell, r_cell))
+            rich = (
+                "<h1>💱 Currency List</h1>"
+                f"<p>{len(items)} currencies • European Central Bank</p>"
+                "<hr/>"
+                "<table bordered compact>"
+                "<tr><th>Code</th><th>Code</th></tr>"
+                + "".join(
+                    f"<tr><td>{l}</td><td>{r}</td></tr>" for l, r in rows
+                )
+                + "</table>"
+                "<hr/>"
+                f"<footer>Source: {ECB_SOURCE_URL}</footer>"
             )
-            return await msg.reply_text(
-                "\n".join(lines),
-                parse_mode="HTML",
-                disable_web_page_preview=True
+            plain = (
+                "<b>💱 Currency List</b>\n\n"
+                + "\n".join(f"• <b>{html.escape(k)}</b> — {html.escape(str(v))}" for k, v in items)
+                + f"\n\n🌐 Source: <a href=\"{ECB_SOURCE_URL}\">European Central Bank</a>"
             )
+            if len(plain) > 4096:
+                return await msg.reply_text(plain[:4096], parse_mode="HTML", disable_web_page_preview=True)
+            return await send_rich(msg.get_bot(), msg.chat_id, rich, plain, reply_to_message_id=msg.message_id)
         except Exception as e:
             return await msg.reply_text(f"Error: {e}")
             
@@ -99,15 +122,15 @@ async def kurs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         date = data.get("date")
         if rate is None:
             return await msg.reply_text("Invalid currency code.")
-            
-        await msg.reply_text(
-            "💱 <b>Currency Exchange</b>\n\n"
-            f"{_fmt_num(amount)} <b>{from_cur}</b> ≈ <b>{_fmt_num(rate)} {to_cur}</b>\n\n"
-            f"📅 Date: <code>{date}</code>\n"
-            "🌐 Source: "
-            f"<a href=\"{ECB_SOURCE_URL}\">European Central Bank</a>",
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
+
+        rep = Report("💱 Currency Exchange", f"{_fmt_num(amount)} {from_cur} ≈ {_fmt_num(rate)} {to_cur}", aside="Data via European Central Bank")
+        rep.add("💱 Result", [
+            ("From", f"{_fmt_num(amount)} {from_cur}"),
+            ("To", f"{_fmt_num(rate)} {to_cur}"),
+            ("Rate", f"1 {from_cur} = {_fmt_num(rate / amount if amount else rate)} {to_cur}"),
+            ("Date", date),
+        ])
+        rich_html, plain_html = rep.build()
+        await send_rich(msg.get_bot(), msg.chat_id, rich_html, plain_html, reply_to_message_id=msg.message_id)
     except Exception as e:
         await msg.reply_text(f"Error: {e}")

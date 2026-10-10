@@ -6,6 +6,7 @@ import aiohttp
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.http import get_http_session
+from utils.rich_msg import Report, edit_rich
 
 WEATHER_SPIN_FRAMES = ["🌤", "⛅", "🌥", "☁️", "🌦", "🌈"]
 
@@ -163,23 +164,34 @@ async def weather_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         observed_time = current.get("time", "N/A")
         tz_abbr = data.get("timezone_abbreviation") or data.get("timezone") or "Local"
         location_name = _format_location(location)
-        report = (
-            f"🌤 <b>Weather — {html.escape(location_name)}</b>\n\n"
-            f"🔎 Condition: <code>{html.escape(weather_desc)}</code>\n"
-            f"🌡 Temperature: <code>{html.escape(str(temp))}{html.escape(str(temp_unit))}</code> "
-            f"(Feels like <code>{html.escape(str(feels))}{html.escape(str(feels_unit))}</code>)\n"
-            f"💧 Humidity: <code>{html.escape(str(humidity))}{html.escape(str(humidity_unit))}</code>\n"
-            f"💨 Wind: <code>{html.escape(str(wind_speed))} {html.escape(str(wind_speed_unit))} ({html.escape(wind_dir)})</code>\n"
-            f"☁️ Cloud Cover: <code>{html.escape(str(cloud))}{html.escape(str(cloud_unit))}</code>\n\n"
-            f"🌅 Sunrise: <code>{html.escape(str(sunrise))}</code>\n"
-            f"🌇 Sunset: <code>{html.escape(str(sunset))}</code>\n\n"
-            f"🕒 Observed: <code>{html.escape(str(observed_time))}</code> ({html.escape(str(tz_abbr))})"
-        )
+
         stop_event.set()
         spin_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await spin_task
-        await _safe_edit(status_msg, report)
+
+        rep = Report(f"🌤 Weather — {location_name}", observed_time, aside="Data via Open-Meteo")
+        rep.add("🔎 Current", [
+            ("Condition", weather_desc),
+            ("Temperature", f"{temp}{temp_unit}"),
+            ("Feels like", f"{feels}{feels_unit}"),
+            ("Humidity", f"{humidity}{humidity_unit}"),
+            ("Cloud Cover", f"{cloud}{cloud_unit}"),
+        ])
+        rep.add("💨 Wind", [
+            ("Speed", f"{wind_speed} {wind_speed_unit}"),
+            ("Direction", wind_dir),
+        ])
+        rep.add("🌅 Sun", [
+            ("Sunrise", sunrise),
+            ("Sunset", sunset),
+        ])
+        rep.add("🕒 Observation", [
+            ("Observed", observed_time),
+            ("Timezone", tz_abbr),
+        ])
+        rich_html, plain_html = rep.build()
+        await edit_rich(status_msg.get_bot(), status_msg.chat_id, status_msg.message_id, rich_html, plain_html)
     except ValueError as e:
         stop_event.set()
         spin_task.cancel()

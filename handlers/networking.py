@@ -10,6 +10,7 @@ import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.http import get_http_session
+from utils.rich_msg import Report, edit_rich, send_rich
 from urllib.parse import urlparse
 
 _NET_CACHE = {}
@@ -54,43 +55,46 @@ async def whoisdomain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         ns = w.name_servers
         if isinstance(ns, list):
-            ns_text = "\n".join(f"• {html.escape(n)}" for n in ns[:8])
+            ns_list = [str(n) for n in ns[:8]]
+        elif ns:
+            ns_list = [str(ns)]
         else:
-            ns_text = html.escape(str(ns)) if ns else "Not available"
+            ns_list = []
 
-        result = (
-            "<b>📋 WHOIS Information</b>\n\n"
-            f"<b>Domain:</b> <code>{html.escape(domain)}</code>\n"
-            f"<b>Registrar:</b> {html.escape(str(w.registrar or 'N/A'))}\n"
-            f"<b>WHOIS Server:</b> {html.escape(str(w.whois_server or 'N/A'))}\n\n"
+        email_val = w.emails[0] if isinstance(w.emails, list) and w.emails else w.emails
+        rep = Report("📋 WHOIS Information", domain, aside="Data via python-whois")
+        rep.add("🌐 Domain", [
+            ("Domain", domain),
+            ("Registrar", w.registrar or "N/A"),
+            ("WHOIS Server", w.whois_server or "N/A"),
+        ])
+        rep.add("📅 Important Dates", [
+            ("Created", fmt_date(w.creation_date)),
+            ("Updated", fmt_date(w.updated_date)),
+            ("Expires", fmt_date(w.expiration_date)),
+        ])
+        rep.add("👤 Registrant", [
+            ("Name", w.name or "N/A"),
+            ("Organization", w.org or "N/A"),
+            ("Email", email_val or "N/A"),
+        ])
+        rep.add("🔧 Technical", [
+            ("Status", w.status or "N/A"),
+            ("DNSSEC", w.dnssec or "N/A"),
+        ])
+        rep.add("🏢 Registrar Info", [
+            ("IANA ID", w.registrar_iana_id or "N/A"),
+            ("URL", w.registrar_url or "N/A"),
+        ])
+        rich_html, plain_html = rep.build()
+        if ns_list:
+            plain_html += "\n\n<b>🌐 Name Servers</b>\n" + "\n".join(f"• {html.escape(n)}" for n in ns_list)
 
-            "<b>📅 Important Dates</b>\n"
-            f"<b>Created:</b> {fmt_date(w.creation_date)}\n"
-            f"<b>Updated:</b> {fmt_date(w.updated_date)}\n"
-            f"<b>Expires:</b> {fmt_date(w.expiration_date)}\n\n"
-
-            "<b>👤 Registrant</b>\n"
-            f"<b>Name:</b> {html.escape(str(w.name or 'N/A'))}\n"
-            f"<b>Organization:</b> {html.escape(str(w.org or 'N/A'))}\n"
-            f"<b>Email:</b> {html.escape(str(w.emails[0] if isinstance(w.emails, list) else w.emails or 'N/A'))}\n\n"
-
-            "<b>🔧 Technical</b>\n"
-            f"<b>Status:</b> {html.escape(str(w.status or 'N/A'))}\n"
-            f"<b>DNSSEC:</b> {html.escape(str(w.dnssec or 'N/A'))}\n\n"
-
-            "<b>🌐 Name Servers</b>\n"
-            f"{ns_text}\n\n"
-
-            "<b>🏢 Registrar Info</b>\n"
-            f"<b>IANA ID:</b> {html.escape(str(w.registrar_iana_id or 'N/A'))}\n"
-            f"<b>URL:</b> {html.escape(str(w.registrar_url or 'N/A'))}"
-        )
-
-        if len(result) > 4096:
-            await msg.edit_text(result[:4096], parse_mode="HTML")
-            await update.message.reply_text(result[4096:], parse_mode="HTML")
+        if len(plain_html) > 4096:
+            await msg.edit_text(plain_html[:4096], parse_mode="HTML")
+            await update.message.reply_text(plain_html[4096:], parse_mode="HTML")
         else:
-            await msg.edit_text(result, parse_mode="HTML")
+            await edit_rich(msg.get_bot(), msg.chat_id, msg.message_id, rich_html, plain_html)
 
     except Exception as e:
         await msg.edit_text(
@@ -150,32 +154,32 @@ async def ip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-        text = (
-            "<b>🌍 IP Address Information</b>\n\n"
-            f"<b>IP:</b> <code>{data.get('query')}</code>\n"
-            f"<b>ISP:</b> {html.escape(data.get('isp','N/A'))}\n"
-            f"<b>Organization:</b> {html.escape(data.get('org','N/A'))}\n"
-            f"<b>AS:</b> {html.escape(data.get('as','N/A'))}\n\n"
-
-            "<b>📍 Location</b>\n"
-            f"<b>Country:</b> {html.escape(data.get('country','N/A'))} ({data.get('countryCode','')})\n"
-            f"<b>Region:</b> {html.escape(data.get('regionName','N/A'))}\n"
-            f"<b>City:</b> {html.escape(data.get('city','N/A'))}\n"
-            f"<b>ZIP:</b> {html.escape(data.get('zip','N/A'))}\n"
-            f"<b>Coords:</b> {data.get('lat','N/A')}, {data.get('lon','N/A')}\n\n"
-
-            "<b>🕐 Timezone</b>\n"
-            f"<b>TZ:</b> {html.escape(data.get('timezone','N/A'))}\n"
-            f"<b>UTC Offset:</b> {data.get('offset','N/A')}\n\n"
-
-            "<b>🔍 Flags</b>\n"
-            f"<b>Reverse DNS:</b> {html.escape(data.get('reverse','N/A'))}\n"
-            f"<b>Mobile:</b> {'Yes' if data.get('mobile') else 'No'}\n"
-            f"<b>Proxy:</b> {'Yes' if data.get('proxy') else 'No'}\n"
-            f"<b>Hosting:</b> {'Yes' if data.get('hosting') else 'No'}"
-        )
-
-        await msg.edit_text(text, parse_mode="HTML")
+        rep = Report("🌍 IP Address Information", str(data.get("query") or ip), aside="Data via ip-api.com")
+        rep.add("🌐 Network", [
+            ("IP", data.get("query")),
+            ("ISP", data.get("isp", "N/A")),
+            ("Organization", data.get("org", "N/A")),
+            ("AS", data.get("as", "N/A")),
+        ])
+        rep.add("📍 Location", [
+            ("Country", f"{data.get('country','N/A')} ({data.get('countryCode','')})"),
+            ("Region", data.get("regionName", "N/A")),
+            ("City", data.get("city", "N/A")),
+            ("ZIP", data.get("zip", "N/A")),
+            ("Coords", f"{data.get('lat','N/A')}, {data.get('lon','N/A')}"),
+        ])
+        rep.add("🕐 Timezone", [
+            ("Timezone", data.get("timezone", "N/A")),
+            ("UTC Offset", data.get("offset", "N/A")),
+        ])
+        rep.add("🔍 Flags", [
+            ("Reverse DNS", data.get("reverse", "N/A")),
+            ("Mobile", "Yes" if data.get("mobile") else "No"),
+            ("Proxy", "Yes" if data.get("proxy") else "No"),
+            ("Hosting", "Yes" if data.get("hosting") else "No"),
+        ])
+        rich_html, plain_html = rep.build()
+        await edit_rich(msg.get_bot(), msg.chat_id, msg.message_id, rich_html, plain_html)
 
     except Exception as e:
         await msg.edit_text(
@@ -261,28 +265,24 @@ async def domain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             info["http_status"] = "Not available"
             info["server"] = "Not available"
 
+    rep = Report("🌐 Domain Information", domain, aside="WHOIS + HTTP fingerprint")
+    rep.add("🌐 Domain", [
+        ("Domain", domain),
+        ("IP Address", info["ip"]),
+        ("HTTP Status", info["http_status"]),
+        ("Server", info["server"]),
+    ])
+    rep.add("📋 Registration Details", [
+        ("Registrar", info["registrar"]),
+        ("Created", info["created"]),
+        ("Expires", info["expires"]),
+    ])
+    rich_html, plain_html = rep.build()
     if info["nameservers"]:
-        ns_text = "\n".join(
+        plain_html += "\n\n<b>🔧 Name Servers</b>\n" + "\n".join(
             f"• {html.escape(ns)}" for ns in info["nameservers"][:5]
         )
-    else:
-        ns_text = "Not available"
-
-    text = (
-        "<b>🌐 Domain Information</b>\n\n"
-        f"<b>Domain:</b> <code>{html.escape(domain)}</code>\n"
-        f"<b>IP Address:</b> <code>{info['ip']}</code>\n"
-        f"<b>HTTP Status:</b> <code>{info['http_status']}</code>\n"
-        f"<b>Server:</b> <code>{html.escape(info['server'])}</code>\n\n"
-        "<b>📋 Registration Details</b>\n"
-        f"<b>Registrar:</b> {html.escape(info['registrar'])}\n"
-        f"<b>Created:</b> {html.escape(info['created'])}\n"
-        f"<b>Expires:</b> {html.escape(info['expires'])}\n\n"
-        "<b>🔧 Name Servers</b>\n"
-        f"{ns_text}"
-    )
-
-    await loading.edit_text(text, parse_mode="HTML")
+    await edit_rich(loading.get_bot(), loading.chat_id, loading.message_id, rich_html, plain_html)
     
 def _cache_cleanup():
     now = time.time()
@@ -546,98 +546,69 @@ async def net_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     httpfp = await _fetch_http_fingerprint(host, port) if not target_is_ip else None
     w = await _fetch_whois_domain(host) if not target_is_ip else None
 
-    lines = []
-    lines.append("<b>NET Report</b>\n")
-    lines.append(f"<b>Input:</b> <code>{html.escape(raw)}</code>")
-    lines.append(f"<b>Host:</b> <code>{html.escape(host)}</code>")
+    rep = Report("🛰 NET Report", host, aside="DNS + IP + HTTP + WHOIS")
+
+    basic = [("Input", raw), ("Host", host)]
     if port:
-        lines.append(f"<b>Port:</b> <code>{port}</code>")
-
+        basic.append(("Port", str(port)))
     if target_is_ip:
-        lines.append("<b>Type:</b> <code>IP</code>")
+        basic.append(("Type", "IP"))
         if ptr:
-            lines.append(f"<b>PTR:</b> <code>{html.escape(ptr)}</code>")
+            basic.append(("PTR", ptr))
     else:
-        lines.append("<b>Type:</b> <code>Domain</code>")
-        if ips_v4:
-            lines.append(f"<b>A:</b> <code>{html.escape(', '.join(ips_v4[:6]))}</code>")
-        else:
-            lines.append("<b>A:</b> <code>Not found</code>")
-        if ips_v6:
-            lines.append(f"<b>AAAA:</b> <code>{html.escape(', '.join(ips_v6[:6]))}</code>")
-        else:
-            lines.append("<b>AAAA:</b> <code>Not found</code>")
-
-    lines.append("")
+        basic.append(("Type", "Domain"))
+        basic.append(("A", ", ".join(ips_v4[:6]) if ips_v4 else "Not found"))
+        basic.append(("AAAA", ", ".join(ips_v6[:6]) if ips_v6 else "Not found"))
+    rep.add("🔎 Basic", basic)
 
     if ip_for_geo:
-        lines.append("<b>🌍 IP / ASN</b>")
         if isinstance(ip_info, dict) and ip_info.get("error"):
-            lines.append(f"<b>IP API:</b> <code>{html.escape(str(ip_info.get('error')))}</code>")
+            rep.add("🌍 IP / ASN", [("IP API", str(ip_info.get("error")))])
         elif isinstance(ip_info, dict) and ip_info.get("status") == "success":
-            lines.append(f"<b>IP:</b> <code>{html.escape(str(ip_info.get('query')))}</code>")
-            lines.append(f"<b>ISP:</b> {html.escape(ip_info.get('isp','N/A'))}")
-            lines.append(f"<b>Org:</b> {html.escape(ip_info.get('org','N/A'))}")
-            lines.append(f"<b>AS:</b> {html.escape(ip_info.get('as','N/A'))}")
-            lines.append(
-                f"<b>Location:</b> {html.escape(ip_info.get('country','N/A'))} "
-                f"({html.escape(ip_info.get('countryCode',''))}) / "
-                f"{html.escape(ip_info.get('regionName','N/A'))} / "
-                f"{html.escape(ip_info.get('city','N/A'))}"
-            )
-            lines.append(f"<b>Timezone:</b> {html.escape(ip_info.get('timezone','N/A'))} (UTC {ip_info.get('offset','N/A')})")
+            geo_rows = [
+                ("IP", ip_info.get("query")),
+                ("ISP", ip_info.get("isp", "N/A")),
+                ("Org", ip_info.get("org", "N/A")),
+                ("AS", ip_info.get("as", "N/A")),
+                ("Location", f"{ip_info.get('country','N/A')} ({ip_info.get('countryCode','')}) / {ip_info.get('regionName','N/A')} / {ip_info.get('city','N/A')}"),
+                ("Timezone", f"{ip_info.get('timezone','N/A')} (UTC {ip_info.get('offset','N/A')})"),
+            ]
             rev = ip_info.get("reverse")
             if rev:
-                lines.append(f"<b>Reverse:</b> <code>{html.escape(str(rev))}</code>")
-            lines.append(
-                "<b>Flags:</b> "
-                f"Mobile={_fmt_bool(ip_info.get('mobile'))}, "
-                f"Proxy={_fmt_bool(ip_info.get('proxy'))}, "
-                f"Hosting={_fmt_bool(ip_info.get('hosting'))}"
-            )
+                geo_rows.append(("Reverse", str(rev)))
+            geo_rows.append((
+                "Flags",
+                f"Mobile={_fmt_bool(ip_info.get('mobile'))}, Proxy={_fmt_bool(ip_info.get('proxy'))}, Hosting={_fmt_bool(ip_info.get('hosting'))}",
+            ))
+            rep.add("🌍 IP / ASN", geo_rows)
         else:
-            lines.append("<code>Not available</code>")
+            rep.add("🌍 IP / ASN", [("Status", "Not available")])
     else:
-        lines.append("<b>🌍 IP / ASN</b>")
-        lines.append("<code>Not available</code>")
-
-    lines.append("")
+        rep.add("🌍 IP / ASN", [("Status", "Not available")])
 
     if httpfp:
-        lines.append("<b>HTTP Fingerprint</b>")
         https_r = httpfp.get("https") or {}
         http_r = httpfp.get("http") or {}
-
         if https_r.get("ok"):
-            lines.append("<b>HTTPS:</b> <b>OK</b>")
-            lines.append(f"<b>Status:</b> <code>{https_r.get('status')}</code>")
-            lines.append(f"<b>Final URL:</b> <code>{html.escape(https_r.get('url',''))}</code>")
-            if https_r.get("server"):
-                lines.append(f"<b>Server:</b> <code>{html.escape(https_r.get('server'))}</code>")
-            if https_r.get("content_type"):
-                lines.append(f"<b>Content-Type:</b> <code>{html.escape(https_r.get('content_type'))}</code>")
-            lines.append(f"<b>HSTS:</b> <code>{'Yes' if https_r.get('hsts') else 'No'}</code>")
-        else:
-            lines.append("<b>HTTPS:</b>")
-            if https_r.get("err"):
-                lines.append(f"<code>{html.escape(https_r.get('err'))}</code>")
-
+            rep.add("🔒 HTTPS", [
+                ("Status", https_r.get("status")),
+                ("Final URL", https_r.get("url", "")),
+                ("Server", https_r.get("server")),
+                ("Content-Type", https_r.get("content_type")),
+                ("HSTS", "Yes" if https_r.get("hsts") else "No"),
+            ])
+        elif https_r.get("err"):
+            rep.add("🔒 HTTPS", [("Error", https_r.get("err"))])
         if http_r:
             if http_r.get("ok"):
-                lines.append("")
-                lines.append("<b>HTTP:</b> <b>OK</b>")
-                lines.append(f"<b>Status:</b> <code>{http_r.get('status')}</code>")
-                lines.append(f"<b>Final URL:</b> <code>{html.escape(http_r.get('url',''))}</code>")
-                if http_r.get("server"):
-                    lines.append(f"<b>Server:</b> <code>{html.escape(http_r.get('server'))}</code>")
-                if http_r.get("content_type"):
-                    lines.append(f"<b>Content-Type:</b> <code>{html.escape(http_r.get('content_type'))}</code>")
-            else:
-                lines.append("")
-                lines.append("<b>HTTP:</b>")
-                if http_r.get("err"):
-                    lines.append(f"<code>{html.escape(http_r.get('err'))}</code>")
-
+                rep.add("🌐 HTTP", [
+                    ("Status", http_r.get("status")),
+                    ("Final URL", http_r.get("url", "")),
+                    ("Server", http_r.get("server")),
+                    ("Content-Type", http_r.get("content_type")),
+                ])
+            elif http_r.get("err"):
+                rep.add("🌐 HTTP", [("Error", http_r.get("err"))])
         cf_hint = None
         if (https_r.get("cf_ray") or "").strip():
             cf_hint = "Cloudflare"
@@ -645,48 +616,44 @@ async def net_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cf_hint = "Cloudflare"
         elif (http_r.get("server") or "").lower() == "cloudflare":
             cf_hint = "Cloudflare"
-
         if cf_hint:
-            lines.append("")
-            lines.append(f"<b>CDN/WAF:</b> <code>{cf_hint}</code>")
+            rep.add("🛡 CDN / WAF", [("Provider", cf_hint)])
 
     if w and isinstance(w, dict) and w.get("error"):
-        lines.append("")
-        lines.append("<b>📋 WHOIS</b>")
-        lines.append(f"<code>{html.escape(str(w.get('error')))}</code>")
-
+        rep.add("📋 WHOIS", [("Error", str(w.get("error")))])
     elif w and not isinstance(w, dict):
         ns = getattr(w, "name_servers", None)
         if isinstance(ns, list):
             ns_text = "\n".join(f"• {html.escape(str(n))}" for n in ns[:8])
         else:
             ns_text = html.escape(str(ns)) if ns else "Not available"
-
         email_val = getattr(w, "emails", None)
         if isinstance(email_val, list):
             email_val = email_val[0] if email_val else None
+        rep.add("📋 WHOIS", [
+            ("Registrar", getattr(w, "registrar", None) or "N/A"),
+            ("WHOIS Server", getattr(w, "whois_server", None) or "N/A"),
+            ("Created", fmt_date(getattr(w, "creation_date", None))),
+            ("Updated", fmt_date(getattr(w, "updated_date", None))),
+            ("Expires", fmt_date(getattr(w, "expiration_date", None))),
+            ("Registrant", getattr(w, "name", None) or "N/A"),
+            ("Org", getattr(w, "org", None) or "N/A"),
+            ("Email", email_val or "N/A"),
+        ])
+        rep.add_text("<b>Name Servers:</b>\n" + ns_text)
 
-        lines.append("")
-        lines.append("<b>📋 WHOIS</b>")
-        lines.append(f"<b>Registrar:</b> {html.escape(str(getattr(w, 'registrar', None) or 'N/A'))}")
-        lines.append(f"<b>WHOIS Server:</b> {html.escape(str(getattr(w, 'whois_server', None) or 'N/A'))}")
-        lines.append(f"<b>Created:</b> {fmt_date(getattr(w, 'creation_date', None))}")
-        lines.append(f"<b>Updated:</b> {fmt_date(getattr(w, 'updated_date', None))}")
-        lines.append(f"<b>Expires:</b> {fmt_date(getattr(w, 'expiration_date', None))}")
-        lines.append(f"<b>Registrant:</b> {html.escape(str(getattr(w, 'name', None) or 'N/A'))}")
-        lines.append(f"<b>Org:</b> {html.escape(str(getattr(w, 'org', None) or 'N/A'))}")
-        lines.append(f"<b>Email:</b> {html.escape(str(email_val or 'N/A'))}")
-        lines.append("<b>Name Servers:</b>")
-        lines.append(ns_text)
+    rich_html, plain_html = rep.build()
 
-    out = "\n".join(lines).strip()
-
-    parts = _split_tg(out, 4096)
-    try:
-        await loading.edit_text(parts[0], parse_mode="HTML", disable_web_page_preview=True)
-    except Exception:
-        await msg.reply_text(parts[0], parse_mode="HTML", disable_web_page_preview=True)
-
-    for p in parts[1:]:
-        await msg.reply_text(p, parse_mode="HTML", disable_web_page_preview=True)
+    # Rich message punya batas ~32k char; kalau plain fallback kepanjangan,
+    # pecah seperti semula (plain), tapi kirim rich kalau masih muat.
+    if len(plain_html) > 4096:
+        parts = _split_tg(plain_html, 4096)
+        try:
+            await loading.edit_text(parts[0], parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            await msg.reply_text(parts[0], parse_mode="HTML", disable_web_page_preview=True)
+        for p in parts[1:]:
+            await msg.reply_text(p, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        await edit_rich(loading.get_bot(), loading.chat_id, loading.message_id, rich_html, plain_html)
         
