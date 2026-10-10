@@ -183,7 +183,7 @@ async def shutdown_pyrogram_uploader(app=None):
     await _disconnect_client(_CLIENT,"shutdown")
     _CLIENT=None
 
-async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="Pyrofork uploading video"):
+async def _safe_edit_upload(bot,chat_id,message_id,current,total,started,label="Uploading video"):
     if not message_id:
         return
     key=(int(chat_id),int(message_id))
@@ -284,7 +284,7 @@ async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,captio
     try:
         client=await _get_client()
         target_chat_id=await _resolve_pyrogram_chat_id(bot,client,chat_id)
-        progress_callback,state=_make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_progress,interval,"Pyrofork uploading video")
+        progress_callback,state=_make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_progress,interval,"Uploading video")
         kwargs={
             "chat_id":target_chat_id,
             "video":file_path,

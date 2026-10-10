@@ -422,6 +422,7 @@ class TransferStats:
         return max(time.monotonic() - self.started, 0.0)
 
     def should_log(self, interval: float = 2.5, *, now: float | None = None) -> bool:
+        iv = float(interval if interval is not None else 2.5)
         now = now if now is not None else time.monotonic()
         # Sudah 100%: log sekali saja, lalu diam (proses kadang belum exit
         # begitu file penuh — aria2c menutup koneksi — dan emit/sample terus
@@ -434,7 +435,7 @@ class TransferStats:
             return True
         if (
             self._last_log_ts <= 0
-            or (now - self._last_log_ts) >= interval
+            or (now - self._last_log_ts) >= iv
         ):
             self._last_log_ts = now
             return True
@@ -492,9 +493,10 @@ class TransferStats:
         return iv
 
     def should_edit(self, interval: float = 2.0, *, now: float | None = None) -> bool:
+        iv = float(interval if interval is not None else 2.0)
         now = now if now is not None else time.monotonic()
         # Jika interval <= 0, anggap caller memaksakan edit (mis. awal 0% / akhir 100%)
-        if interval <= 0:
+        if iv <= 0:
             self._last_edit_ts = now
             return True
 
@@ -511,7 +513,7 @@ class TransferStats:
 
         # Pakai interval dinamis (sesuai kecepatan + sisa ukuran),
         # minimal sebesar interval yang diminta caller.
-        effective = max(interval, self.adaptive_edit_interval())
+        effective = max(iv, self.adaptive_edit_interval())
 
         if self._last_edit_ts < 0 or (now - self._last_edit_ts) >= effective:
             self._last_edit_ts = now

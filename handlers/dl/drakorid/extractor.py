@@ -491,8 +491,8 @@ async def download_video(
         await stats.emit(
             bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
             title=title, kind="Drakor.id download", label=label,
-            log_interval=HTTP_TIMEOUT and None or None,
-            edit_interval=None,
+            log_interval=DRAKORID_PROGRESS_INTERVAL,
+            edit_interval=DRAKORID_PROGRESS_INTERVAL,
         )
 
     write_task = asyncio.ensure_future(asyncio.to_thread(_write))
@@ -501,7 +501,8 @@ async def download_video(
             await stats.emit(
                 bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
                 title=title, kind="Drakor.id download", label=label,
-                log_interval=None, edit_interval=None,
+                log_interval=DRAKORID_PROGRESS_INTERVAL,
+                edit_interval=DRAKORID_PROGRESS_INTERVAL,
             )
         await asyncio.sleep(0.5)
 

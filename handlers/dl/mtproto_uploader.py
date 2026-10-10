@@ -268,7 +268,7 @@ async def try_send_video_via_mtproto(bot,chat_id,status_msg_id,file_path,caption
         attrs=[]
         if DocumentAttributeVideo and duration and width and height:
             attrs.append(DocumentAttributeVideo(duration=int(duration),w=int(width),h=int(height),supports_streaming=True))
-        label="FastTelethon uploading video" if is_fasttelethon_enabled() else "Uploading video"
+        label="Uploading video"
         progress_callback,state=_make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_progress,interval,label)
         log.info(
             "MTProto upload start | chat_id=%s file=%s size=%s progress=%s interval=%.1fs part_size=%sKB fast=%s fast_available=%s",
