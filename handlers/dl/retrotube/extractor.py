@@ -34,7 +34,7 @@ def _host(url: str) -> str:
 
 
 def _collect_embed_candidates(html_text: str) -> list:
-    """Kumpulkan semua kandidat URL embed, host lulustream diprioritaskan."""
+    """Collect all embed URL candidates; lulustream hosts are prioritized."""
     seen = []
     order = []
 
@@ -58,8 +58,8 @@ def _collect_embed_candidates(html_text: str) -> list:
 
 
 def _scrape_post(url: str, _depth: int = 0) -> tuple:
-    """-> (title, thumb_url, [embed_candidates]) dari halaman post.
-    Jika ini ternyata halaman kategori/listing, otomatis loncat ke post video pertama."""
+    """Extract (title, thumb_url, [embed_candidates]) from the post page.
+    Automatically jumps to the first video post if this is a category/listing page."""
     html_text = ""
     last_err = None
     for attempt in range(2):
@@ -82,7 +82,7 @@ def _scrape_post(url: str, _depth: int = 0) -> tuple:
                 time.sleep(0.8)
 
     if not html_text:
-        raise RuntimeError(f"Gagal mengambil halaman post ({last_err or 'non-200'})")
+        raise RuntimeError(f"Failed to fetch post page ({last_err or 'non-200'})")
 
     title = None
     for pat in (
@@ -109,19 +109,17 @@ def _scrape_post(url: str, _depth: int = 0) -> tuple:
     candidates = _collect_embed_candidates(html_text)
 
     # Auto-resolve listing/category page:
-    # Jika tidak ada embed (0 kandidat) dan ini panggilan pertama, 
-    # periksa apakah ada daftar <article> (halaman kategori)
+    # If there are no embeds and this is the first attempt, check for an <article> list.
     if not candidates and _depth == 0:
         articles = re.findall(r'<article\b.*?</article>', html_text, re.S | re.I)
         if articles:
-            # Ambil link video pertama
             for art in articles:
                 m_href = re.search(r'href="([^"]+)"', art, re.I)
                 if m_href:
                     first_post_url = m_href.group(1).strip()
-                    # Pastikan ia ada di host yang sama untuk mencegah jebakan iklan
+                    # Ensure same host to prevent ad traps.
                     if _host(first_post_url) == _host(url):
-                        _dbg("Kategori terdeteksi. Loncat ke post pertama: %s", first_post_url)
+                        _dbg("Category page detected. Jumping to first post: %s", first_post_url)
                         return _scrape_post(first_post_url, _depth=1)
 
     _dbg("post scraped | title=%r candidates=%s", title, candidates)
@@ -129,11 +127,10 @@ def _scrape_post(url: str, _depth: int = 0) -> tuple:
 
 
 def _mirror_urls(raw_url: str) -> list:
-    """Kembalikan URL post yang sama di domain mirror (path identik), tanpa domain asal.
+    """Return identical-path post URLs on mirror domains, excluding the original host.
 
-    Domain wildcard (mis. "lendirqu.*") tidak bisa dipakai sebagai host, jadi
-    untuk grup tersebut hanya dipakai domain yang terdaftar eksplisit di
-    _MIRROR_EXTRA_HOSTS + domain asal.
+    Wildcard domains (e.g. 'lendirqu.*') cannot be used as target hosts, so only
+    explicit hosts listed in _MIRROR_EXTRA_HOSTS + the origin domain are used.
     """
     try:
         parts = urlsplit(raw_url)
@@ -150,7 +147,7 @@ def _mirror_urls(raw_url: str) -> list:
     hosts = []
     for g in group:
         if g.endswith(".*"):
-            # Wildcard: pakai host yang sudah terverifikasi aktif untuk prefix ini.
+            # Wildcard: use hosts already verified active for this prefix.
             hosts.extend(_MIRROR_EXTRA_HOSTS.get(g, ()))
         else:
             hosts.append(g)
@@ -174,11 +171,10 @@ _VOE_CACHE_MAX = 500
 
 def _prune_voe_cache():
     now = time.time()
-    # 1) buang semua entri yang sudah lewat TTL
+    # 1) drop every entry past its TTL
     for k in [k for k, v in list(_VOE_RESOLVE_CACHE.items()) if now - v[1] > _VOE_CACHE_TTL]:
         _VOE_RESOLVE_CACHE.pop(k, None)
-    # 2) kalau masih melebihi batas (entri fresh semua), buang yang paling tua
-    #    supaya map tidak tumbuh tanpa batas.
+    # 2) if still over the cap (all fresh), drop the oldest so the map stays bounded.
     if len(_VOE_RESOLVE_CACHE) > _VOE_CACHE_MAX:
         overflow = len(_VOE_RESOLVE_CACHE) - _VOE_CACHE_MAX
         oldest = sorted(_VOE_RESOLVE_CACHE.items(), key=lambda kv: kv[1][1])[: max(1, overflow)]
@@ -186,16 +182,16 @@ def _prune_voe_cache():
             _VOE_RESOLVE_CACHE.pop(k, None)
 
 
-# ── Cookie clearance & browser session → dipusatkan di utils/scrapling_browser ──
-# (satu StealthySession global dibagi semua downloader; cookie reuse untuk
-#  jalur cepat curl_cffi). Wrapper tipis di bawah menjaga API lama extractor ini.
+# ── Cookie clearance & browser session → centralized in utils/scrapling_browser ──
+# (one global StealthySession shared by all downloaders; cookie reuse for the
+#  fast curl_cffi path). Thin wrappers below keep this extractor's old API.
 
 def _drop_host_cookies(host: str):
     _sb.clear_cookies(host)
 
 
 def _http_get(url: str, referer: str = ""):
-    """GET cepat via curl_cffi, ikut bawa cookie clearance kalau pernah solve."""
+    """Fast GET via curl_cffi, reusing clearance cookies when available."""
     kwargs = {}
     ck = _sb.cookies_for(_host(url))
     if ck:
@@ -212,10 +208,10 @@ def _http_get(url: str, referer: str = ""):
 
 
 def _is_challenge_page(text: str) -> bool:
-    """Deteksi halaman JS challenge (DDoS-Guard/Cloudflare) yang perlu browser.
+    """Detect a JS challenge page (DDoS-Guard/Cloudflare) that requires a browser.
 
-    Hanya tanda tangan tantangan yang memicu fallback browser — halaman 404/error
-    biasa TIDAK boleh membuang ~20 detik membuka headless browser yang sia-sia.
+    Only verified challenge signatures trigger the browser fallback — standard
+    404/server errors must NOT waste ~20s launching a headless browser.
     """
     if not text:
         return False
@@ -228,57 +224,100 @@ def _is_challenge_page(text: str) -> bool:
     )
 
 
-def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 45000) -> dict:
-    """Resolve halaman VOE lewat shared StealthySession (utils/scrapling_browser).
+def _browser_data_usable(data: dict) -> bool:
+    """True if browser capture contains real media (not a 403/challenge page).
 
-    -> {"html": str, "m3u8": str|None}
+    A captured `m3u8` from the player request is always usable. Otherwise the
+    HTML must hold the obfuscated `<script type="application/json">` block (or a
+    packer blob) that `_deobfuscate_voe_json` can decode. A plain DDoS-Guard /
+    Cloudflare challenge page must NOT be treated as usable, otherwise it gets
+    cached and poisons every subsequent resolve for this embed until TTL expiry.
     """
-    holder = {"html": "", "m3u8": None}
+    if not data:
+        return False
+    if data.get("m3u8"):
+        return True
+    html = data.get("html") or ""
+    if not html or _is_challenge_page(html) or "chrome-error" in html:
+        return False
+    return "application/json" in html or bool(_PACKER_RE.search(html))
 
-    def _on_request(req):
-        u = getattr(req, "url", "") or ""
-        if ".m3u8" in u and not holder["m3u8"]:
-            holder["m3u8"] = u
 
-    def _setup(page):
-        try:
-            if getattr(page, "_rt_m3u8_hook", False):
-                return
-            page.on("request", _on_request)
-            page._rt_m3u8_hook = True
-        except Exception as e:
-            _dbg("pasang listener m3u8 gagal | %r", e)
+_VOE_BROWSER_ATTEMPTS = 1
 
-    def _auto(page):
-        for _ in range(90):
-            if holder["m3u8"]:
-                break
+
+def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 45000) -> dict:
+    """Resolve a VOE page via the shared StealthySession (utils/scrapling_browser).
+
+    Returns {"html": str, "m3u8": str|None}. Only returns usable media; never a
+    bare challenge/403 page.
+
+    The DDoS-Guard JS challenge on voe.sx is flaky: roughly one attempt in
+    several ends on `chrome-error://chromewebdata/` (browser navigation aborted)
+    or stays on the challenge page. Retrying the whole fetch recovers those runs
+    - the second attempt almost always clears the challenge, so we do not raise
+    from a single bad spin of the browser.
+    """
+    last = {"html": "", "m3u8": None}
+
+    for attempt in range(_VOE_BROWSER_ATTEMPTS):
+        holder = {"html": "", "m3u8": None}
+
+        def _on_request(req):
+            u = getattr(req, "url", "") or ""
+            if ".m3u8" in u and not holder["m3u8"]:
+                holder["m3u8"] = u
+
+        def _setup(page):
             try:
-                c = page.content()
-            except Exception:
-                page.wait_for_timeout(300)
-                continue
-            if 'type="application/json"' in c and len(c) > 2000:
-                holder["html"] = c
-                break
-            page.wait_for_timeout(300)
-        else:
-            if not holder["m3u8"] and not holder["html"]:
-                try:
-                    holder["html"] = page.content()
-                except Exception:
-                    pass
+                if getattr(page, "_rt_m3u8_hook", False):
+                    return
+                page.on("request", _on_request)
+                page._rt_m3u8_hook = True
+            except Exception as e:
+                _dbg("failed to attach m3u8 listener | %r", e)
 
-    html = _sb.fetch_html(
-        embed_url,
-        page_action=_auto,
-        page_setup=_setup,
-        referer=referer,
-        timeout_ms=timeout_ms,
-    )
-    if not holder["html"] and html:
-        holder["html"] = html
-    return holder
+        def _auto(page):
+            # Poll for the player JSON. The first (cold) resolve can take ~22s and
+            # a transient network hiccup can push it higher (Playwright retries the
+            # navigation itself), so the window must be generous. Once the session
+            # has cleared DDoS-Guard once, later resolves land in 2-4s.
+            deadline = time.time() + min(65.0, max(25.0, timeout_ms / 1000.0 * 1.5))
+            while time.time() < deadline:
+                if holder["m3u8"]:
+                    break
+                try:
+                    c = page.content()
+                except Exception:
+                    page.wait_for_timeout(350)
+                    continue
+                if 'type="application/json"' in c and len(c) > 2000:
+                    holder["html"] = c
+                    break
+                page.wait_for_timeout(350)
+
+        html = _sb.fetch_html(
+            embed_url,
+            page_action=_auto,
+            page_setup=_setup,
+            referer=referer,
+            timeout_ms=timeout_ms,
+        )
+        # Only fall back to the returned HTML when it is real media, not a
+        # challenge/error page. Returning a 403 body here poisons the resolve
+        # cache upstream.
+        if not holder["m3u8"] and not (holder["html"] and "application/json" in holder["html"]):
+            if html and not _is_challenge_page(html) and "chrome-error" not in html:
+                holder["html"] = html
+
+        last = holder
+        if _browser_data_usable(holder):
+            if attempt:
+                _dbg("VOE browser resolve succeeded on attempt %s | %s", attempt + 1, embed_url)
+            return holder
+        _dbg("VOE browser resolve attempt %s produced no media | %s", attempt + 1, embed_url)
+
+    return last
 
 
 def warmup_rt_browser() -> bool:
@@ -290,7 +329,7 @@ def close_rt_browser():
 
 
 def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
-    """-> (kind, media_url, thumb) dengan kind di {'hls','mp4'}, atau (None,None,None)."""
+    """Resolve an embed URL to (kind, media_url, thumb) with kind in {'hls', 'mp4'}, or (None, None, None)."""
     
     # VOE rotates its player domain via a literal JavaScript redirect.
     # Do not pin an obsolete clone before fetching the canonical embed.
@@ -304,9 +343,9 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
                 text = r.text
 
                 if _is_challenge_page(text):
-                    # cookie sudah expired/ditolak -> buang supaya tidak dipakai lagi
+                    # clearance cookie expired/rejected -> drop it so it is not reused
                     _drop_host_cookies(_host(embed_url))
-                    break  # text = challenge -> memicu fallback browser
+                    break  # text = challenge -> triggers the browser fallback
 
                 # voe.sx first returns a tiny JS page that redirects to a current
                 # player mirror (the host rotates; e.g. teresapoliticallearn.com).
@@ -324,13 +363,13 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
                             embed_url = player_url
                         else:
                             _dbg("VOE mirror non-200 | %s %s", player_url, player.status_code)
-                            # non-200 tapi body-nya challenge -> tetap lempar ke browser
+                            # non-200 but body is a challenge -> still hand off to the browser
                             if _is_challenge_page(getattr(player, "text", "") or ""):
                                 _drop_host_cookies(_host(player_url))
                                 text = player.text
                 break
 
-            # non-200: kalau body-nya halaman challenge, paksa jalur browser
+            # non-200: if the body is a challenge page, force the browser path
             body = getattr(r, "text", "") or ""
             if _is_challenge_page(body):
                 _drop_host_cookies(_host(embed_url))
@@ -341,32 +380,38 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
             _dbg("resolve fetch failed (attempt %s) | %s %r", attempt + 1, embed_url, e)
             time.sleep(1.0)
 
-    # Fallback: DDoS-Guard/VOE challenge -> browser stealth.
-    # Dipakai HANYA kalau HTTP polos gagal/tidak menghasilkan media, supaya
-    # jalur cepat (2 request) tetap jadi primadona.
+    # Fallback: DDoS-Guard/VOE challenge -> stealth browser.
+    # Used ONLY when plain HTTP fails or yields no media, so the fast path
+    # (2 requests) stays the default.
     #
-    # GUARD PERFORMA: jangan buka browser untuk sembarang kegagalan. Hanya:
-    #   a) embed VOE (`voe.sx`) yang HTML-nya tidak memuat blok JSON player, atau
-    #   b) respons berupa halaman challenge (DDoS-Guard/Cloudflare "Just a moment").
-    # Halaman 404/mati biasa langsung menyerah -> tidak ada 20 detik terbuang.
+    # PERFORMANCE GUARD: never open a browser for arbitrary failures. Only when:
+    #   a) a VOE embed (`voe.sx`) whose HTML lacks the player JSON block, or
+    #   b) the response is a challenge page (DDoS-Guard/Cloudflare "Just a moment").
+    # A plain 404/dead page gives up immediately -> no wasted ~20s.
     voe_needs = is_voe and not (text and (_PACKER_RE.search(text) or "application/json" in text))
     needs_browser = bool(voe_needs or _is_challenge_page(text or ""))
     if needs_browser:
-        cache_key = embed_url  # referer tidak mengubah isi HTML -> miss lebih sedikit
+        cache_key = embed_url  # referer does not change the HTML -> fewer misses
         cached = _VOE_RESOLVE_CACHE.get(cache_key)
         browser_data = None
         if cached and (time.time() - cached[1]) < _VOE_CACHE_TTL:
             browser_data = cached[0]
             _dbg("VOE cache hit | %s", embed_url)
         else:
-            _dbg("HTTP polos gagal, resolve via StealthySession | %s", embed_url)
+            _dbg("plain HTTP failed, resolving via StealthySession | %s", embed_url)
             browser_data = _fetch_voe_browser(embed_url, referer=referer)
-            if browser_data and (browser_data.get("html") or browser_data.get("m3u8")):
+            # NEVER cache a failure (403/challenge HTML without JSON) — caching it
+            # makes every later resolve for this embed fail until TTL expiry
+            # (poison cache).
+            if browser_data and _browser_data_usable(browser_data):
                 _prune_voe_cache()
                 _VOE_RESOLVE_CACHE[cache_key] = (browser_data, time.time())
+            else:
+                _dbg("browser resolve produced no media, not cached | %s", embed_url)
+                browser_data = None
 
         if browser_data:
-            # m3u8 ketangkap dari request player -> langsung pakai, skip deobfuscate
+            # m3u8 captured from the player request -> use directly, skip deobfuscate
             if browser_data.get("m3u8"):
                 _dbg("m3u8 via request capture | %s", browser_data["m3u8"])
                 return "hls", browser_data["m3u8"], None
@@ -383,14 +428,14 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         except Exception as e:
             _dbg("unpack failed | %s %r", embed_url, e)
 
-    # VOE / kloningnya (miaw.lol): config JSON ter-obfuscate -> m3u8 (source) / mp4.
+    # VOE / its clones (miaw.lol): obfuscated JSON config -> m3u8 (source) / mp4.
     voe_hls, voe_mp4 = _deobfuscate_voe_json(text)
     if voe_hls:
         return "hls", voe_hls, None
     if voe_mp4:
         return "mp4", voe_mp4, None
 
-    # mumu.watch: MASTER_URL disimpan plaintext di JS dengan slash ter-escape (\/).
+    # mumu.watch: MASTER_URL stored plaintext in JS with escaped slashes (\/).
     if "mumu.watch" in embed_url or "m-cdn.video" in text:
         mm = re.search(r'MASTER_URL\s*=\s*"([^"]+)"', text)
         if mm:
@@ -399,22 +444,22 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         if mm2:
             return "hls", mm2.group(0).replace("\\/", "/"), None
 
-    # HTML5 <video>/<source> (mis. lordfile.site): mp4 langsung, URL bisa berisi spasi
+    # HTML5 <video>/<source> (e.g. lordfile.site): direct mp4, URL may contain spaces
     for m in re.finditer(r'<(?:source|video)\b[^>]*\bsrc=["\']([^"\']+)["\']', text, re.I):
         u = m.group(1).strip()
         if re.search(r"\.(?:mp4|m3u8|webm)(?:\?|#|$)", u, re.I):
             u = u.replace(" ", "%20")
             return ("hls" if ".m3u8" in u.lower() else "mp4"), u, None
 
-    # db.fbplay.vip: Google Drive ID diproxy jadi HLS (dengan segmen PNG 1x1 dari tiktokcdn).
-    # Bypass langsung ke Google Drive aslinya untuk unduhan cepat dan utuh.
+    # db.fbplay.vip: Google Drive ID proxied to HLS (with 1x1 PNG segments from tiktokcdn).
+    # Bypass directly to original Google Drive for fast and complete downloads.
     if prefer_gdrive:
         m_gid = re.search(r'db\.fbplay\.vip/embed/video/([a-zA-Z0-9_-]{20,})', embed_url, re.I)
         if m_gid:
             return "gdrive", m_gid.group(1), None
 
-    # nontonvideo.xyz / JWPlayer path relatif: /stream/...
-    # (bisa ter-escape quotes: \'file\':\'/stream/...\')
+    # nontonvideo.xyz / JWPlayer relative path: /stream/...
+    # (can be escaped quotes: \'file\':\'/stream/...\')
     stream_m = re.search(r'''['"]?file['"]?\s*:\s*['"](/stream/[^'"]+)['"]''', text)
     if not stream_m:
         stream_m = re.search(r'''\\['"]file\\['"]\s*:\s*\\['"](/stream/[^\\'"]+)\\['"]''', text)

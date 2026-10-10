@@ -509,6 +509,7 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
             url,
             timeout_ms=timeout_ms,
             page_action=_auto,
+            solve_cloudflare=True,  # ouo.io = Cloudflare Turnstile
         )
     except Exception as e:
         log.debug("Stealth fetcher gagal untuk %s : %r", url, e)
@@ -849,7 +850,7 @@ def _probe_doodstream_browser(embed_url: str, title_hint: str = "") -> dict | No
         except Exception as e:
             log.debug("DoodStream browser aksi gagal | %s : %r", embed_url, e)
 
-    html = _sb.fetch_html(embed_url, timeout_ms=60000, page_action=_auto)
+    html = _sb.fetch_html(embed_url, timeout_ms=60000, page_action=_auto, solve_cloudflare=True)
     if not html:
         html = holder["html"]
     if not html or "/pass_md5/" not in html:

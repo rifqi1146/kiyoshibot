@@ -34,6 +34,10 @@ def is_retrotube_url(url: str) -> bool:
     return is_retrotube_domain(host)
 
 
+def _is_voe_candidate(url: str) -> bool:
+    return _host(url) in ("voe.sx", "www.voe.sx")
+
+
 async def retrotube_download(
     raw_url,
     fmt_key,
@@ -71,15 +75,15 @@ async def retrotube_download(
                 t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
             except Exception as e:
                 _dbg("scrape failed | %s %r", page_url, e)
-                # Post utama flaky (host becekku kadang timeout 1x): retry sekali
-                # sebelum lompat ke mirror, supaya tidak berujung "0 kandidat"
-                # padahal halaman post valid.
+                # Main post is flaky (becekku host sometimes times out once): retry
+                # once before jumping to the mirror, so it does not end up with
+                # "0 candidates" even though the post page is valid.
                 if idx == 0 and not candidate_pairs:
-                    _dbg("retry scrape post utama | %s", page_url)
+                    _dbg("retrying main post scrape | %s", page_url)
                     try:
                         t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
                     except Exception as e2:
-                        _dbg("retry scrape gagal | %s %r", page_url, e2)
+                        _dbg("scrape retry failed | %s %r", page_url, e2)
                         continue
                 else:
                     continue
@@ -101,20 +105,26 @@ async def retrotube_download(
 
         title = sanitize_filename(title or "Video", 100)
 
-        # Loop setiap kandidat embed sampai berhasil dapat stream valid (non-decoy)
+        # Loop over each embed candidate until a valid (non-decoy) stream is obtained
         downloaded = False
         last_error = None
         
-        # Tambahkan kandidat fallback untuk mencoba mode tanpa gdrive bypass jika gdrive gagal limit kuota
+        # Add fallback candidates to try without the gdrive bypass if gdrive hits a quota limit
         expanded_candidates = []
         for cand, refers in candidate_pairs:
-            expanded_candidates.append((cand, refers, True))  # coba bypass gdrive
+            expanded_candidates.append((cand, refers, True))  # try gdrive bypass
             if "db.fbplay.vip" in cand:
-                expanded_candidates.append((cand, refers, False))  # fallback ke hls tiktokcdn
+                expanded_candidates.append((cand, refers, False))  # fallback to tiktokcdn HLS
                 
         for cand, refers, prefer_gdrive in expanded_candidates:
             try:
                 k, mu, th = await asyncio.to_thread(_resolve_embed, cand, refers, prefer_gdrive)
+                # VOE cold start is flaky (the DDoS-Guard browser spin can drop a
+                # single attempt). A second resolve almost always succeeds in ~5s
+                # because the first spin already stored the clearance cookies.
+                if not mu and _is_voe_candidate(cand):
+                    _dbg("VOE first resolve empty, retrying once | %s", cand)
+                    k, mu, th = await asyncio.to_thread(_resolve_embed, cand, refers, prefer_gdrive)
                 if not mu:
                     continue
 
@@ -167,7 +177,7 @@ async def retrotube_download(
             except Exception as e:
                 _dbg("candidate %s failed (prefer_gdrive=%s): %r", cand, prefer_gdrive, e)
                 last_error = e
-                # Bersihkan file kerja sebelum mencoba kandidat berikutnya
+                # Clean up working files before trying the next candidate.
                 for item in os.listdir(work_dir):
                     item_path = os.path.join(work_dir, item)
                     try:

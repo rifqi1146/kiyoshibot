@@ -248,6 +248,7 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
         TIKWM_HOME,
         timeout_ms=40000,
         page_action=page_action,
+        solve_cloudflare=True,
     )
 
     return result_container
