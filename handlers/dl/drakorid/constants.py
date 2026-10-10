@@ -33,5 +33,5 @@ DRAKORID_ARIA2_CONNS = int(os.getenv("DRAKORID_ARIA2_CONNS", "16"))
 DRAKORID_PROGRESS_INTERVAL = float(os.getenv("DRAKORID_PROGRESS_INTERVAL", "2.5"))
 
 # Resolusi yang dicoba dari node CDN (nama file sama, folder berbeda).
-# `files` = varian "original" (biasanya 540p-720p hasil transcode server).
-CDN_QUALITY_DIRS = ("720p", "480p", "360p", "files")
+# `files` = master 720p (terverifikasi 1280x720). `720p` folder dicoba duluan kalau ada.
+CDN_QUALITY_DIRS = ("files", "720p", "480p", "360p")

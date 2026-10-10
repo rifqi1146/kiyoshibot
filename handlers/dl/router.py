@@ -370,6 +370,8 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
     context.application.create_task(_spawn())
 
 async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str|None=None,status_ready:bool=False):
+    if dl_id not in DL_CACHE:
+        DL_CACHE[dl_id]=dict(data)
     res_list,reason=await get_resolutions_detailed(data["url"],engine=engine)
     if not res_list:
         DL_CACHE.pop(dl_id,None)
@@ -439,6 +441,11 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
 
 async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id:int,status_ready:bool=False):
     url=data["url"]
+    # Guard: kalau dl_id hilang dari DL_CACHE (mis. race dengan /reload atau
+    # cache dibersihkan), isi ulang dari `data` supaya tidak KeyError di bawah.
+    if dl_id not in DL_CACHE:
+        log.warning("DL_CACHE miss in _process_choice, re-seeding | dl_id=%s", dl_id)
+        DL_CACHE[dl_id]=dict(data)
     if is_youtube_shorts_url(url):
         log.info("YouTube Shorts detected: skipping resolution picker, downloading best quality | url=%s", url)
     since_msg = time.time() - float(data.get("msg_date") or data.get("ts") or time.time())

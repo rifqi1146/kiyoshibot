@@ -329,9 +329,11 @@ def _resolve_via_api(slug: str, episode: int, session: curl_requests.Session) ->
         size = _probe_size(cand, session)
         if size <= 0:
             continue
+        # `files/` = master 720p (diverifikasi ffprobe 1280x720). Folder `720p`
+        # terpisah kadang tidak ada; `files/` selalu ada sebagai varian tertinggi.
         if quality == "files":
             height = 720
-            label = "Original"
+            label = "720p"
         else:
             try:
                 height = int(quality.rstrip("p"))
@@ -347,8 +349,15 @@ def _resolve_via_api(slug: str, episode: int, session: curl_requests.Session) ->
             "filesize": size,
             "total_size": size,
         })
-        if quality != "files" and len(variants) >= 2:
-            break
+
+    # Buang duplikat tinggi (mis. `720p` folder + `files/` sama-sama 720p);
+    # ambil ukuran terbesar untuk tinggi yang sama.
+    dedup: dict[int, dict] = {}
+    for v in variants:
+        prev = dedup.get(v["height"])
+        if not prev or v["total_size"] > prev["total_size"]:
+            dedup[v["height"]] = v
+    variants = list(dedup.values())
 
     variants.sort(key=lambda v: v["height"], reverse=True)
     return variants

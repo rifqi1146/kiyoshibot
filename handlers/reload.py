@@ -22,6 +22,12 @@ def _is_reloadable(name,module):
     return bool(path and path.endswith(".py"))
 
 def _module_priority(name):
+    # Modul "state" (shared mutable dict) HARUS reload paling awal. Kalau
+    # di-reload SETELAH konsumennya, objek dict-nya diganti baru sementara
+    # konsumen masih pegang dict lama -> split-brain (mis. `DL_CACHE[dl_id]`
+    # KeyError di router padahal callbacks baru saja menulisnya).
+    if name.endswith(".state"):
+        return 0
     if name.startswith("utils"):
         return 0
     if name.startswith("database"):
