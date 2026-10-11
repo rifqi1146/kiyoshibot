@@ -46,7 +46,12 @@ _session = None
 def _http():
     global _session
     if _session is None:
-        _session = curl_requests.Session(impersonate="chrome")
+        # `verify=False` WAJIB:信任 chain TLS beberapa host embed Anichin
+        # (ahvsh.com, sbrapid.com, keluarga vidhide/streamwish) tidak lengkap dan
+        # curl_cffi melempar `CertificateVerifyError` (curl 60: unable to get local
+        # issuer certificate) -> resolve bisu mengembalikan {} dan picker kosong.
+        # Host tujuan cuma dibaca HTML-nya, tidak ada kredensial yang dikirim.
+        _session = curl_requests.Session(impersonate="chrome", verify=False)
     return _session
 
 
@@ -341,6 +346,10 @@ def resolve_host_links(files_url: str) -> list[dict]:
             continue
         img = tr.select_one("img")
         host = (img.get("alt") if img else "") or ""
+        # FilesDLi (`filesdl.ink`) adalah host mati (cuma mengembalikan HTML
+        # landing page, bukan file). Abaikan supaya tidak memicu error palsu.
+        if host.lower() in ("filesdli", "filesdl"):
+            continue
         fields = {}
         for i in form.select("input[type=hidden]"):
             fields[i.get("name")] = i.get("value")
@@ -626,16 +635,20 @@ def resolve_provider(provider_url: str, label: str = "", referer: str = "") -> l
     if any(h in host for h in ("mirrored.to", "bit.ly", "bitly.com", "inshorturl", "lifehei")):
         return resolve_all_candidates(u, label, referer=referer)
 
-    # Shortener safelink (pndk.to/SafelinkEarn) & link Telegram promosi tidak
-    # menuju file: jangan dianggap file langsung (kalau tidak, downloader akan
-    # mengunduh halaman HTML-nya dan melaporkan error yang menyesatkan).
-    if any(h in host for h in ("pndk.to", "safelinkearn", "t.me", "telegram.me", "telegram.dog")):
+    # Shortener safelink (pndk.to/SafelinkEarn), link Telegram promosi, serta
+    # host aplikasi/mati (Terabox/1024tera butuh login/app, FilesDLi mati) tidak
+    # menuju file langsung: jangan dianggap file (kalau tidak, downloader akan
+    # mengunduh HTML-nya lalu gagal "mengembalikan HTML, bukan video").
+    if any(h in host for h in (
+        "pndk.to", "safelinkearn", "t.me", "telegram.me", "telegram.dog",
+        "terabox", "1024tera", "teraboxapp.com", "filesdl",
+    )):
         return []
 
     # Host file yang SUDAH dikenal -> URL langsung (tidak lewat rantai shortener).
     if any(h in host for h in (
         "pixeldrain.com", "buzzheavier.com", "gofile.io", "strwish.com", "streamwish",
-        "streamhg", "filesdl", "terabox", "1024tera", "drive.google", "megaup.net",
+        "streamhg", "drive.google", "megaup.net",
         "turbobit.net", "send.now", "dsvplay", "dood.", "d.tube", "odysee.com",
         "ok.ru", "rumble.com", "dailymotion",
     )):

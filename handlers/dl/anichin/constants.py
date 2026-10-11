@@ -53,6 +53,7 @@ VIDHIDE_HOSTS = (
     "streamhg", "morencius", "callistanise", "minochinos", "ryderjet", "rubystm",
     "rubyvidhub", "filelions", "filemoon", "vidspeeder", "cloudyup", "dood.",
     "playmogo", "dsvplay", "earnvids", "embedrise", "luluvid", "doodstream",
+    "ahvsh", "streamhide", "sbrapid", "streamsb",
 )
 
 # Preferensi host file setelah POST /out_url. Nama host diambil dari `alt` ikon

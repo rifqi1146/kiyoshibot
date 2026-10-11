@@ -23,6 +23,7 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
 import shutil
 import time
 import uuid
@@ -472,22 +473,25 @@ async def _download_segments_parallel(
     # Jalur 1: concat demuxer (-f concat -safe 0). Lebih hemat I/O (tidak membuat
     # file perantara 600MB) dan menangani timestamp tanpa desync. `-bsf:a aac_adtstoasc`
     # wajib saat muxing stream AAC dari MPEG-TS ke container MP4.
+    # PENTING: Gunakan `subprocess.run` via `asyncio.to_thread` — BUKAN
+    # `asyncio.create_subprocess_exec`! `uvloop.create_subprocess_exec` memanggil
+    # `fork()` yang rawan SIGSEGV di libc.so.6 (exit=-11) saat ada banyak C-thread
+    # aktif (curl_cffi / sqlite / patchright). `subprocess.run` memakai
+    # `posix_spawnp` (CLONE_VM | CLONE_VFORK) yang 100% aman.
     cmd = [
         "ffmpeg", "-y", "-loglevel", "warning",
         "-f", "concat", "-safe", "0", "-i", concat_list,
         "-c", "copy", "-bsf:a", "aac_adtstoasc",
         "-movflags", "+faststart", out_path,
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    res1 = await asyncio.to_thread(
+        subprocess.run, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
 
     # Jika jalur 1 gagal, fallback ke jalur 2 (byte-concat ke .ts lalu remux).
-    if proc.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-        err1 = (stderr or b"").decode("utf-8", "replace").strip()[-300:]
-        log.warning("ffmpeg -f concat gagal (exit=%s: %s), coba byte-concat", proc.returncode, err1)
+    if res1.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        err1 = (res1.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+        log.warning("ffmpeg -f concat gagal (exit=%s: %s), coba byte-concat", res1.returncode, err1)
         concat_ts = out_path + ".ts"
         try:
             with open(concat_ts, "wb") as out:
@@ -495,15 +499,16 @@ async def _download_segments_parallel(
                     seg_path = os.path.join(work_dir, f"{i:06d}.ts")
                     with open(seg_path, "rb") as src:
                         shutil.copyfileobj(src, out, 1024 * 1024)
-            proc2 = await asyncio.create_subprocess_exec(
+            cmd2 = [
                 "ffmpeg", "-y", "-loglevel", "warning", "-i", concat_ts,
                 "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", out_path,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            ]
+            res2 = await asyncio.to_thread(
+                subprocess.run, cmd2, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
-            _, stderr2 = await proc2.communicate()
-            if proc2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-                err2 = (stderr2 or b"").decode("utf-8", "replace").strip()[-300:]
-                raise RuntimeError(f"ffmpeg concat gagal (exit={proc2.returncode}): {err2 or err1 or 'output kosong'}")
+            if res2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+                err2 = (res2.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+                raise RuntimeError(f"ffmpeg concat gagal (exit={res2.returncode}): {err2 or err1 or 'output kosong'}")
         finally:
             if os.path.exists(concat_ts):
                 try:
