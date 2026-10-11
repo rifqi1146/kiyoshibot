@@ -892,12 +892,7 @@ def resolve_rumble(embed_url: str, target_height: int = 720) -> dict:
     if code_media != 200 or not raw_media:
         return {}
 
-    segs = []
-    for line in raw_media.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        segs.append(urljoin(chosen["url"], line))
+    init, segs = _hls_track(raw_media, chosen["url"])
 
     if not segs:
         return {}
@@ -905,6 +900,7 @@ def resolve_rumble(embed_url: str, target_height: int = 720) -> dict:
     return {
         "kind": "hls",
         "segments": segs,
+        "init": init,
         "height": chosen["height"],
         "bandwidth": chosen["bandwidth"],
         "duration": int(float(data.get("duration") or 0)),
@@ -922,8 +918,14 @@ def resolve_dailymotion(embed_url: str, target_height: int = 720) -> dict:
     `geo.dailymotion.com/player/<hash>.html?video=<id>`. Metadata video diambil
     dari `https://www.dailymotion.com/player/metadata/video/<id>` (JSON tanpa
     API key) yang memuat URL master HLS (`qualities.auto[0].url`). Master diikuti
-    ke varian resolusi terdekat lalu diurai jadi segmen `.ts` (TANPA enkripsi,
-    tanpa yt-dlp).
+    ke varian resolusi terdekat (H.264 diprioritaskan) lalu diurai jadi segmen
+    (TANPA enkripsi, tanpa yt-dlp).
+
+    PENTING: Dailymotion kini menyajikan **fMP4** (`#EXT-X-MAP:URI="init.mp4"`
+    + fragmen `.m4s`) dengan **audio sebagai rendition terpisah**
+    (`#EXT-X-MEDIA:TYPE=AUDIO`). Hasilnya memuat `init`, `segments`,
+    `audio_init`, dan `audio_segments` supaya downloader bisa menyatukan track
+    video + audio jadi MP4 yang valid.
     """
     m = re.search(
         r"(?:dailymotion\.com/(?:video|embed/video)/|[?&]video=)([a-zA-Z0-9]+)",
@@ -956,27 +958,45 @@ def resolve_dailymotion(embed_url: str, target_height: int = 720) -> dict:
         return {}
 
     # Master bisa langsung berisi segmen, atau memuat varian (#EXT-X-STREAM-INF).
+    # Varian video + grup audio terpisah (`#EXT-X-MEDIA:TYPE=AUDIO`) seperti pada
+    # HLS fMP4 Dailymotion: video `.m4s` tidak memuat audio sama sekali.
     variants = []
+    audio_groups: dict[str, str] = {}
     lines = [l.strip() for l in raw_m.splitlines() if l.strip()]
     for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-MEDIA") and "TYPE=AUDIO" in line:
+            gm = re.search(r'GROUP-ID="([^"]+)"', line)
+            um = re.search(r'URI="([^"]+)"', line)
+            if gm and um:
+                audio_groups[gm.group(1)] = urljoin(master, um.group(1))
+            continue
         if line.startswith("#EXT-X-STREAM-INF"):
             hm = re.search(r"RESOLUTION=\d+x(\d+)", line)
             h = int(hm.group(1)) if hm else 0
             bm = re.search(r"BANDWIDTH=(\d+)", line)
             bw = int(bm.group(1)) if bm else 0
+            am = re.search(r'AUDIO="([^"]+)"', line)
+            cm = re.search(r'CODECS="([^"]+)"', line)
+            codecs = (cm.group(1) if cm else "").lower()
             if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
                 variants.append({
                     "height": h,
                     "bandwidth": bw,
                     "url": urljoin(master, lines[i + 1]),
+                    "audio": am.group(1) if am else "",
+                    # Utamakan H.264 (avc1): AV1 (av01) tidak diputar di semua
+                    # klien Telegram. Dipakai sebagai tie-breaker saat tinggi sama.
+                    "h264": 1 if "avc1" in codecs else 0,
                 })
 
     if variants:
-        variants.sort(key=lambda v: abs(v["height"] - (target_height or 720)))
+        # Pilih varian terdekat target; kalau seri, prioritaskan H.264.
+        variants.sort(key=lambda v: (abs(v["height"] - (target_height or 720)), -v["h264"]))
         chosen = variants[0]
         media_url = chosen["url"]
         height = chosen["height"]
         bandwidth = chosen["bandwidth"]
+        audio_url = audio_groups.get(chosen.get("audio") or "") or ""
         code_media, raw_media, _ = _get(media_url, referer=referer)
         if code_media != 200 or not raw_media:
             return {}
@@ -985,13 +1005,16 @@ def resolve_dailymotion(embed_url: str, target_height: int = 720) -> dict:
         raw_media = raw_m
         height = 0
         bandwidth = 0
+        audio_url = ""
 
-    segs = []
-    for line in raw_media.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        segs.append(urljoin(media_url, line))
+    init, segs = _hls_track(raw_media, media_url)
+
+    # Track audio terpisah (fMP4 Dailymotion). Tanpa ini video bisu.
+    audio_init, audio_segs = "", []
+    if audio_url:
+        code_a, raw_a, _ = _get(audio_url, referer=referer)
+        if code_a == 200 and raw_a:
+            audio_init, audio_segs = _hls_track(raw_a, audio_url)
 
     if not segs:
         return {}
@@ -999,6 +1022,9 @@ def resolve_dailymotion(embed_url: str, target_height: int = 720) -> dict:
     return {
         "kind": "hls",
         "segments": segs,
+        "init": init,
+        "audio_segments": audio_segs,
+        "audio_init": audio_init,
         "height": height,
         "bandwidth": bandwidth,
         "duration": int(float(data.get("duration") or 0)),
@@ -1127,12 +1153,38 @@ def resolve_embed_hls(embed_url: str) -> dict:
     return {
         "host": urlsplit(master).hostname or "cdn",
         "media_url": media.get("media_url") or "",
+        "init": (media or {}).get("init") or "",
         "segments": segs,
         "height": height,
         "bandwidth": bandwidth,
         "duration": media.get("duration") or 0,
         "referer": referer,
     }
+
+
+def _hls_track(manifest: str, base_url: str) -> tuple[str, list[str]]:
+    """Playlist media -> (init_segment, [segment absolut]).
+
+    Menangani HLS MPEG-TS (tanpa init) maupun fMP4 (`#EXT-X-MAP:URI="init.mp4"`
+    lalu fragmen `.m4s`). `init` WAJIB dikembalikan untuk fMP4 — tanpa itu file
+    hasil concat tidak punya `moov`/`tfhd` dan ffmpeg menolaknya.
+    """
+    from urllib.parse import urljoin
+
+    init = ""
+    segs = []
+    for line in (manifest or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        mm = re.match(r'#EXT-X-MAP:URI="([^"]+)"', line)
+        if mm:
+            init = urljoin(base_url, mm.group(1))
+            continue
+        if line.startswith("#"):
+            continue
+        segs.append(urljoin(base_url, line))
+    return init, segs
 
 
 def _media_playlist(m3u8_url: str, referer: str = "", timeout: float | None = None) -> tuple[dict, int, int]:
@@ -1171,6 +1223,7 @@ def _media_playlist(m3u8_url: str, referer: str = "", timeout: float | None = No
 
     segs = []
     durs = []
+    init = ""
     for line in lines:
         if not line:
             continue
@@ -1178,6 +1231,10 @@ def _media_playlist(m3u8_url: str, referer: str = "", timeout: float | None = No
             m = re.search(r"#EXTINF\s*:\s*([\d.]+)", line)
             if m:
                 durs.append(float(m.group(1)))
+            continue
+        mm = re.match(r'#EXT-X-MAP:URI="([^"]+)"', line)
+        if mm:
+            init = urljoin(final or m3u8_url, mm.group(1))
             continue
         if line.startswith("#"):
             continue
@@ -1187,6 +1244,7 @@ def _media_playlist(m3u8_url: str, referer: str = "", timeout: float | None = No
     return (
         {
             "media_url": final or m3u8_url,
+            "init": init,
             "segments": segs,
             "duration": int(round(sum(durs))) if durs else 0,
         },

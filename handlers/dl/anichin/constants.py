@@ -74,6 +74,12 @@ HOST_PRIORITY = (
 ARIA2_CONNS = int(os.getenv("ANICHIN_ARIA2_CONNS", "16"))
 PROGRESS_INTERVAL = float(os.getenv("ANICHIN_PROGRESS_INTERVAL", "5.0"))
 
+# Batas jumlah host mirror yang dicoba sebelum menyerah dan pindah ke server
+# streaming. mirrored.to sering menyiapkan ~14 host tetapi hampir semuanya mati
+# (404 / HTML / TLS rusak); mencoba semuanya memakan ~15s dan membanjiri log.
+# Host prioritas (HOST_PRIORITY) sudah di urutan depan, jadi cukup beberapa.
+MIRROR_MAX_ATTEMPTS = int(os.getenv("ANICHIN_MIRROR_ATTEMPTS", "5"))
+
 # Batas jumlah polling `/mirstats.php` saat mirrored.to menyiapkan link host.
 MIRSTATS_MAX_POLLS = int(os.getenv("ANICHIN_MIRSTATS_POLLS", "8"))
 MIRSTATS_POLL_DELAY = float(os.getenv("ANICHIN_MIRSTATS_DELAY", "3.0"))

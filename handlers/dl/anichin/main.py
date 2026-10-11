@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 from handlers.dl.constants import MAX_TG_SIZE, TMP_DIR
 from handlers.dl.utils import FileSizeLimitExceeded, sanitize_filename
 
-from .constants import ANICHIN_HOSTS, PROGRESS_INTERVAL, UA
+from .constants import ANICHIN_HOSTS, MIRROR_MAX_ATTEMPTS, PROGRESS_INTERVAL, UA
 from . import extractor
 
 log = logging.getLogger(__name__)
@@ -401,36 +401,62 @@ def _est_bytes(duration, bandwidth) -> int:
     return int(dur * bw / 8)
 
 
+def _byte_concat(paths: list[str], out_path: str) -> None:
+    """Gabungkan file biner (init + fragmen fMP4) berurutan jadi satu file.
+
+    Untuk HLS fMP4 hasilnya adalah MP4 fragmen valid: `init.mp4` (memuat
+    `ftyp`+`moov`) diikuti fragmen `moof`+`mdat`. Inilah satu-satunya cara yang
+    andal — `ffmpeg -f concat` tidak bisa menyambung fMP4 tanpa init.
+    """
+    with open(out_path, "wb") as out:
+        for p in paths:
+            with open(p, "rb") as src:
+                shutil.copyfileobj(src, out, 1024 * 1024)
+
+
 async def _download_segments_parallel(
     segments: list[str],
     referer: str,
     out_path: str,
     *,
+    init: str = "",
+    audio_init: str = "",
+    audio_segments: list[str] | None = None,
     bot=None, chat_id=None, status_msg_id=None,
     title: str = "Anichin", notify: bool = False,
     est_total: int = 0,
     concurrency: int = 12,
 ) -> int:
-    """Unduh segmen `.ts` OK.ru paralel lalu concat ke satu MP4.
+    """Unduh segmen HLS paralel lalu mux ke satu MP4.
 
-    Jauh lebih cepat dari ffmpeg serial (~1.1 MB/s): 12 koneksi paralel pada
-    CDN OK.ru. Tiap segmen ditulis ke file sendiri (bukan ditahan di RAM) supaya
-    episode besar tidak menghabiskan memori; concat byte-level (semua segmen
-    MPEG-TS) lalu ffmpeg `-c copy -movflags +faststart` -> MP4 faststart.
+    Mendukung dua bentuk HLS:
+    - **MPEG-TS** (OK.ru, Rumble lama, VidHide): segmen `.ts` tanpa init ->
+      concat demuxer `-f concat` + `-bsf:a aac_adtstoasc` (fallback byte-concat).
+    - **fMP4** (Dailymotion sekarang, Rumble baru): `#EXT-X-MAP` init + fragmen
+      `.m4s`, dan audio sebagai **rendition terpisah**. Init WAJIB disambung di
+      depan, lalu track audio (kalau ada) di-mux terpisah.
+
+    Jauh lebih cepat dari ffmpeg serial (~1.1 MB/s): 12 koneksi paralel. Tiap
+    segmen ditulis ke file sendiri (bukan ditahan di RAM) supaya episode besar
+    tidak menghabiskan memori.
     """
     import curl_cffi.requests as curl_requests
     from handlers.dl.progress import TransferStats
 
-    total_segs = len(segments)
+    audio_segments = list(audio_segments or [])
     stats = TransferStats(max(0, int(est_total or 0)))
     work_dir = out_path + ".parts"
-    os.makedirs(work_dir, exist_ok=True)
+    vdir = os.path.join(work_dir, "v")
+    adir = os.path.join(work_dir, "a")
+    shutil.rmtree(work_dir, ignore_errors=True)
+    os.makedirs(vdir, exist_ok=True)
+    if audio_segments:
+        os.makedirs(adir, exist_ok=True)
     lock = asyncio.Lock()
     done_bytes = 0
     sem = asyncio.Semaphore(max(1, int(concurrency or 12)))
 
-    def _fetch(idx: int, url: str) -> int:
-        seg_path = os.path.join(work_dir, f"{idx:06d}.ts")
+    def _fetch(seg_path: str, url: str) -> int:
         headers = {"User-Agent": UA}
         if referer:
             headers["Referer"] = referer
@@ -438,7 +464,7 @@ async def _download_segments_parallel(
                               timeout=120, stream=True)
         try:
             if r.status_code not in (200, 206):
-                raise RuntimeError(f"Segmen {idx} balas HTTP {r.status_code}.")
+                raise RuntimeError(f"Segmen balas HTTP {r.status_code}.")
             n = 0
             with open(seg_path, "wb") as f:
                 for ch in r.iter_content(chunk_size=256 * 1024):
@@ -452,10 +478,10 @@ async def _download_segments_parallel(
             except Exception:
                 pass
 
-    async def _worker(idx: int, url: str):
+    async def _worker(seg_path: str, url: str):
         nonlocal done_bytes
         async with sem:
-            size = await asyncio.to_thread(_fetch, idx, url)
+            size = await asyncio.to_thread(_fetch, seg_path, url)
         async with lock:
             done_bytes += size
             stats.sample(done_bytes)
@@ -470,7 +496,18 @@ async def _download_segments_parallel(
                     log_interval=PROGRESS_INTERVAL, edit_interval=PROGRESS_INTERVAL,
                 )
 
-    tasks = [asyncio.create_task(_worker(i, u)) for i, u in enumerate(segments)]
+    # Susun daftar pekerjaan: (path tulis, url). Init selalu paling depan.
+    jobs: list[tuple[str, str]] = []
+    if init:
+        jobs.append((os.path.join(vdir, "000000.init"), init))
+    for i, u in enumerate(segments):
+        jobs.append((os.path.join(vdir, f"{i + 1:06d}.bin"), u))
+    if audio_init:
+        jobs.append((os.path.join(adir, "000000.init"), audio_init))
+    for i, u in enumerate(audio_segments):
+        jobs.append((os.path.join(adir, f"{i + 1:06d}.bin"), u))
+
+    tasks = [asyncio.create_task(_worker(p, u)) for p, u in jobs]
     try:
         await asyncio.gather(*tasks)
     except Exception:
@@ -478,25 +515,53 @@ async def _download_segments_parallel(
             t.cancel()
         raise
 
-    # Buat daftar segmen untuk concat demuxer.
-    concat_list = os.path.join(work_dir, "concat.txt")
-    with open(concat_list, "w", encoding="utf-8") as f:
-        for i in range(total_segs):
-            seg_path = os.path.join(work_dir, f"{i:06d}.ts")
-            if not os.path.exists(seg_path) or os.path.getsize(seg_path) == 0:
-                raise RuntimeError(f"Segmen {i} tidak lengkap.")
-            safe = os.path.abspath(seg_path).replace("'", "'\\''")
-            f.write(f"file '{safe}'\n")
+    def _collect(directory: str, count: int) -> list[str]:
+        paths = []
+        init_path = os.path.join(directory, "000000.init")
+        if os.path.exists(init_path):
+            paths.append(init_path)
+        for i in range(1, count + 1):
+            p = os.path.join(directory, f"{i:06d}.bin")
+            if not os.path.exists(p) or os.path.getsize(p) == 0:
+                raise RuntimeError(f"Segmen {i - 1} tidak lengkap.")
+            paths.append(p)
+        return paths
+
+    video_paths = _collect(vdir, len(segments))
     stats.log_done("Anichin download", label="Anichin")
 
-    # Jalur 1: concat demuxer (-f concat -safe 0). Lebih hemat I/O (tidak membuat
-    # file perantara 600MB) dan menangani timestamp tanpa desync. `-bsf:a aac_adtstoasc`
-    # wajib saat muxing stream AAC dari MPEG-TS ke container MP4.
     # PENTING: Gunakan `subprocess.run` via `asyncio.to_thread` — BUKAN
     # `asyncio.create_subprocess_exec`! `uvloop.create_subprocess_exec` memanggil
     # `fork()` yang rawan SIGSEGV di libc.so.6 (exit=-11) saat ada banyak C-thread
     # aktif (curl_cffi / sqlite / patchright). `subprocess.run` memakai
     # `posix_spawnp` (CLONE_VM | CLONE_VFORK) yang 100% aman.
+    if init:
+        # ---- Jalur fMP4: byte-concat init + fragmen, mux track audio terpisah.
+        v_mp4 = os.path.join(work_dir, "video.mp4")
+        await asyncio.to_thread(_byte_concat, video_paths, v_mp4)
+        cmd = ["ffmpeg", "-y", "-loglevel", "warning", "-i", v_mp4]
+        a_mp4 = ""
+        if audio_segments:
+            a_mp4 = os.path.join(work_dir, "audio.mp4")
+            await asyncio.to_thread(_byte_concat, _collect(adir, len(audio_segments)), a_mp4)
+            cmd += ["-i", a_mp4]
+        cmd += ["-c", "copy", "-movflags", "+faststart", out_path]
+        res = await asyncio.to_thread(
+            subprocess.run, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            err = (res.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+            raise RuntimeError(f"ffmpeg mux fMP4 gagal (exit={res.returncode}): {err or 'output kosong'}")
+        shutil.rmtree(work_dir, ignore_errors=True)
+        return os.path.getsize(out_path)
+
+    # ---- Jalur MPEG-TS: concat demuxer (`-f concat -safe 0`), hemat I/O.
+    # `-bsf:a aac_adtstoasc` wajib saat muxing stream AAC dari MPEG-TS ke MP4.
+    concat_list = os.path.join(work_dir, "concat.txt")
+    with open(concat_list, "w", encoding="utf-8") as f:
+        for p in video_paths:
+            safe = os.path.abspath(p).replace("'", "'\\''")
+            f.write(f"file '{safe}'\n")
     cmd = [
         "ffmpeg", "-y", "-loglevel", "warning",
         "-f", "concat", "-safe", "0", "-i", concat_list,
@@ -507,17 +572,13 @@ async def _download_segments_parallel(
         subprocess.run, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
-    # Jika jalur 1 gagal, fallback ke jalur 2 (byte-concat ke .ts lalu remux).
+    # Jika jalur 1 gagal, fallback ke jalur 2 (byte-concat lalu remux).
     if res1.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         err1 = (res1.stderr or b"").decode("utf-8", "replace").strip()[-300:]
         log.warning("ffmpeg -f concat gagal (exit=%s: %s), coba byte-concat", res1.returncode, err1)
         concat_ts = out_path + ".ts"
         try:
-            with open(concat_ts, "wb") as out:
-                for i in range(total_segs):
-                    seg_path = os.path.join(work_dir, f"{i:06d}.ts")
-                    with open(seg_path, "rb") as src:
-                        shutil.copyfileobj(src, out, 1024 * 1024)
+            await asyncio.to_thread(_byte_concat, video_paths, concat_ts)
             cmd2 = [
                 "ffmpeg", "-y", "-loglevel", "warning", "-i", concat_ts,
                 "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", out_path,
@@ -665,6 +726,9 @@ async def anichin_server(
 
     # Siapkan daftar segmen + tinggi tergantung jenis sumber.
     segments: list[str] = []
+    init = ""
+    audio_init = ""
+    audio_segments: list[str] = []
     height = 0
     width = 0
     est_total = 0
@@ -692,6 +756,9 @@ async def anichin_server(
             info = dict(info, _fallback_url=variant_url)
     else:
         segments = info.get("segments") or []
+        init = info.get("init") or ""
+        audio_init = info.get("audio_init") or ""
+        audio_segments = info.get("audio_segments") or []
         height = info.get("height") or 0
         est_total = _est_bytes(info.get("duration"), info.get("bandwidth"))
 
@@ -713,6 +780,7 @@ async def anichin_server(
         if segments:
             await _download_segments_parallel(
                 segments, referer, temp_video,
+                init=init, audio_init=audio_init, audio_segments=audio_segments,
                 bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
                 title=title, notify=bool(status_msg_id), est_total=est_total,
             )
@@ -885,7 +953,8 @@ async def anichin_download(
 
     try:
         last_err = None
-        for cand in candidates:
+        failed_hosts: list[str] = []
+        for cand in candidates[:MIRROR_MAX_ATTEMPTS]:
             file_url = cand["url"]
             host = cand.get("host") or ""
             try:
@@ -906,7 +975,9 @@ async def anichin_download(
                 break
             except Exception as e:
                 last_err = e
-                log.warning("Anichin host gagal | host=%s err=%r", host, e)
+                # Kumpulkan supaya tidak membanjiri log dengan satu baris per host
+                # (14 host mati -> 14 warning). Ringkas jadi satu baris di akhir.
+                failed_hosts.append(f"{host}:{type(e).__name__}")
                 if os.path.exists(temp_video):
                     try:
                         os.remove(temp_video)
@@ -914,6 +985,8 @@ async def anichin_download(
                         pass
                 continue
         else:
+            if failed_hosts:
+                log.info("Anichin semua host mirror gagal | hosts=%s", failed_hosts)
             # Semua host mirror gagal -> coba server streaming (OK.ru/Rumble/VidHide).
             if _has_stream(stream):
                 log.info(
