@@ -198,41 +198,84 @@ def fetch_latest(site: dict, filter_key: str = "latest", max_items: int = MAX_RE
     )
 
 
+def _parse_category_links(raw: str) -> list[dict]:
+    """Ambil kategori dari link `/category/<slug>/` (dedup, urut kemunculan)."""
+    if not raw:
+        return []
+    soup = BeautifulSoup(raw, "html.parser")
+    cats = []
+    seen = set()
+    for a in soup.select("a[href*='/category/']"):
+        m = re.search(r"/category/([^/]+)/", a.get("href") or "")
+        if not m:
+            continue
+        slug = m.group(1).strip()
+        if slug in seen:
+            continue
+        seen.add(slug)
+        name = " ".join(a.get_text(" ", strip=True).split()) or slug.replace("-", " ").title()
+        cats.append({"slug": slug, "name": name})
+    return cats
+
+
+def _fetch_with_fallback_paths(site: dict, path: str) -> str:
+    """GET `path` di origin kanonik lalu origin mentah (path bisa beda host).
+
+    LendirQu menyajikan `/categories/` di `lendirqu.stream` sementara origin
+    kanoniknya `lendirqu.club` (404), sedangkan `post_tag-sitemap.xml` justru
+    sebaliknya. Jadi kedua origin wajib dicoba, bukan cuma kanonik.
+    """
+    canon = canonical_base(site)
+    raw_base = (site.get("base") or "").rstrip("/")
+    for base in (canon, raw_base):
+        if not base:
+            continue
+        raw = http_get(f"{base}{path}")
+        if raw:
+            return raw
+    return ""
+
+
 def fetch_categories(site: dict) -> list[dict]:
-    """Kategori dari `/categories/` (cache 1 jam). -> [{slug, name}]"""
+    """Kategori dari `/categories/` (cache 1 jam). -> [{slug, name}]
+
+    Urutan sumber: `/categories/` (kanonik → origin mentah) → nav menu beranda
+    → `fallback_categories` statis. Hasil apa pun (termasuk fallback statis)
+    SELALU disimpan ke cache supaya `build_categories_content` ikut terisi.
+    """
     site_key = site["prefix"]
     slot = get_categories_cache(site_key)
     now = time.time()
     if slot.get("list") and now - slot.get("ts", 0) < INDEX_TTL:
         return slot["list"]
 
-    raw = http_get(f"{canonical_base(site)}/categories/")
-    cats = []
-    if raw:
-        soup = BeautifulSoup(raw, "html.parser")
-        seen = set()
-        for a in soup.select("a[href*='/category/']"):
-            m = re.search(r"/category/([^/]+)/", a.get("href") or "")
-            if not m:
-                continue
-            slug = m.group(1).strip()
-            if slug in seen:
-                continue
-            seen.add(slug)
-            cats.append({"slug": slug, "name": a.get_text(" ", strip=True) or slug.replace("-", " ").title()})
+    cats = _parse_category_links(_fetch_with_fallback_paths(site, "/categories/"))
+    if not cats:
+        # Terakhir sebelum statis: nav menu di beranda (kedua origin).
+        canon = canonical_base(site)
+        raw_base = (site.get("base") or "").rstrip("/")
+        for base in (canon, raw_base):
+            if base:
+                cats = _parse_category_links(http_get(f"{base}/"))
+                if cats:
+                    break
+    if not cats:
+        cats = list(site.get("fallback_categories") or [])
 
     if cats:
         slot["list"] = cats
         slot["ts"] = now
-        return cats
-    return slot.get("list") or list(site.get("fallback_categories") or [])
+    return cats
 
 
 def fetch_tags(site: dict) -> list[dict]:
     """Tag cloud dari `/tags/` (cache 1 jam). -> [{slug, name}]
 
-    Fallback ke `post_tag-sitemap.xml` kalau `/tags/` tidak ada (LendirQu
-    tidak punya halaman tag cloud — `/tags/` redirect ke beranda).
+    Urutan sumber: `/tags/` (kanonik → origin mentah) → `post_tag-sitemap.xml`
+    (kanonik → origin mentah). LendirQu tidak punya halaman tag cloud (`/tags/`
+    redirect ke beranda) dan sitemap-nya cuma ada di origin kanonik, jadi kedua
+    origin wajib dicoba. Hasil apa pun SELALU disimpan ke cache supaya
+    `build_tags_content` ikut terisi.
     """
     site_key = site["prefix"]
     slot = get_tags_cache(site_key)
@@ -240,16 +283,14 @@ def fetch_tags(site: dict) -> list[dict]:
     if slot.get("list") and now - slot.get("ts", 0) < INDEX_TTL:
         return slot["list"]
 
-    base = canonical_base(site)
-    tags = _parse_tag_cloud(http_get(f"{base}/tags/"))
+    tags = _parse_tag_cloud(_fetch_with_fallback_paths(site, "/tags/"))
     if not tags:
-        tags = _parse_tag_sitemap(http_get(f"{base}/post_tag-sitemap.xml"))
+        tags = _parse_tag_sitemap(_fetch_with_fallback_paths(site, "/post_tag-sitemap.xml"))
 
     if tags:
         slot["list"] = tags
         slot["ts"] = now
-        return tags
-    return slot.get("list") or []
+    return tags or slot.get("list") or []
 
 
 def _parse_tag_cloud(raw: str) -> list[dict]:
