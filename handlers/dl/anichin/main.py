@@ -69,6 +69,13 @@ def _prune_cache() -> None:
         _PROBE_CACHE.pop(key, None)
 
 
+def _has_stream(stream: dict | None) -> bool:
+    """Apakah objek stream memiliki video yang bisa diunduh (varian/segmen/direct)."""
+    if not stream or not isinstance(stream, dict):
+        return False
+    return bool(stream.get("variants") or stream.get("segments") or stream.get("direct_url"))
+
+
 def cache_probe(url: str, probe: dict) -> None:
     _prune_cache()
     _PROBE_CACHE[(url or "").strip()] = {"ts": time.time(), "probe": probe}
@@ -156,9 +163,17 @@ def probe_anichin(raw_url: str) -> dict:
     # Halaman tanpa mirror resolusi TIDAK langsung dianggap gagal: selama ada
     # server streaming, halaman masih bisa diunduh (kualitas server yang mengisi
     # picker). Ini yang mencegah "No valid resolutions available."
-    if not mirrors and not (stream.get("variants") or stream.get("segments")):
+    if not mirrors and not _has_stream(stream):
+        servers = post.get("servers") or []
+        if servers:
+            labels = [s.get("label") or "server" for s in servers]
+            raise RuntimeError(
+                f"Episode ini tidak menyediakan mirror unduh dan server videonya "
+                f"({', '.join(labels)}) sudah tidak aktif di web Anichin. "
+                "Coba pilih episode Donghua lain."
+            )
         raise RuntimeError(
-            "Tidak ada link unduh (mirror) di halaman Anichin ini. "
+            "Tidak ada link unduh (mirror) maupun server video di halaman Anichin ini. "
             "Kalau ini halaman series, buka salah satu episode-nya."
         )
 
@@ -226,8 +241,12 @@ def probe_anichin(raw_url: str) -> dict:
     # available"). Kalau mirror ADA, server TIDAK ditambahkan ke picker (akan
     # membanjiri daftar dengan tinggi "nyata" yang berbeda dari label nominal) —
     # server tetap dipakai otomatis sebagai fallback saat semua host mirror gagal.
-    if not res_list and stream.get("variants"):
-        for v in reversed(stream["variants"]):
+    if not res_list and (stream.get("variants") or stream.get("segments") or stream.get("direct_url")):
+        variants = stream.get("variants") or []
+        if not variants and (stream.get("segments") or stream.get("direct_url")):
+            # Sumber non-OK.ru (Rumble/VidHide): hanya satu kualitas yang diketahui.
+            variants = [{"height": stream.get("height") or 0}]
+        for v in reversed(variants):
             h = v.get("height") or 0
             if h <= 0:
                 continue
@@ -541,23 +560,27 @@ async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
         "-c", "copy", "-movflags", "+faststart",
         out_path,
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
+    # PENTING: Gunakan `subprocess.Popen` via background thread / posix_spawn,
+    # BUKAN `asyncio.create_subprocess_exec` (uvloop fork() SIGSEGV -11).
+    proc = await asyncio.to_thread(
+        subprocess.Popen,
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
 
     stats = TransferStats(max(0, int(est_total or 0)))
 
     async def _drain():
-        # `communicate()` menangani pembacaan stderr sekaligus menunggu proses,
-        # sehingga tidak ada race antara `stderr.read()` dan proses yang sudah
-        # keluar (yang bisa memblokir selamanya).
-        out, err = await proc.communicate()
+        # `communicate()` (di thread terpisah, karena Popen sinkron) menangani
+        # pembacaan stderr sekaligus menunggu proses, sehingga tidak ada race
+        # antara `stderr.read()` dan proses yang sudah keluar (yang bisa
+        # memblokir selamanya).
+        _, err = await asyncio.to_thread(proc.communicate)
         return err or b""
 
     drain_task = asyncio.create_task(_drain())
-    while proc.returncode is None:
+    while proc.poll() is None:
         if os.path.exists(out_path):
             try:
                 cur = os.path.getsize(out_path)
@@ -584,7 +607,8 @@ async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
     except asyncio.CancelledError:
         pass
 
-    if proc.returncode not in (0, None) or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+    rc = proc.returncode if proc.returncode is not None else proc.poll()
+    if rc not in (0, None) or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         msg = (err_buf or b"").decode("utf-8", "replace").strip()[-400:]
         raise RuntimeError(f"ffmpeg HLS gagal: {msg}")
     if os.path.getsize(out_path) > MAX_TG_SIZE:
@@ -628,10 +652,10 @@ async def anichin_server(
                           "<b>Resolving stream...</b>", label="Anichin")
 
     info = probe.get("stream") or {}
-    if not (info.get("variants") or info.get("segments")):
+    if not _has_stream(info):
         info = await asyncio.to_thread(extractor.resolve_stream_source, servers, url)
-    if not info:
-        raise RuntimeError("Tidak ada server streaming yang bisa diunduh (OK.ru/StreamWish tidak tersedia).")
+    if not _has_stream(info):
+        raise RuntimeError("Tidak ada server streaming yang bisa diunduh (OK.ru/Rumble/StreamWish tidak tersedia).")
 
     kind = info.get("kind") or "okru"
     want = 0
@@ -692,9 +716,10 @@ async def anichin_server(
                 bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
                 title=title, notify=bool(status_msg_id), est_total=est_total,
             )
-        elif info.get("_fallback_url"):
+        elif info.get("direct_url") or info.get("_fallback_url"):
+            stream_url = info.get("direct_url") or info.get("_fallback_url")
             await _run_ffmpeg_hls(
-                info["_fallback_url"], referer, temp_video,
+                stream_url, referer, temp_video,
                 bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
                 title=title, notify=bool(status_msg_id), est_total=est_total,
             )
@@ -707,13 +732,13 @@ async def anichin_server(
 
         if fmt_key == "mp3":
             mp3_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp3")
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", temp_video,
-                "-vn", "-c:a", "libmp3lame", "-q:a", "2", mp3_path,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            res_mp3 = await asyncio.to_thread(
+                subprocess.run,
+                ["ffmpeg", "-y", "-i", temp_video,
+                 "-vn", "-c:a", "libmp3lame", "-q:a", "2", mp3_path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            await proc.wait()
-            if proc.returncode != 0 or not os.path.exists(mp3_path):
+            if res_mp3.returncode != 0 or not os.path.exists(mp3_path):
                 raise RuntimeError("Gagal mengekstrak MP3 dari video server.")
             return {
                 "path": mp3_path,
@@ -770,7 +795,7 @@ async def anichin_download(
     title = probe.get("title") or "Anichin Video"
     mirrors = probe.get("mirrors") or []
     stream = probe.get("stream") or {}
-    if not mirrors and not (stream.get("variants") or stream.get("segments")):
+    if not mirrors and not _has_stream(stream):
         raise RuntimeError("Tidak ada link unduh di halaman ini.")
 
     want = (format_id or "").strip().lower()
@@ -825,8 +850,8 @@ async def anichin_download(
             captcha_blocked.append(tgt.get("name") or tgt.get("url") or "")
 
     if not candidates:
-        # Fallback: server streaming (OK.ru / VidHide-StreamWish) — tanpa captcha.
-        if stream.get("variants") or stream.get("segments"):
+        # Fallback: server streaming (OK.ru / Rumble / VidHide-StreamWish) — tanpa captcha.
+        if _has_stream(stream):
             reason = "semua provider captcha" if captcha_blocked else "mirror kosong"
             log.info(
                 "Anichin %s -> fallback server streaming | url=%s kind=%s captcha=%s",
@@ -889,8 +914,8 @@ async def anichin_download(
                         pass
                 continue
         else:
-            # Semua host mirror gagal -> coba server streaming (OK.ru/VidHide).
-            if stream.get("variants") or stream.get("segments"):
+            # Semua host mirror gagal -> coba server streaming (OK.ru/Rumble/VidHide).
+            if _has_stream(stream):
                 log.info(
                     "Anichin semua host mirror gagal -> fallback server streaming | url=%s kind=%s",
                     url, stream.get("kind"),
@@ -905,15 +930,13 @@ async def anichin_download(
         label = target.get("label") or "video"
         if fmt_key == "mp3":
             mp3_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp3")
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", temp_video,
-                "-vn", "-c:a", "libmp3lame", "-q:a", "2",
-                mp3_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+            res_mp3 = await asyncio.to_thread(
+                subprocess.run,
+                ["ffmpeg", "-y", "-i", temp_video,
+                 "-vn", "-c:a", "libmp3lame", "-q:a", "2", mp3_path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            await proc.wait()
-            if proc.returncode != 0 or not os.path.exists(mp3_path):
+            if res_mp3.returncode != 0 or not os.path.exists(mp3_path):
                 raise RuntimeError("Gagal mengekstrak MP3 dari video.")
             return {
                 "path": mp3_path,

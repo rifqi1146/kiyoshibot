@@ -19,6 +19,7 @@ FLOW EXTRACTOR
 Catatan: semua langkah murni HTTP (curl_cffi impersonate Chrome), TANPA yt-dlp.
 """
 import html as html_mod
+import json
 import logging
 import re
 import time
@@ -811,18 +812,211 @@ def parse_stream_servers(html: str) -> list[dict]:
         u = m.group(1).strip()
         if not u or u.startswith("data:") or u in seen:
             continue
+        # Embed kadang memakai URL protocol-relative (`//listeamed.net/e/...`);
+        # tanpa skema, curl_cffi menolak dengan `InvalidURL: No host part`.
+        if u.startswith("//"):
+            u = "https:" + u
         seen.add(u)
         out.append({"label": _clean(opt.get_text(" ", strip=True)) or "server", "url": u})
     return out
 
 
+def resolve_rumble(embed_url: str, target_height: int = 720) -> dict:
+    """Rumble embed -> {kind: 'hls', segments, height, bandwidth, duration, title, poster, referer, label}.
+
+    Rumble menyediakan endpoint JSON `embedJS/u3/?request=video&ver=2&v=<vid>`
+    tanpa API key dan tanpa yt-dlp. Master playlist HLS-nya memuat segmen `.ts`
+    standar yang bisa diunduh paralel via `_download_segments_parallel`.
+    """
+    m = re.search(r"rumble\.com/embed/([a-zA-Z0-9_-]+)", embed_url or "")
+    if not m:
+        return {}
+    vid = m.group(1)
+    api = f"https://rumble.com/embedJS/u3/?request=video&ver=2&v={vid}"
+    code, raw, _ = _get(api, referer="https://rumble.com/")
+    if code != 200 or not raw:
+        return {}
+    try:
+        data = json.loads(raw) or {}
+    except Exception:
+        return {}
+    u_obj = data.get("u") or {}
+    hls_info = u_obj.get("hls") or {}
+    hls_url = hls_info.get("url")
+    if not hls_url:
+        # Sebagian video Rumble tidak punya HLS, cuma MP4 progresif (`u.mp4`).
+        # Kembalikan sebagai `direct_url` supaya downloader memakai jalur
+        # unduhan langsung (ffmpeg `-i <url>`).
+        mp4_info = u_obj.get("mp4") or {}
+        mp4_url = mp4_info.get("url")
+        if not mp4_url:
+            return {}
+        meta = mp4_info.get("meta") or {}
+        return {
+            "kind": "hls",
+            "direct_url": mp4_url,
+            "segments": [],
+            "height": meta.get("h") or 0,
+            "bandwidth": (meta.get("bitrate") or 0) * 1000,
+            "duration": int(float(data.get("duration") or 0)),
+            "title": data.get("title") or "",
+            "poster": data.get("i") or "",
+            "referer": "https://rumble.com/",
+            "label": f"Rumble {meta.get('h') or 0}p",
+        }
+
+    code_hls, raw_hls, _ = _get(hls_url, referer="https://rumble.com/")
+    if code_hls != 200 or not raw_hls:
+        return {}
+
+    from urllib.parse import urljoin
+    variants = []
+    lines = [l.strip() for l in raw_hls.splitlines() if l.strip()]
+    for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-STREAM-INF"):
+            hm = re.search(r"RESOLUTION=\d+x(\d+)", line)
+            h = int(hm.group(1)) if hm else 0
+            bm = re.search(r"BANDWIDTH=(\d+)", line)
+            bw = int(bm.group(1)) if bm else 0
+            if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
+                v_url = urljoin(hls_url, lines[i + 1])
+                variants.append({"height": h, "bandwidth": bw, "url": v_url})
+
+    if not variants:
+        return {}
+
+    variants.sort(key=lambda v: abs(v["height"] - (target_height or 720)))
+    chosen = variants[0]
+
+    code_media, raw_media, _ = _get(chosen["url"], referer="https://rumble.com/")
+    if code_media != 200 or not raw_media:
+        return {}
+
+    segs = []
+    for line in raw_media.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        segs.append(urljoin(chosen["url"], line))
+
+    if not segs:
+        return {}
+
+    return {
+        "kind": "hls",
+        "segments": segs,
+        "height": chosen["height"],
+        "bandwidth": chosen["bandwidth"],
+        "duration": int(float(data.get("duration") or 0)),
+        "title": data.get("title") or "",
+        "poster": data.get("i") or "",
+        "referer": "https://rumble.com/",
+        "label": f"Rumble {chosen['height']}p",
+    }
+
+
+def resolve_dailymotion(embed_url: str, target_height: int = 720) -> dict:
+    """Dailymotion embed/player -> {kind:'hls', segments, height, bandwidth, duration, title, poster, referer, label}.
+
+    Halaman `player.nunadrama.sbs` (label "Dailymotion [ADS]") menyematkan
+    `geo.dailymotion.com/player/<hash>.html?video=<id>`. Metadata video diambil
+    dari `https://www.dailymotion.com/player/metadata/video/<id>` (JSON tanpa
+    API key) yang memuat URL master HLS (`qualities.auto[0].url`). Master diikuti
+    ke varian resolusi terdekat lalu diurai jadi segmen `.ts` (TANPA enkripsi,
+    tanpa yt-dlp).
+    """
+    m = re.search(
+        r"(?:dailymotion\.com/(?:video|embed/video)/|[?&]video=)([a-zA-Z0-9]+)",
+        embed_url or "",
+    )
+    if not m:
+        return {}
+    vid = m.group(1)
+    api = f"https://www.dailymotion.com/player/metadata/video/{vid}"
+    code, raw, _ = _get(api, referer="https://geo.dailymotion.com/")
+    if code != 200 or not raw:
+        return {}
+    try:
+        data = json.loads(raw) or {}
+    except Exception:
+        return {}
+
+    master = ""
+    qualities = data.get("qualities") or {}
+    auto = qualities.get("auto") or []
+    if auto and isinstance(auto, list) and auto[0].get("url"):
+        master = auto[0]["url"]
+    if not master:
+        return {}
+
+    referer = "https://geo.dailymotion.com/"
+    from urllib.parse import urljoin
+    code_m, raw_m, _ = _get(master, referer=referer)
+    if code_m != 200 or not raw_m:
+        return {}
+
+    # Master bisa langsung berisi segmen, atau memuat varian (#EXT-X-STREAM-INF).
+    variants = []
+    lines = [l.strip() for l in raw_m.splitlines() if l.strip()]
+    for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-STREAM-INF"):
+            hm = re.search(r"RESOLUTION=\d+x(\d+)", line)
+            h = int(hm.group(1)) if hm else 0
+            bm = re.search(r"BANDWIDTH=(\d+)", line)
+            bw = int(bm.group(1)) if bm else 0
+            if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
+                variants.append({
+                    "height": h,
+                    "bandwidth": bw,
+                    "url": urljoin(master, lines[i + 1]),
+                })
+
+    if variants:
+        variants.sort(key=lambda v: abs(v["height"] - (target_height or 720)))
+        chosen = variants[0]
+        media_url = chosen["url"]
+        height = chosen["height"]
+        bandwidth = chosen["bandwidth"]
+        code_media, raw_media, _ = _get(media_url, referer=referer)
+        if code_media != 200 or not raw_media:
+            return {}
+    else:
+        media_url = master
+        raw_media = raw_m
+        height = 0
+        bandwidth = 0
+
+    segs = []
+    for line in raw_media.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        segs.append(urljoin(media_url, line))
+
+    if not segs:
+        return {}
+
+    return {
+        "kind": "hls",
+        "segments": segs,
+        "height": height,
+        "bandwidth": bandwidth,
+        "duration": int(float(data.get("duration") or 0)),
+        "title": data.get("title") or "",
+        "poster": data.get("thumbnail_720_url") or "",
+        "referer": referer,
+        "label": f"Dailymotion {height}p" if height else "Dailymotion",
+    }
+
+
 def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
     """Cari sumber streaming yang bisa diunduh langsung dari daftar server.
 
-    Urutan: OK.ru (paling andal, ~93% episode) -> keluarga VidHide/StreamWish
-    (unpack packer Dean Edwards -> `master.m3u8`). Server lain (Dailymotion/
-    Rumble/RPMShare/Odysee/D-Tube/...) butuh yt-dlp atau punya proteksi —
-    sengaja dilewati (repo melarang yt-dlp).
+    Urutan: OK.ru (paling andal, ~93% episode) -> Rumble (HLS tanpa yt-dlp) ->
+    Dailymotion (metadata JSON -> master HLS) -> keluarga VidHide/StreamWish
+    (unpack packer Dean Edwards -> `master.m3u8`). Server lain (RPMShare/Odysee/
+    D-Tube/...) butuh yt-dlp atau punya proteksi — sengaja dilewati (repo
+    melarang yt-dlp).
 
     -> {kind: "okru"|"hls", host, embed, ...} atau {}
     """
@@ -843,7 +1037,39 @@ def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
                 got["label"] = s.get("label") or "OK.ru"
                 return got
 
-    # 2. Keluarga VidHide/StreamWish (packer -> m3u8, segmen .ts tanpa enkripsi).
+    # 2. Rumble (HLS manifest langsung tanpa yt-dlp).
+    for s in servers or []:
+        u = (s.get("url") or "").strip()
+        if not u or "rumble.com" not in u:
+            continue
+        try:
+            got = resolve_rumble(u)
+        except Exception as e:
+            log.warning("Rumble resolve gagal | url=%s err=%r", u, e)
+            continue
+        if got and (got.get("segments") or got.get("direct_url")):
+            got["embed"] = u
+            return got
+
+    # 3. Dailymotion (label "Dailymotion [ADS]" -> player.nunadrama.sbs ->
+    #    geo.dailymotion.com; metadata JSON memuat master HLS).
+    for s in servers or []:
+        u = (s.get("url") or "").strip()
+        if not u:
+            continue
+        low = u.lower()
+        if "dailymotion" not in low and "nunadrama" not in low:
+            continue
+        try:
+            got = resolve_dailymotion(u)
+        except Exception as e:
+            log.warning("Dailymotion resolve gagal | url=%s err=%r", u, e)
+            continue
+        if got and got.get("segments"):
+            got["embed"] = u
+            return got
+
+    # 4. Keluarga VidHide/StreamWish (packer -> m3u8, segmen .ts tanpa enkripsi).
     for s in servers or []:
         u = (s.get("url") or "").strip()
         if not u:
