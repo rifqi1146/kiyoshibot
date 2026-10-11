@@ -25,11 +25,19 @@ def build_search_content(
     per_page: int = 5,
     indent_meta: bool = True,
     intro: str | None = None,
+    heading: str | None = None,
+    number_action: str = "dl",
+    close_action: str = "close",
 ) -> tuple[str, str, InlineKeyboardMarkup | None]:
     """Bangun `(rich_html, plain_html, markup)` untuk satu halaman hasil search.
 
     `data` = `{ query, results: [{title, url, meta?}], page }`.
     `meta` opsional; kalau kosong kolom Info diisi `-`.
+
+    `heading` menimpa judul default `🔍 <label> Search` (dipakai mode browse
+    non-search, mis. "Latest Episodes" / listing genre).
+    `number_action` / `close_action` mengatur aksi tombol angka & tombol tengah
+    (default `dl` / `close`; mode browse Nekopoi memakai `view`).
     """
     page = int(data.get("page") or 0)
     results = data.get("results") or []
@@ -41,18 +49,19 @@ def build_search_content(
     query = data.get("query") or ""
     indent = "\u00a0\u00a0\u00a0"
     separator = "─" * 24
+    title_html = heading or f"🔍 {html.escape(label)} Search"
 
     if not results:
         rich_html = (
-            f"<h1>🔍 {html.escape(label)} Search</h1>"
-            f"<p>Query: <code>{html.escape(query)}</code></p>"
-            "<hr/>"
+            f"<h1>{title_html}</h1>"
+            + (f"<p>Query: <code>{html.escape(query)}</code></p>" if query else "")
+            + "<hr/>"
             "<p><i>No results found.</i></p>"
         )
         plain_html = (
-            f"<b>🔍 {html.escape(label)} Search</b>\n"
-            f"<code>{html.escape(query)}</code>\n\n"
-            "<i>No results found.</i>"
+            f"<b>{title_html}</b>\n"
+            + (f"<code>{html.escape(query)}</code>\n\n" if query else "\n")
+            + "<i>No results found.</i>"
         )
         return rich_html, plain_html, None
 
@@ -74,10 +83,11 @@ def build_search_content(
             block += f"\n{indent}└─ {html.escape(meta)}"
         plain_blocks.append(block)
 
+    page_info = f"Page {page + 1} of {max_page} • {total} results"
     rich_html = (
-        f"<h1>🔍 {html.escape(label)} Search</h1>"
-        f"<p>Query: <code>{html.escape(query)}</code> • Page {page + 1} of {max_page} • {total} results</p>"
-        "<hr/>"
+        f"<h1>{title_html}</h1>"
+        + (f"<p>Query: <code>{html.escape(query)}</code> • {page_info}</p>" if query else f"<p>{page_info}</p>")
+        + "<hr/>"
         "<table bordered compact>"
         "<tr><th>#</th><th>Title</th><th>Info</th></tr>"
         f"{''.join(rows_table)}"
@@ -87,15 +97,15 @@ def build_search_content(
     )
 
     plain_html = (
-        f"<b>🔍 {html.escape(label)} Search</b>\n"
-        f"<code>{html.escape(query)}</code>\n\n"
+        f"<b>{title_html}</b>\n"
+        + (f"<code>{html.escape(query)}</code>\n\n" if query else "")
         + "\n\n".join(plain_blocks)
-        + f"\n\n{separator}\n<i>Page {page + 1} of {max_page} · {total} results</i>"
+        + f"\n\n{separator}\n<i>{page_info}</i>"
     )
 
     keyboard = []
     row_nums = [
-        InlineKeyboardButton(str(start + i + 1), callback_data=f"{prefix}:dl:{search_id}:{start + i}")
+        InlineKeyboardButton(str(start + i + 1), callback_data=f"{prefix}:{number_action}:{search_id}:{start + i}")
         for i in range(len(chunk))
     ]
     if row_nums:
@@ -104,7 +114,7 @@ def build_search_content(
     row_nav = []
     if page > 0:
         row_nav.append(InlineKeyboardButton("Prev", callback_data=f"{prefix}:nav:{search_id}:{page - 1}"))
-    row_nav.append(InlineKeyboardButton("Close", callback_data=f"{prefix}:close:{search_id}:0"))
+    row_nav.append(InlineKeyboardButton("Close", callback_data=f"{prefix}:{close_action}:{search_id}:0"))
     if page < max_page - 1:
         row_nav.append(InlineKeyboardButton("Next", callback_data=f"{prefix}:nav:{search_id}:{page + 1}"))
     keyboard.append(row_nav)

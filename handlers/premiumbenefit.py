@@ -19,7 +19,7 @@ BENEFITS = (
     (
         "Search & Download",
         (
-            ("/nekopoi", "Search and download from Nekopoi."),
+            ("/nekopoi", "Browse, search and download from Nekopoi."),
             ("/punish", "Search and download from PunishWorld."),
             ("/lendirqu", "Search and download from LendirQu."),
             ("/becekku", "Search and download from Becekku."),

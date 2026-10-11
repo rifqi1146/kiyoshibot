@@ -32,7 +32,7 @@ from handlers.nobg import nobg_cmd
 from handlers.nsfw import nsfw_cmd
 from handlers.spoiler import spoiler_cmd
 from handlers.retrotubesearch import lendirqu_cmd, becekku_cmd
-from handlers.nekopoisearch import nekopoi_cmd
+from handlers.nekopoi import nekopoi_cmd
 from handlers.premiumbenefit import premiumbenefit_cmd
 from handlers.punishworldsearch import punish_cmd
 from handlers.simontoksearch import simontok_cmd

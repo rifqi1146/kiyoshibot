@@ -57,7 +57,7 @@ BOT_COMMANDS=[
     ("manga","Read manga"),
     ("ask","Ask AI (OpenCode proxy)"),
     ("music","Search music"),
-    ("nekopoi","Search & download from Nekopoi"),
+    ("nekopoi","Browse, search & download from Nekopoi"),
     ("simontok","Search & download from Simontok"),
     ("drakorid","Browse & search Korean dramas"),
     ("caca","Chat with Caca"),

@@ -14,7 +14,7 @@ from handlers.broadcast import broadcast_callback
 from handlers.setting import setting_callback
 from handlers.manga import manga_callback
 from handlers.retrotubesearch import lendirqu_callback, becekku_callback
-from handlers.nekopoisearch import nekopoi_callback
+from handlers.nekopoi import nekopoi_callback
 from handlers.punishworldsearch import punish_callback
 from handlers.simontoksearch import simontok_callback
 from handlers.drakor import drakorid_callback
@@ -48,7 +48,7 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(dlengine_callback, pattern=r"^dlengine:"))
     app.add_handler(CallbackQueryHandler(lendirqu_callback, pattern=r"^lq:"))
     app.add_handler(CallbackQueryHandler(becekku_callback, pattern=r"^bq:"))
-    app.add_handler(CallbackQueryHandler(nekopoi_callback, pattern=r"^nq:"))
+    app.add_handler(CallbackQueryHandler(nekopoi_callback, pattern=r"^nk:"))
     app.add_handler(CallbackQueryHandler(punish_callback, pattern=r"^pw:"))
     app.add_handler(CallbackQueryHandler(simontok_callback, pattern=r"^sm:"))
     app.add_handler(CallbackQueryHandler(drakorid_callback, pattern=r"^dk:"))

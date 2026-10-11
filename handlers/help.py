@@ -138,7 +138,7 @@ HELP_TEXT = {
         "- `/kurs` — Currency conversion\n"
         "- `/lendirqu` — Search & download from LendirQu\n"
         "- `/music` — Search music\n"
-        "- `/nekopoi` — Search & download from Nekopoi\n"
+        "- `/nekopoi` — Browse, search & download from Nekopoi\n"
         "- `/nobg` — Remove image background\n"
         "- `/premiumbenefit` — List commands & features that require premium\n"
         "- `/q [N] [r] [color]` — Quote sticker; `N` next msgs, `-N` previous, `r` show reply, `color` name/hex/gradient\n"
