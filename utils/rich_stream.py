@@ -4,6 +4,8 @@ import time
 from typing import AsyncIterator
 from telegram import Bot
 
+from .rich_common import is_message_not_modified
+
 DEFAULT_DRAFT_INTERVAL = 0.8
 DEFAULT_THINKING_HINT = "Thinking..."
 MAX_DRAFT_CHARS = 30000
@@ -169,7 +171,14 @@ async def edit_rich_message(
     markup = _markup_to_dict(reply_markup)
     if markup:
         payload["reply_markup"] = markup
-    return await bot.do_api_request("editMessageText", payload)
+    try:
+        return await bot.do_api_request("editMessageText", payload)
+    except Exception as e:
+        # "message is not modified" = konten sudah identik; biarkan (no-op).
+        # Kalau dilempar ke pemanggil, draft stream bisa dianggap gagal.
+        if is_message_not_modified(e):
+            return None
+        raise
 
 
 def is_rich_message(message) -> bool:

@@ -13,6 +13,8 @@ import logging
 import warnings
 from telegram import InlineKeyboardMarkup
 
+from utils.rich_common import is_message_not_modified
+
 log = logging.getLogger(__name__)
 
 
@@ -57,6 +59,12 @@ async def edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_ht
             warnings.simplefilter("ignore")
             return await bot.do_api_request("editMessageText", payload)
     except Exception as e:
+        # "message is not modified" = pesan SUDAH benar; jangan jatuh ke fallback
+        # plain HTML (itu bikin rich message hilang saat user menekan tombol yang
+        # menghasilkan layar identik, mis. Menu dua kali / back ke halaman sama).
+        if is_message_not_modified(e):
+            log.debug("editMessageText rich not modified, no-op")
+            return None
         log.debug("editMessageText rich fallback | err=%r", e)
 
     try:

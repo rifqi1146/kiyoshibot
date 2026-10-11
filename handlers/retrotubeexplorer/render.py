@@ -33,11 +33,13 @@ from .constants import (
 )
 from .state import get_categories_cache, get_tags_cache
 
+COMMANDS = {"bq": "becekku", "lq": "lendirqu"}
+
 
 def menu_markup(prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Search", callback_data=f"{prefix}:menu:0:0"),
+            InlineKeyboardButton("Search", callback_data=f"{prefix}:prompt:0:0"),
             InlineKeyboardButton("Latest", callback_data=f"{prefix}:latest:0:0"),
         ],
         [
@@ -49,6 +51,30 @@ def menu_markup(prefix: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("Close", callback_data=f"{prefix}:close:0:0"),
         ],
     ])
+
+
+def build_search_prompt_content(label: str, prefix: str) -> tuple[str, str, InlineKeyboardMarkup]:
+    """Layar instruksi search (tombol `Search` di menu)."""
+    lbl = html.escape(label)
+    cmd = COMMANDS.get(prefix, prefix)
+    rich_html = (
+        f"<h1>🔍 Search {lbl}</h1>"
+        "<p>To search, type your command with a keyword:</p>"
+        f"<pre><code>/{cmd} &lt;keyword&gt;</code></pre>"
+        "<hr/>"
+        f"<aside>💡 Example: <code>/{cmd} bocil</code></aside>"
+    )
+    plain_html = (
+        f"<b>🔍 Search {lbl}</b>\n\n"
+        "To search, send your command with a keyword:\n"
+        f"<code>/{cmd} &lt;keyword&gt;</code>\n\n"
+        "Example:\n"
+        f"<code>/{cmd} bocil</code>"
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Back to Menu", callback_data=f"{prefix}:menu:0:0")]
+    ])
+    return rich_html, plain_html, markup
 
 
 def build_menu_content(label: str) -> tuple[str, str]:

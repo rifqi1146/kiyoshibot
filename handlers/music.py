@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from database.user_settings_db import get_user_settings
+from utils.rich_common import is_message_not_modified
 
 log_music = logging.getLogger(__name__)
 
@@ -208,6 +209,11 @@ async def _edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_h
             warnings.simplefilter("ignore")
             return await bot.do_api_request("editMessageText", payload)
     except Exception as e:
+        # "not modified" = pesan sudah benar; fallback plain HTML justru
+        # menghilangkan rich message. Perlakukan sebagai no-op.
+        if is_message_not_modified(e):
+            log_music.debug("music editMessageText not modified, no-op")
+            return None
         log_music.debug("music editMessageText rich fallback | err=%r", e)
     try:
         return await bot.edit_message_text(

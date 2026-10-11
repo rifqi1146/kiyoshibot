@@ -33,6 +33,7 @@ from .render import (
     build_detail_content,
     build_menu_content,
     build_results_content,
+    build_search_prompt_content,
     build_tags_content,
     menu_markup,
 )
@@ -97,6 +98,11 @@ def _handle_callback_for(site_key: str):
         if action == "menu":
             r_html, p_html = build_menu_content(label)
             await edit_rich(bot, chat_id, message_id, r_html, p_html, menu_markup(prefix))
+            return await q.answer()
+
+        if action == "prompt":
+            r_html, p_html, markup = build_search_prompt_content(label, prefix)
+            await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
             return await q.answer()
 
         # ---------------- picker ----------------
