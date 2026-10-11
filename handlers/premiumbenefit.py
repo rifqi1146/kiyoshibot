@@ -23,7 +23,7 @@ BENEFITS = (
             ("/punish", "Search and download from PunishWorld."),
             ("/lendirqu", "Browse, search and download from LendirQu."),
             ("/becekku", "Browse, search and download from Becekku."),
-            ("/simontok", "Search and download from Simontok."),
+            ("/simontok", "Browse, search and download from Simontok."),
             ("/drakorid", "Search and browse Korean dramas on Drakor.id."),
         ),
     ),
