@@ -13,7 +13,7 @@ from handlers.quiz import quiz_callback
 from handlers.broadcast import broadcast_callback
 from handlers.setting import setting_callback
 from handlers.manga import manga_callback
-from handlers.retrotubesearch import lendirqu_callback, becekku_callback
+from handlers.retrotubeexplorer import lendirqu_callback, becekku_callback
 from handlers.nekopoi import nekopoi_callback
 from handlers.punishworldsearch import punish_callback
 from handlers.simontoksearch import simontok_callback

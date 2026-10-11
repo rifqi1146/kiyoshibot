@@ -31,7 +31,7 @@ from handlers.networking import whoisdomain_cmd, ip_cmd, domain_cmd, net_cmd
 from handlers.nobg import nobg_cmd
 from handlers.nsfw import nsfw_cmd
 from handlers.spoiler import spoiler_cmd
-from handlers.retrotubesearch import lendirqu_cmd, becekku_cmd
+from handlers.retrotubeexplorer import lendirqu_cmd, becekku_cmd
 from handlers.nekopoi import nekopoi_cmd
 from handlers.premiumbenefit import premiumbenefit_cmd
 from handlers.punishworldsearch import punish_cmd

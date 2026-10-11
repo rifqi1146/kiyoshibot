@@ -21,8 +21,8 @@ BENEFITS = (
         (
             ("/nekopoi", "Browse, search and download from Nekopoi."),
             ("/punish", "Search and download from PunishWorld."),
-            ("/lendirqu", "Search and download from LendirQu."),
-            ("/becekku", "Search and download from Becekku."),
+            ("/lendirqu", "Browse, search and download from LendirQu."),
+            ("/becekku", "Browse, search and download from Becekku."),
             ("/simontok", "Search and download from Simontok."),
             ("/drakorid", "Search and browse Korean dramas on Drakor.id."),
         ),
