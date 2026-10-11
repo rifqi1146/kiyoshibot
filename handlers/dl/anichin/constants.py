@@ -70,7 +70,7 @@ HOST_PRIORITY = (
 )
 
 ARIA2_CONNS = int(os.getenv("ANICHIN_ARIA2_CONNS", "16"))
-PROGRESS_INTERVAL = float(os.getenv("ANICHIN_PROGRESS_INTERVAL", "2.5"))
+PROGRESS_INTERVAL = float(os.getenv("ANICHIN_PROGRESS_INTERVAL", "5.0"))
 
 # Batas jumlah polling `/mirstats.php` saat mirrored.to menyiapkan link host.
 MIRSTATS_MAX_POLLS = int(os.getenv("ANICHIN_MIRSTATS_POLLS", "8"))

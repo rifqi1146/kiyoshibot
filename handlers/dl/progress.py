@@ -30,7 +30,7 @@ from .utils import progress_bar, format_size, format_speed, format_eta
 log = logging.getLogger(__name__)
 
 # Shared cadence for every downloader/uploader. Environment overrides remain available.
-PROGRESS_EDIT_INTERVAL = float(os.getenv("DL_PROGRESS_EDIT_INTERVAL", "2.5"))
+PROGRESS_EDIT_INTERVAL = float(os.getenv("DL_PROGRESS_EDIT_INTERVAL", "5.0"))
 PROGRESS_LOG_INTERVAL = float(os.getenv("DL_PROGRESS_LOG_INTERVAL", "2.5"))
 
 # Jendela pengukuran kecepatan TransferStats (detik). Lihat komentar di
@@ -148,13 +148,15 @@ async def edit_status(
     message_id,
     text: str,
     *,
-    min_interval: float = 0.0,
+    min_interval: float = 5.0,
     label: str = "Progress",
+    force: bool = False,
 ) -> None:
     """Edit a Telegram status message with a shared, flood-safe throttle.
 
     Used by every downloader so the edit behaviour (dedup + RetryAfter handling)
-    is identical across platforms.
+    is identical across platforms. Default throttle 5.0s per-message so no
+    chat ever hits Telegram edit flood limit.
     """
     if bot is None or not chat_id or not message_id:
         return
@@ -167,7 +169,8 @@ async def edit_status(
     if prev.get("text") == text:
         return
     now = time.monotonic()
-    if min_interval > 0 and (now - prev.get("ts", 0.0)) < min_interval:
+    effective_min = 0.0 if force else max(5.0, float(min_interval if min_interval is not None else 5.0))
+    if effective_min > 0 and (now - prev.get("ts", 0.0)) < effective_min:
         return
     try:
         await bot.edit_message_text(
@@ -479,21 +482,19 @@ class TransferStats:
             iv = 10.0
         elif speed < 3.0 * MB:
             iv = 7.0
-        elif speed < 5.0 * MB:
-            iv = 5.0
         else:
-            iv = 3.0
+            iv = 5.0
 
         # Rapetkan hanya kalau unduhan BENAR-BENAR hampir selesai (ETA < 2x iv),
-        # bukan memotong bucket di tengah unduhan.
+        # tetapi MINIMAL tetap 5.0 detik agar tidak melanggar rate limit Telegram.
         if self.total > 0 and speed > 0 and self.downloaded < self.total:
             eta = (self.total - self.downloaded) / speed
             if eta < iv * 2.0:
-                iv = max(2.0, eta)
-        return iv
+                iv = max(5.0, eta)
+        return max(5.0, iv)
 
-    def should_edit(self, interval: float = 2.0, *, now: float | None = None) -> bool:
-        iv = float(interval if interval is not None else 2.0)
+    def should_edit(self, interval: float = 5.0, *, now: float | None = None) -> bool:
+        iv = float(interval if interval is not None else 5.0)
         now = now if now is not None else time.monotonic()
         # Jika interval <= 0, anggap caller memaksakan edit (mis. awal 0% / akhir 100%)
         if iv <= 0:
@@ -512,8 +513,8 @@ class TransferStats:
             return True
 
         # Pakai interval dinamis (sesuai kecepatan + sisa ukuran),
-        # minimal sebesar interval yang diminta caller.
-        effective = max(iv, self.adaptive_edit_interval())
+        # minimal sebesar interval yang diminta caller dan minimal 5.0 detik.
+        effective = max(5.0, iv, self.adaptive_edit_interval())
 
         if self._last_edit_ts < 0 or (now - self._last_edit_ts) >= effective:
             self._last_edit_ts = now
@@ -574,7 +575,7 @@ class TransferStats:
         label: str = "",
         extra: str = "",
         log_interval: float = 2.5,
-        edit_interval: float = 2.0,
+        edit_interval: float = 5.0,
     ) -> None:
         """Sample was already called; emit terminal log and edit Telegram if intervals elapsed."""
         now = time.monotonic()
@@ -587,7 +588,7 @@ class TransferStats:
                 chat_id,
                 status_msg_id,
                 text,
-                min_interval=edit_interval,
+                min_interval=max(5.0, edit_interval),
                 label=kind,
             )
 
@@ -603,7 +604,7 @@ class TransferStats:
         label: str = "",
         extra: str = "",
         log_interval: float = 2.5,
-        edit_interval: float = 2.0,
+        edit_interval: float = 5.0,
     ) -> "TransferStats":
         """Sample bytes, log terminal if interval elapsed, edit Telegram if interval elapsed."""
         self.sample(done)
@@ -616,6 +617,6 @@ class TransferStats:
             label=label,
             extra=extra,
             log_interval=log_interval,
-            edit_interval=edit_interval,
+            edit_interval=max(5.0, edit_interval),
         )
         return self

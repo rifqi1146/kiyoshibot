@@ -31,7 +31,7 @@ from urllib.parse import urlparse
 from handlers.dl.constants import MAX_TG_SIZE, TMP_DIR
 from handlers.dl.utils import FileSizeLimitExceeded, sanitize_filename
 
-from .constants import ANICHIN_HOSTS, UA
+from .constants import ANICHIN_HOSTS, PROGRESS_INTERVAL, UA
 from . import extractor
 
 log = logging.getLogger(__name__)
@@ -405,7 +405,6 @@ async def _download_segments_parallel(
     stats = TransferStats(max(0, int(est_total or 0)))
     work_dir = out_path + ".parts"
     os.makedirs(work_dir, exist_ok=True)
-    concat_path = out_path + ".ts"
     lock = asyncio.Lock()
     done_bytes = 0
     sem = asyncio.Semaphore(max(1, int(concurrency or 12)))
@@ -448,6 +447,7 @@ async def _download_segments_parallel(
                 await stats.emit(
                     bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
                     title=title, kind="Anichin download", label="Anichin",
+                    log_interval=PROGRESS_INTERVAL, edit_interval=PROGRESS_INTERVAL,
                 )
 
     tasks = [asyncio.create_task(_worker(i, u)) for i, u in enumerate(segments)]
@@ -458,31 +458,60 @@ async def _download_segments_parallel(
             t.cancel()
         raise
 
-    # Concat berurutan dari file segmen (streaming, bukan menahan semua di RAM).
-    with open(concat_path, "wb") as out:
+    # Buat daftar segmen untuk concat demuxer.
+    concat_list = os.path.join(work_dir, "concat.txt")
+    with open(concat_list, "w", encoding="utf-8") as f:
         for i in range(total_segs):
             seg_path = os.path.join(work_dir, f"{i:06d}.ts")
             if not os.path.exists(seg_path) or os.path.getsize(seg_path) == 0:
                 raise RuntimeError(f"Segmen {i} tidak lengkap.")
-            with open(seg_path, "rb") as src:
-                shutil.copyfileobj(src, out, 1024 * 1024)
+            safe = os.path.abspath(seg_path).replace("'", "'\\''")
+            f.write(f"file '{safe}'\n")
     stats.log_done("Anichin download", label="Anichin")
 
-    # MPEG-TS -> MP4 faststart.
+    # Jalur 1: concat demuxer (-f concat -safe 0). Lebih hemat I/O (tidak membuat
+    # file perantara 600MB) dan menangani timestamp tanpa desync. `-bsf:a aac_adtstoasc`
+    # wajib saat muxing stream AAC dari MPEG-TS ke container MP4.
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "warning",
+        "-f", "concat", "-safe", "0", "-i", concat_list,
+        "-c", "copy", "-bsf:a", "aac_adtstoasc",
+        "-movflags", "+faststart", out_path,
+    ]
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y", "-loglevel", "error", "-i", concat_path,
-        "-c", "copy", "-movflags", "+faststart", out_path,
+        *cmd,
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
-    shutil.rmtree(work_dir, ignore_errors=True)
-    try:
-        os.remove(concat_path)
-    except OSError:
-        pass
+
+    # Jika jalur 1 gagal, fallback ke jalur 2 (byte-concat ke .ts lalu remux).
     if proc.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-        msg = (stderr or b"").decode("utf-8", "replace").strip()[-300:]
-        raise RuntimeError(f"ffmpeg concat OK.ru gagal: {msg}")
+        err1 = (stderr or b"").decode("utf-8", "replace").strip()[-300:]
+        log.warning("ffmpeg -f concat gagal (exit=%s: %s), coba byte-concat", proc.returncode, err1)
+        concat_ts = out_path + ".ts"
+        try:
+            with open(concat_ts, "wb") as out:
+                for i in range(total_segs):
+                    seg_path = os.path.join(work_dir, f"{i:06d}.ts")
+                    with open(seg_path, "rb") as src:
+                        shutil.copyfileobj(src, out, 1024 * 1024)
+            proc2 = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-loglevel", "warning", "-i", concat_ts,
+                "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", out_path,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr2 = await proc2.communicate()
+            if proc2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+                err2 = (stderr2 or b"").decode("utf-8", "replace").strip()[-300:]
+                raise RuntimeError(f"ffmpeg concat gagal (exit={proc2.returncode}): {err2 or err1 or 'output kosong'}")
+        finally:
+            if os.path.exists(concat_ts):
+                try:
+                    os.remove(concat_ts)
+                except OSError:
+                    pass
+
+    shutil.rmtree(work_dir, ignore_errors=True)
     return os.path.getsize(out_path)
 
 
@@ -540,6 +569,7 @@ async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
                 await stats.emit(
                     bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
                     title=title, kind="Anichin download", label="Anichin",
+                    log_interval=PROGRESS_INTERVAL, edit_interval=PROGRESS_INTERVAL,
                 )
         await asyncio.sleep(0.5)
 
