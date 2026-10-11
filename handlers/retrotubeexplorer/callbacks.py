@@ -26,6 +26,7 @@ from handlers.dl.router import (
     _premium_link_allowed,
     _start_dl_task,
 )
+from utils.menu_lock import guard_callback_owner
 
 from .constants import MAX_RESULTS, SITES
 from .render import (
@@ -83,6 +84,9 @@ def _handle_callback_for(site_key: str):
 
         parts = q.data.split(":")
         if len(parts) != 4 or parts[0] != prefix:
+            return
+
+        if not await guard_callback_owner(q):
             return
 
         _, action, arg1, arg2 = parts

@@ -1,4 +1,31 @@
-"""MovieBox URL parser and direct stream extractor."""
+"""MovieBox URL parser and direct stream extractor.
+
+FLOW SCRAPER
+------------
+1. `parse_moviebox_url(url)`: slug + `subject_id` + `season`/`episode` from the
+   page URL (`/movies/<slug>?id=&type=/tv/detail&detailSe=&detailEp=`).
+2. `fetch_detail(slug_or_id)`:
+   -> GET `h5-api.aoneroom.com/wefeed-h5api-bff/detail?detailPath=<slug>`
+   -> title, synopsis, year, country, genres, IMDb, seasons & episode counts.
+3. `fetch_streams(subject_id, se, ep, slug, is_tv)`:
+   -> GET `.../subject/play?subjectId=&se=&ep=&detailPath=`
+   -> Header `Referer` MUST be the full video page URL; without it the server
+      returns `streams: []` with HTTP 200 (silent empty result).
+   -> Direct MP4 variants: 1080p, 720p, 480p, 360p (H.264 + AAC).
+
+FLOW DOWNLOADER
+---------------
+1. `resolve_moviebox_streams(url, season, episode)`: detail + deduped variants
+   (dedup per height, keep the largest file).
+2. `download_video(...)`: resolve again (signed `t=` URLs expire), then aria2c
+   16 connections (fallback streaming `curl_cffi` chunk 512KB).
+3. `TransferStats` for Telegram progress + speed/ETA + `MAX_TG_SIZE` guard.
+   `main.py` handles the optional MP3 conversion.
+
+All scraping lives here (self-contained, mirrors `handlers/dl/anichin/` and
+`handlers/dl/drakorid/`) so the `handlers/dl/*` layer never imports the UI
+package `handlers/moviebox/`.
+"""
 import asyncio
 import logging
 import os
@@ -10,9 +37,9 @@ from curl_cffi import requests as curl_requests
 from handlers.dl.constants import MAX_TG_SIZE, TMP_DIR
 from handlers.dl.progress import TransferStats
 from handlers.dl.utils import FileSizeLimitExceeded
-from handlers.moviebox.scraper import fetch_detail, fetch_streams
 
 from .constants import (
+    API_BASE,
     BASE_URL,
     HTTP_TIMEOUT,
     MOVIEBOX_ARIA2_CONNS,
@@ -24,6 +51,145 @@ log = logging.getLogger(__name__)
 
 _VARIANT_CACHE: dict[str, dict] = {}
 _CACHE_TTL = 300.0
+
+_session = None
+
+
+def _http():
+    global _session
+    if _session is None:
+        _session = curl_requests.Session(impersonate="chrome")
+    return _session
+
+
+def _clean(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _http_json(url: str, referer: str = f"{BASE_URL}/") -> dict:
+    """GET a MovieBox JSON endpoint (empty dict on any failure)."""
+    try:
+        r = _http().get(
+            url,
+            headers={
+                "User-Agent": UA,
+                "Accept": "application/json",
+                "Referer": referer,
+            },
+            timeout=HTTP_TIMEOUT,
+        )
+        if r.status_code == 200:
+            return r.json() or {}
+        return {}
+    except Exception as e:
+        log.warning("MovieBox JSON failed | url=%s err=%r", url, e)
+        return {}
+
+
+def fetch_detail(slug_or_id: str) -> dict:
+    """Detailed metadata for a movie or TV series."""
+    key = "subjectId" if str(slug_or_id).isdigit() else "detailPath"
+    url = f"{API_BASE}/detail?{key}={slug_or_id}"
+    data = _http_json(url)
+    if not data or data.get("code") != 0:
+        return {}
+
+    d = data.get("data") or {}
+    sub = d.get("subject") or {}
+    res = d.get("resource") or {}
+
+    sid = str(sub.get("subjectId") or "")
+    stype = int(sub.get("subjectType") or 1)
+    is_tv = (stype == 2)
+    slug = sub.get("detailPath") or slug_or_id
+    title = _clean(sub.get("title") or "MovieBox Video")
+    clean_title = re.sub(r"\s+S\d+(?:-S\d+)?$", "", title).strip()
+
+    cover = (sub.get("cover") or {}).get("url") or ""
+    trailer = ((sub.get("trailer") or {}).get("videoAddress") or {}).get("url") or ""
+
+    raw_seasons = res.get("seasons") or []
+    seasons = []
+    total_eps = 0
+    for s in raw_seasons:
+        se_num = int(s.get("se") or 0)
+        max_ep = int(s.get("maxEp") or 0)
+        res_list = [r.get("resolution") for r in (s.get("resolutions") or []) if r.get("resolution")]
+        if not is_tv and max_ep == 0:
+            max_ep = 1
+        seasons.append({
+            "season": se_num,
+            "max_ep": max_ep,
+            "resolutions": sorted(set(res_list)),
+        })
+        total_eps += max_ep
+
+    if is_tv and not seasons:
+        seasons.append({"season": 1, "max_ep": 1, "resolutions": [360, 480, 720, 1080]})
+        total_eps = 1
+
+    return {
+        "title": clean_title or title,
+        "raw_title": title,
+        "subject_id": sid,
+        "slug": slug,
+        "is_tv": is_tv,
+        "type": "TV Series" if is_tv else "Movie",
+        "description": _clean(sub.get("description") or ""),
+        "release_date": _clean(sub.get("releaseDate") or ""),
+        "year": (sub.get("releaseDate") or "")[:4],
+        "genres": _clean(sub.get("genre") or ""),
+        "country": _clean(sub.get("countryName") or ""),
+        "rating": str(sub.get("imdbRatingValue") or ""),
+        "imdb_count": int(sub.get("imdbRatingCount") or 0),
+        "thumbnail": cover,
+        "subtitles": _clean(sub.get("subtitles") or ""),
+        "seasons": seasons,
+        "total_eps": total_eps,
+        "trailer_url": trailer,
+        "source": res.get("source") or "",
+        "url": f"{BASE_URL}/movies/{slug}?id={sid}&type={'/tv/detail' if is_tv else '/movie/detail'}&lang=en",
+    }
+
+
+def fetch_streams(subject_id: str, se: int = 0, ep: int = 0, slug: str = "", is_tv: bool = False) -> list[dict]:
+    """Resolve direct MP4 video streams via the MovieBox API.
+
+    The `Referer` header is mandatory and must be the full video page URL;
+    without it the server returns `streams: []` with HTTP 200.
+    """
+    ref = (
+        f"{BASE_URL}/movies/{slug}?id={subject_id}"
+        f"&type={'/tv/detail' if is_tv else '/movie/detail'}"
+        f"&detailSe={se}&detailEp={ep}&lang=en"
+    )
+    play_url = (
+        f"{API_BASE}/subject/play?subjectId={subject_id}"
+        f"&se={se}&ep={ep}&detailPath={slug}"
+    )
+
+    data = _http_json(play_url, referer=ref)
+    if not data or data.get("code") != 0:
+        return []
+
+    streams = (data.get("data") or {}).get("streams") or []
+    out = []
+    for s in streams:
+        res = str(s.get("resolutions") or "")
+        url = s.get("url") or ""
+        size = int(s.get("size") or 0)
+        codec = s.get("codecName") or "h264"
+        if url:
+            out.append({
+                "resolution": res,
+                "format": s.get("format") or "MP4",
+                "size": size,
+                "url": url,
+                "codec": codec,
+                "duration": int(s.get("duration") or 0),
+            })
+    out.sort(key=lambda x: int(re.sub(r"\D", "", x["resolution"]) or 0), reverse=True)
+    return out
 
 
 def parse_moviebox_url(url: str) -> dict:

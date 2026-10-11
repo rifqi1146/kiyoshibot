@@ -18,6 +18,7 @@ from telegram.ext import ContextTypes
 
 from handlers.dl.router import _premium_link_allowed, _premium_link_block_text
 from handlers.join import require_join_or_block
+from utils.menu_lock import message_id_from_send, register_message_owner
 
 from .constants import MAX_RESULTS, SITES
 from .render import build_menu_content, build_results_content, menu_markup
@@ -53,7 +54,7 @@ def make_site_cmd(site_key: str):
 
         if not query:
             r_html, p_html = build_menu_content(label)
-            return await send_rich(
+            sent = await send_rich(
                 bot=context.bot,
                 chat_id=msg.chat.id,
                 reply_to=msg.message_id,
@@ -61,6 +62,8 @@ def make_site_cmd(site_key: str):
                 plain_html=p_html,
                 markup=menu_markup(prefix),
             )
+            register_message_owner(msg.chat.id, message_id_from_send(sent), user_id)
+            return sent
 
         log.info(
             "Search start | site=%s q=%r chat_id=%s user_id=%s",
@@ -69,6 +72,7 @@ def make_site_cmd(site_key: str):
         status = await msg.reply_text(
             f"🔍 Searching <code>{html.escape(query)}</code>...", parse_mode="HTML"
         )
+        register_message_owner(msg.chat.id, status.message_id, user_id)
 
         started = time.monotonic()
         results = await asyncio.to_thread(search, site, query, MAX_RESULTS)

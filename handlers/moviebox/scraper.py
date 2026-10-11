@@ -32,6 +32,8 @@ from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 
+from handlers.dl.moviebox.extractor import fetch_detail
+
 from .constants import (
     API_BASE,
     BASE_URL,
@@ -304,112 +306,6 @@ def fetch_section_items(section_key: str, page: int = 1, per_page: int = 30) -> 
         return [_subject_to_item(it) for it in items]
 
     return []
-
-
-def fetch_detail(slug_or_id: str) -> dict:
-    """Detailed metadata for a movie or TV series."""
-    key = "subjectId" if str(slug_or_id).isdigit() else "detailPath"
-    url = f"{API_BASE}/detail?{key}={slug_or_id}"
-    data = http_json(url)
-    if not data or data.get("code") != 0:
-        return {}
-
-    d = data.get("data") or {}
-    sub = d.get("subject") or {}
-    res = d.get("resource") or {}
-
-    sid = str(sub.get("subjectId") or "")
-    stype = int(sub.get("subjectType") or 1)
-    is_tv = (stype == 2)
-    slug = sub.get("detailPath") or slug_or_id
-    title = _clean(sub.get("title") or "MovieBox Video")
-    clean_title = re.sub(r"\s+S\d+(?:-S\d+)?$", "", title).strip()
-
-    cover = (sub.get("cover") or {}).get("url") or ""
-    trailer = ((sub.get("trailer") or {}).get("videoAddress") or {}).get("url") or ""
-
-    raw_seasons = res.get("seasons") or []
-    seasons = []
-    total_eps = 0
-    for s in raw_seasons:
-        se_num = int(s.get("se") or 0)
-        max_ep = int(s.get("maxEp") or 0)
-        res_list = [r.get("resolution") for r in (s.get("resolutions") or []) if r.get("resolution")]
-        if not is_tv and max_ep == 0:
-            max_ep = 1
-        seasons.append({
-            "season": se_num,
-            "max_ep": max_ep,
-            "resolutions": sorted(set(res_list)),
-        })
-        total_eps += max_ep
-
-    if is_tv and not seasons:
-        seasons.append({"season": 1, "max_ep": 1, "resolutions": [360, 480, 720, 1080]})
-        total_eps = 1
-
-    return {
-        "title": clean_title or title,
-        "raw_title": title,
-        "subject_id": sid,
-        "slug": slug,
-        "is_tv": is_tv,
-        "type": "TV Series" if is_tv else "Movie",
-        "description": _clean(sub.get("description") or ""),
-        "release_date": _clean(sub.get("releaseDate") or ""),
-        "year": (sub.get("releaseDate") or "")[:4],
-        "genres": _clean(sub.get("genre") or ""),
-        "country": _clean(sub.get("countryName") or ""),
-        "rating": str(sub.get("imdbRatingValue") or ""),
-        "imdb_count": int(sub.get("imdbRatingCount") or 0),
-        "thumbnail": cover,
-        "subtitles": _clean(sub.get("subtitles") or ""),
-        "seasons": seasons,
-        "total_eps": total_eps,
-        "trailer_url": trailer,
-        "source": res.get("source") or "",
-        "url": f"{BASE_URL}/movies/{slug}?id={sid}&type={'/tv/detail' if is_tv else '/movie/detail'}&lang=en",
-    }
-
-
-def fetch_streams(subject_id: str, se: int = 0, ep: int = 0, slug: str = "", is_tv: bool = False) -> list[dict]:
-    """Resolve direct MP4 video streams via the MovieBox API.
-
-    The `Referer` header is mandatory and must be the full video page URL;
-    without it the server returns `streams: []` with HTTP 200.
-    """
-    ref = (
-        f"{BASE_URL}/movies/{slug}?id={subject_id}"
-        f"&type={'/tv/detail' if is_tv else '/movie/detail'}"
-        f"&detailSe={se}&detailEp={ep}&lang=en"
-    )
-    play_url = (
-        f"{API_BASE}/subject/play?subjectId={subject_id}"
-        f"&se={se}&ep={ep}&detailPath={slug}"
-    )
-
-    data = http_json(play_url, referer=ref)
-    if not data or data.get("code") != 0:
-        return []
-
-    streams = (data.get("data") or {}).get("streams") or []
-    out = []
-    for s in streams:
-        res = str(s.get("resolutions") or "")
-        url = s.get("url") or ""
-        size = int(s.get("size") or 0)
-        codec = s.get("codecName") or "h264"
-        if url:
-            out.append({
-                "resolution": res,
-                "format": s.get("format") or "MP4",
-                "size": size,
-                "url": url,
-                "codec": codec,
-                "duration": int(s.get("duration") or 0),
-            })
-    out.sort(key=lambda x: int(re.sub(r"\D", "", x["resolution"]) or 0), reverse=True)
-    return out
 
 
 def fetch_popular_titles() -> list[str]:

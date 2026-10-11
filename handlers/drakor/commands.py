@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 
 from database.download_db import is_premium_user
 from handlers.join import require_join_or_block
+from utils.menu_lock import message_id_from_send, register_message_owner
 
 from .constants import BASE_URL, MAX_RESULTS, PREFIX
 from .render import build_menu_content, build_results_content, menu_markup
@@ -41,7 +42,7 @@ async def drakorid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not query:
         r_html, p_html = build_menu_content()
-        return await send_rich(
+        sent = await send_rich(
             bot=context.bot,
             chat_id=msg.chat.id,
             reply_to=msg.message_id,
@@ -49,12 +50,15 @@ async def drakorid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             plain_html=p_html,
             markup=menu_markup(),
         )
+        register_message_owner(msg.chat.id, message_id_from_send(sent), user_id)
+        return sent
 
     log.info("Search start | site=drakorid q=%r chat_id=%s user_id=%s", query, update.effective_chat.id, user_id)
     status = await msg.reply_text(
         f"🔍 Searching <code>{html.escape(query)}</code>...",
         parse_mode="HTML",
     )
+    register_message_owner(msg.chat.id, status.message_id, user_id)
 
     started = time.monotonic()
     raw = await asyncio.to_thread(http_get, f"{BASE_URL}/cari.html?q={quote_plus(query)}")

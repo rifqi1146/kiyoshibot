@@ -38,6 +38,7 @@ from handlers.dl.router import (
     _premium_link_block_text,
     _metadata_status,
 )
+from utils.menu_lock import guard_callback_owner, register_message_owner
 from utils.rich_search import build_search_content, edit_search_rich
 
 log = logging.getLogger(__name__)
@@ -261,6 +262,7 @@ async def simontok_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = await msg.reply_text(
         f"🔍 Searching <code>{html.escape(query)}</code>...", parse_mode="HTML"
     )
+    register_message_owner(chat.id, status.message_id, user_id)
 
     started = time.monotonic()
     results = await _do_search(query)
@@ -304,8 +306,8 @@ async def _handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data:
         return await q.answer("Search expired.", show_alert=True)
 
-    if q.from_user.id != data["user_id"]:
-        return await q.answer("This search does not belong to you.", show_alert=True)
+    if not await guard_callback_owner(q, session_data=data):
+        return
 
     if action == "close":
         _SEARCH_CACHE.pop(search_id, None)

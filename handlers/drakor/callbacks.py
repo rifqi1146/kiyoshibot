@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 from handlers.dl.router import _premium_link_allowed, _process_choice
 from handlers.dl.state import DL_CACHE
+from utils.menu_lock import guard_callback_owner
 
 from .constants import BASE_URL, LABEL, MAX_RESULTS, PREFIX
 from .render import (
@@ -35,6 +36,9 @@ async def drakorid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Callback query handler for Drakor.id inline navigation."""
     q = update.callback_query
     if not q or not q.data or not q.data.startswith(f"{PREFIX}:"):
+        return
+
+    if not await guard_callback_owner(q):
         return
 
     bot = getattr(context, "bot", None) or (q.get_bot() if hasattr(q, "get_bot") else None)

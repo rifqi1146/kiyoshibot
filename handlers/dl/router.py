@@ -27,6 +27,7 @@ from .service import download_non_tiktok,send_downloaded_media,send_batch_downlo
 from database.user_settings_db import get_user_settings
 from .remux import prepare_download_result_for_send
 from .youtube.main import is_youtube_url, is_youtube_shorts_url, is_youtube_post_url
+from utils.menu_lock import guard_callback_owner, register_message_owner
 
 log=logging.getLogger(__name__)
 os.makedirs(TMP_DIR,exist_ok=True)
@@ -465,9 +466,12 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     DL_CACHE[dl_id]["silent_picker"]=silent_mode
         
     if message:
+        register_message_owner(data["chat_id"], message.message_id, data["user"])
         return await message.edit_text("<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML")
     else:
-        return await context.bot.send_message(chat_id=data["chat_id"], text="<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML", reply_to_message_id=data["reply_to"])
+        sent = await context.bot.send_message(chat_id=data["chat_id"], text="<b>Select resolution</b>",reply_markup=res_keyboard(dl_id,res_list),parse_mode="HTML", reply_to_message_id=data["reply_to"])
+        register_message_owner(data["chat_id"], sent.message_id, data["user"])
+        return sent
 
 
 async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id:int,status_ready:bool=False):
@@ -709,11 +713,12 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
             status_ready=status_ready,
         )
         
-    await msg.reply_text(
+    sent = await msg.reply_text(
         "👀 <b>Link detected</b>\n\nDo you want me to download it?",
         reply_markup=autodl_detect_keyboard(dl_id),
         parse_mode="HTML",
     )
+    register_message_owner(msg.chat.id, sent.message_id, user_id)
 
 
 
@@ -723,13 +728,13 @@ async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
     if not q or not q.data:
         return
-    await q.answer()
     _,dl_id,action=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
+    if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    await q.answer()
     if not data:
         return await q.edit_message_text("Request expired.")
-    if q.from_user.id!=data["user"]:
-        return await q.answer("This request does not belong to you.",show_alert=True)
         
     ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
     if not ok:
@@ -739,6 +744,7 @@ async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if action=="close":
         DL_CACHE.pop(dl_id,None)
         return await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"download request menu")
+    register_message_owner(q.message.chat.id, q.message.message_id, data["user"])
     await q.edit_message_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
 
 async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,media:dict,message_thread_id=None):
@@ -758,10 +764,13 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
     
     if not status_msg_id:
         try:
-            return await bot.send_message(chat_id=chat_id, text=text, reply_markup=tiktok_slideshow_keyboard(dl_id,has_audio=has_audio), parse_mode="HTML", reply_to_message_id=data.get("reply_to"))
+            sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=tiktok_slideshow_keyboard(dl_id,has_audio=has_audio), parse_mode="HTML", reply_to_message_id=data.get("reply_to"))
+            register_message_owner(chat_id, sent.message_id, data.get("user"))
+            return sent
         except Exception: pass
         return
-        
+
+    register_message_owner(chat_id, status_msg_id, data.get("user"))
     await bot.edit_message_text(
         chat_id=chat_id,
         message_id=status_msg_id,
@@ -1132,7 +1141,8 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             status_ready=status_ready,
         )
         
-    await msg.reply_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
+    sent = await msg.reply_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
+    register_message_owner(msg.chat.id, sent.message_id, user_id)
 
 async def dlengine_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update,context):
@@ -1140,13 +1150,13 @@ async def dlengine_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
     if not q or not q.data:
         return
-    await q.answer()
     _,dl_id,_engine=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
+    if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    await q.answer()
     if not data:
         return await q.edit_message_text("Request expired.")
-    if q.from_user.id!=data["user"]:
-        return await q.answer("This request does not belong to you.",show_alert=True)
     
     ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
     if not ok:
@@ -1164,13 +1174,13 @@ async def dl_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
     if not q or not q.data:
         return
-    await q.answer()
     _,dl_id,choice=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
+    if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    await q.answer()
     if not data:
         return await q.edit_message_text("Data expired.")
-    if q.from_user.id!=data["user"]:
-        return await q.answer("This request does not belong to you.",show_alert=True)
     
     ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
     if not ok:
@@ -1188,13 +1198,13 @@ async def tiktok_slideshow_callback(update:Update,context:ContextTypes.DEFAULT_T
     q=update.callback_query
     if not q or not q.data:
         return
-    await q.answer()
     _,dl_id,choice=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
+    if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    await q.answer()
     if not data:
         return await q.edit_message_text("Request expired.")
-    if q.from_user.id!=data["user"]:
-        return await q.answer("This request does not belong to you.",show_alert=True)
     if choice=="cancel":
         DL_CACHE.pop(dl_id,None)
         return await q.edit_message_text("Cancelled.")
@@ -1232,8 +1242,8 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         await q.answer()
         return await q.edit_message_text("Request expired.")
         
-    if q.from_user.id!=data["user"]:
-        return await q.answer("This request does not belong to you.",show_alert=True)
+    if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
         
     ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
     if not ok:

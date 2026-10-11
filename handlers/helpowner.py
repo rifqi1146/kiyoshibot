@@ -65,9 +65,14 @@ async def helpowner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def helpowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    if not q or not q.data:
+        return
 
     if q.data != "helpowner:close":
         return
+
+    if not q.from_user or q.from_user.id not in OWNER_ID:
+        return await q.answer("This is not your menu.", show_alert=True)
 
     try:
         await q.message.delete()

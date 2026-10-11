@@ -21,9 +21,13 @@ from urllib.parse import urlparse
 
 from handlers.dl.constants import MAX_TG_SIZE, TMP_DIR
 from handlers.dl.utils import FileSizeLimitExceeded, sanitize_filename
-from handlers.moviebox.scraper import fetch_detail, fetch_streams
-
-from . import extractor
+from .extractor import (
+    download_video,
+    fetch_detail,
+    fetch_streams,
+    parse_moviebox_url,
+    resolve_moviebox_streams,
+)
 from .constants import MOVIEBOX_HOSTS, MOVIEBOX_PROGRESS_INTERVAL
 
 log = logging.getLogger(__name__)
@@ -73,7 +77,7 @@ def probe_moviebox(raw_url: str, season: int | None = None, episode: int | None 
         if (season is None or cached.get("season") == season) and (episode is None or cached.get("episode") == episode):
             return cached
 
-    parsed = extractor.parse_moviebox_url(url)
+    parsed = parse_moviebox_url(url)
     se = int(season) if season is not None else parsed["season"]
     ep = int(episode) if episode is not None else parsed["episode"]
 
@@ -196,7 +200,7 @@ async def moviebox_download(
                 f"<b>Downloading {title}...</b>", label="MovieBox",
             )
 
-        res = await extractor.download_video(
+        res = await download_video(
             url=url,
             format_id=target["format_id"],
             out_path=temp_video,
