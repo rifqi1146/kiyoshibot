@@ -138,6 +138,7 @@ HELP_TEXT = {
         "- `/kang` — Add sticker to your pack\n"
         "- `/kurs` — Currency conversion\n"
         "- `/lendirqu` — Browse, search & download from LendirQu\n"
+        "- `/moviebox` — Browse, search & download movies & TV series from MovieBox\n"
         "- `/music` — Search music\n"
         "- `/nekopoi` — Browse, search & download from Nekopoi\n"
         "- `/nobg` — Remove image background\n"

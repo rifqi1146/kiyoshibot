@@ -120,10 +120,12 @@ async def download_aria2(
                 c[i] = f"--max-connection-per-server={conns}"
             elif a.startswith("--split="):
                 c[i] = f"--split={conns}"
-        proc = await asyncio.create_subprocess_exec(
-            *c,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+        import subprocess as _sp
+        proc = await asyncio.to_thread(
+            _sp.Popen,
+            c,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.PIPE,
         )
 
         loop = asyncio.get_event_loop()
@@ -161,7 +163,7 @@ async def download_aria2(
                 await asyncio.sleep(0.5)
 
         poll = asyncio.create_task(_poll())
-        _, stderr_b = await proc.communicate()
+        _, stderr_b = await asyncio.to_thread(proc.communicate)
         poll.cancel()
         try:
             await poll

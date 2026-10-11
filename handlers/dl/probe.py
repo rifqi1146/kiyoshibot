@@ -68,6 +68,12 @@ def supports_anichin_resolution(url: str) -> bool:
         host = host[4:]
     return host == "anichin.moe"
 
+def supports_moviebox_resolution(url: str) -> bool:
+    host = _host(url)
+    if host.startswith("www."):
+        host = host[4:]
+    return host in ("officialmoviebox.com", "moviebox.ph", "moviebox.co")
+
 def supports_resolution_picker(url: str) -> bool:
     return (
         supports_ytdlp_resolution(url)
@@ -76,6 +82,7 @@ def supports_resolution_picker(url: str) -> bool:
         or supports_darknessporn_resolution(url)
         or supports_drakorid_resolution(url)
         or supports_anichin_resolution(url)
+        or supports_moviebox_resolution(url)
     )
 
 def supports_both_resolution_engines(url: str) -> bool:
@@ -355,6 +362,15 @@ async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple
             return (probe.get("res_list") or []), None
         except Exception as e:
             log.warning("Anichin probe failed | url=%s err=%r", url, e)
+            return [], str(e)
+
+    if chosen == "moviebox" or (not chosen and supports_moviebox_resolution(url)):
+        try:
+            from .moviebox.main import probe_moviebox
+            probe = await asyncio.to_thread(probe_moviebox, url)
+            return (probe.get("res_list") or []), None
+        except Exception as e:
+            log.warning("MovieBox probe failed | url=%s err=%r", url, e)
             return [], str(e)
 
     # Jalur lama: engine ytdlp. Nekopoi tidak pernah lewat sini.

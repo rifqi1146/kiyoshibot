@@ -18,6 +18,7 @@ from handlers.nekopoi import nekopoi_callback
 from handlers.punishworldsearch import punish_callback
 from handlers.simontoksearch import simontok_callback
 from handlers.drakor import drakorid_callback
+from handlers.moviebox import moviebox_callback
 from handlers.anichin import anichin_callback
 from handlers.blacklist import blacklist_callback_gate
 from handlers.welcome import verify_method_callback
@@ -53,6 +54,7 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(punish_callback, pattern=r"^pw:"))
     app.add_handler(CallbackQueryHandler(simontok_callback, pattern=r"^sm:"))
     app.add_handler(CallbackQueryHandler(drakorid_callback, pattern=r"^dk:"))
+    app.add_handler(CallbackQueryHandler(moviebox_callback, pattern=r"^mb:"))
     app.add_handler(CallbackQueryHandler(anichin_callback, pattern=r"^ac:"))
     app.add_handler(CallbackQueryHandler(verify_method_callback, pattern=r"^vmethod:"))
 

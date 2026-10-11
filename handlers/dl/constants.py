@@ -77,6 +77,9 @@ PREMIUM_ONLY_DOMAINS = {
 PREMIUM_NO_NSFW_DOMAINS = {
     "drakorid.co",
     "anichin.moe",
+    "officialmoviebox.com",
+    "moviebox.ph",
+    "moviebox.co",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {
@@ -163,4 +166,8 @@ AUTO_DOWNLOAD_DOMAINS = {
     "heavy-r.com",
     "cosplaytele.com",
     "drakorid.co",
+    "anichin.moe",
+    "officialmoviebox.com",
+    "moviebox.ph",
+    "moviebox.co",
 }

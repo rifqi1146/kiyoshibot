@@ -62,6 +62,7 @@ BOT_COMMANDS=[
     ("becekku","Browse, search & download from Becekku"),
     ("lendirqu","Browse, search & download from LendirQu"),
     ("drakorid","Browse & search Korean dramas"),
+    ("moviebox","Browse, search & download from MovieBox"),
     ("anichin","Browse, search & download Donghua from Anichin"),
     ("caca","Chat with Caca"),
     ("groq","Ask Groq AI"),

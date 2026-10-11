@@ -154,12 +154,14 @@ async def drakorid_download(
                 "-vn", "-c:a", "libmp3lame", "-q:a", "2",
                 mp3_path,
             ]
-            proc = await asyncio.create_subprocess_exec(
-                *ffmpeg_cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+            import subprocess as _sp
+            proc = await asyncio.to_thread(
+                _sp.Popen,
+                ffmpeg_cmd,
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
             )
-            await proc.wait()
+            await asyncio.to_thread(proc.wait)
             if proc.returncode != 0 or not os.path.exists(mp3_path):
                 raise RuntimeError("Failed to extract MP3 audio from video.")
             return {
