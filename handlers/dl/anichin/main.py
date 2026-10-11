@@ -83,6 +83,38 @@ def peek_probe(url: str) -> dict | None:
     return item.get("probe")
 
 
+def _scrape_series_latest_episode(url: str) -> dict | None:
+    """Halaman series -> episode TERBARU (`div.eplister ul li` pertama).
+
+    Dipakai `probe_anichin` supaya URL series tidak berakhir
+    "No valid resolutions available". -> {episode_url, title}
+    """
+    import re as _re
+    from bs4 import BeautifulSoup
+
+    code, raw, _ = extractor._get(url)
+    if code != 200 or not raw:
+        return None
+    soup = BeautifulSoup(raw, "html.parser")
+    ul = soup.select_one("div.eplister ul")
+    if not ul:
+        return None
+    li = ul.select_one("li")
+    if not li:
+        return None
+    a = li.select_one("a[href]")
+    if not a:
+        return None
+    href = a["href"].strip()
+    if href.startswith("/"):
+        href = "https://anichin.moe" + href
+    title = li.select_one("div.epl-title")
+    return {
+        "episode_url": href,
+        "title": _re.sub(r"\s+", " ", title.get_text(" ", strip=True)) if title else "",
+    }
+
+
 def probe_anichin(raw_url: str) -> dict:
     """-> {title, thumbnail, mirrors, res_list}"""
     url = (raw_url or "").strip()
@@ -92,14 +124,63 @@ def probe_anichin(raw_url: str) -> dict:
 
     post = extractor.scrape_post(url)
     mirrors = post.get("mirrors") or []
+
+    # Kalau user menempel URL SERIES (`/<slug>/`), halaman itu cuma daftar
+    # episode -> tidak ada mirror. Ambil episode TERBARU lalu probe itu,
+    # supaya "No valid resolutions available" tidak muncul untuk URL series.
     if not mirrors:
-        raise RuntimeError("Tidak ada link unduh (mirror) di halaman Anichin ini.")
+        try:
+            detail = _scrape_series_latest_episode(url)
+        except Exception as e:
+            log.debug("Anichin series fallback gagal | url=%s err=%r", url, e)
+            detail = None
+        if detail and detail.get("episode_url"):
+            ep_url = detail["episode_url"]
+            log.info("Anichin series URL -> latest episode | from=%s to=%s", url, ep_url)
+            ep_post = extractor.scrape_post(ep_url)
+            mirrors = ep_post.get("mirrors") or []
+            if mirrors:
+                post = ep_post
+                url = ep_url
+
+    if not mirrors:
+        raise RuntimeError(
+            "Tidak ada link unduh (mirror) di halaman Anichin ini. "
+            "Kalau ini halaman series, buka salah satu episode-nya."
+        )
 
     res_list = []
     seen = set()
     for m in mirrors:
         label = (m.get("label") or "").strip()
         low = label.lower()
+
+        # Label "Multi": shortener-nya langsung menunjuk `mirrored.to/multilinks/<hash>`
+        # yang berisi BEBERAPA resolusi (1080p/720p/480p/360p). Expand jadi
+        # resolusi nyata supaya picker terisi; kalau gagal, fallback ke label asli.
+        if low == "multi":
+            try:
+                expanded = extractor.list_resolutions(m.get("url") or "", referer=url)
+            except Exception as e:
+                log.debug("Anichin expand Multi gagal | url=%s err=%r", m.get("url"), e)
+                expanded = []
+            if expanded:
+                for r in expanded:
+                    key = (r.get("format_id") or "").lower()
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    res_list.append({
+                        "height": r.get("height") or 480,
+                        "format_id": r.get("format_id") or r.get("label") or "480p",
+                        "label": r.get("label") or r.get("format_id") or "480p",
+                        "has_audio": True,
+                        "filesize": 0,
+                        "total_size": 0,
+                        "mirror_url": m.get("url"),
+                    })
+                continue
+
         # "VIP" bukan resolusi (link Telegram promosi).
         if low in ("vip", ""):
             continue
@@ -134,6 +215,10 @@ def probe_anichin(raw_url: str) -> dict:
         "res_list": res_list,
     }
     cache_probe(url, probe)
+    # Kalau URL asli adalah halaman series, simpan juga di key URL series supaya
+    # probe kedua tidak resolve ulang (download worker memakai `raw_url` asli).
+    if (raw_url or "").strip() != url:
+        cache_probe((raw_url or "").strip(), probe)
     return probe
 
 

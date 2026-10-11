@@ -372,9 +372,22 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
 async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str|None=None,status_ready:bool=False):
     if dl_id not in DL_CACHE:
         DL_CACHE[dl_id]=dict(data)
-    res_list,reason=await get_resolutions_detailed(data["url"],engine=engine)
+    url=data.get("url")
+    t0=time.monotonic()
+    log.info(
+        "Resolution picker start | url=%s engine=%s dl_id=%s",
+        url,engine or "(auto)",dl_id,
+    )
+    res_list,reason=await get_resolutions_detailed(url,engine=engine)
+    elapsed=time.monotonic()-t0
     if not res_list:
         DL_CACHE.pop(dl_id,None)
+        # Log WAJIB walau gagal: tanpa ini user cuma melihat "No valid
+        # resolutions available." tanpa jejak apa pun di terminal.
+        log.warning(
+            "Resolution picker empty | url=%s engine=%s elapsed=%.2fs reason=%s",
+            url,engine or "(auto)",elapsed,reason or "(no reason returned)",
+        )
         # Tampilkan alasan asli kalau ada (mis. post Nekopoi tanpa jalur unduh
         # yang didukung), supaya user tahu KENAPA, bukan cuma "tidak ada".
         if reason:
@@ -384,7 +397,13 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
         if message:
             return await message.edit_text(text,parse_mode="HTML")
         return await context.bot.send_message(chat_id=data["chat_id"], text=text, parse_mode="HTML", reply_to_message_id=data["reply_to"])
-        
+
+    log.info(
+        "Resolution picker ready | url=%s engine=%s elapsed=%.2fs variants=%s",
+        url,engine or "(auto)",elapsed,
+        [r.get("format_id") or r.get("height") for r in res_list],
+    )
+
     res_map={}
     for r in res_list:
         h=int(r.get("height") or 0)

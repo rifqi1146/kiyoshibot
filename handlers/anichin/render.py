@@ -213,13 +213,22 @@ def build_az_content(page: int) -> tuple[str, str, InlineKeyboardMarkup]:
             InlineKeyboardButton(l, callback_data=f"{PREFIX}:azl:{l}:0")
             for l in chunk[i:i + 7]
         ])
-    rows.append([InlineKeyboardButton("Menu", callback_data=f"{PREFIX}:menu:0:0")])
+
+    # Navigasi halaman: 27 huruf > 10/halaman -> WAJIB ada Prev/Next,
+    # kalau tidak halaman 2-3 (J..Z) tidak bisa diakses sama sekali.
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("Prev", callback_data=f"{PREFIX}:az:{page - 1}:0"))
+    nav.append(InlineKeyboardButton("Menu", callback_data=f"{PREFIX}:menu:0:0"))
+    if page < max_page - 1:
+        nav.append(InlineKeyboardButton("Next", callback_data=f"{PREFIX}:az:{page + 1}:0"))
+    rows.append(nav)
 
     rich_html = (
         "<h1>🔤 A–Z List</h1>"
         f"<p>Page {page + 1} of {max_page} • {total} letters</p>"
         "<hr/>"
-        f"<p>{html.escape(' • '.join(letters))}</p>"
+        f"<p>{html.escape(' • '.join(chunk))}</p>"
         "<hr/>"
         "<aside>💡 Select a letter below to list titles starting with it.</aside>"
     )
