@@ -51,7 +51,7 @@ from .state import SESSION_CACHE, purge_expired_cache
 log = logging.getLogger(__name__)
 
 
-def _new_session(site_key: str, user_id: int, chat_id: int, title: str, results: list, query: str = "") -> str:
+def _new_session(site_key: str, user_id: int, chat_id: int, title: str, results: list, query: str = "", origin: dict | None = None) -> str:
     import uuid
     purge_expired_cache()
     sid = uuid.uuid4().hex[:8]
@@ -64,6 +64,9 @@ def _new_session(site_key: str, user_id: int, chat_id: int, title: str, results:
         "ts": time.time(),
         "user_id": user_id,
         "chat_id": chat_id,
+        # Dari mana listing dibuka (`{"action": "tags"/"cats", "page": N}`), dipakai
+        # tombol Back supaya user balik ke daftar tag/kategori, bukan ke menu.
+        "origin": origin or {},
     }
     return sid
 
@@ -149,6 +152,7 @@ def _handle_callback_for(site_key: str):
             slug = arg1 or ""
             if not slug:
                 return await q.answer("Invalid category.", show_alert=True)
+            picker_page = int(arg2) if arg2.isdigit() else 0
             await q.answer(f"Loading {slug}...")
             results = await asyncio.to_thread(
                 fetch_paginated, site, f"{canonical_base(site)}/category/{slug}/page/{{page}}/", MAX_RESULTS
@@ -156,7 +160,8 @@ def _handle_callback_for(site_key: str):
             if not results:
                 return await q.answer("No videos found in this category.", show_alert=True)
             sid = _new_session(site_key, q.from_user.id, chat_id,
-                               f"{label} — {slug.replace('-', ' ').title()}", results)
+                               f"{label} — {slug.replace('-', ' ').title()}", results,
+                               origin={"action": "cats", "page": picker_page})
             r_html, p_html, markup = build_results_content(label, prefix, sid, SESSION_CACHE[sid])
             await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
             return
@@ -165,6 +170,7 @@ def _handle_callback_for(site_key: str):
             slug = arg1 or ""
             if not slug:
                 return await q.answer("Invalid tag.", show_alert=True)
+            picker_page = int(arg2) if arg2.isdigit() else 0
             await q.answer(f"Loading {slug}...")
             results = await asyncio.to_thread(
                 fetch_paginated, site, f"{canonical_base(site)}/tag/{slug}/page/{{page}}/", MAX_RESULTS
@@ -172,7 +178,8 @@ def _handle_callback_for(site_key: str):
             if not results:
                 return await q.answer("No videos found for this tag.", show_alert=True)
             sid = _new_session(site_key, q.from_user.id, chat_id,
-                               f"{label} — {slug.replace('-', ' ')}", results)
+                               f"{label} — {slug.replace('-', ' ')}", results,
+                               origin={"action": "tags", "page": picker_page})
             r_html, p_html, markup = build_results_content(label, prefix, sid, SESSION_CACHE[sid])
             await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
             return

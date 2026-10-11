@@ -115,6 +115,10 @@ def build_results_content(label: str, prefix: str, session_id: str, data: dict) 
     Memakai helper bersama `utils.rich_search.build_search_content` supaya
     tampilan identik dengan `/punish`, `/simontok`, `/nekopoi`. Tombol angka ->
     `info` (detail), tombol tengah -> `menu`.
+
+    Kalau listing dibuka dari daftar tag/kategori (`data["origin"]`), tombol
+    **Back** dikirim lebih dulu supaya user bisa balik ke daftar asal — bukan
+    langsung lompat ke menu. `origin` = `{"action": "tags"/"cats", "page": int}`.
     """
     for it in data.get("results") or []:
         if not it.get("meta"):
@@ -127,6 +131,14 @@ def build_results_content(label: str, prefix: str, session_id: str, data: dict) 
                 parts.append(it["rating"])
             it["meta"] = "  ·  ".join(parts)
 
+    origin = data.get("origin") or {}
+    back_callback = None
+    back_label = "Back"
+    if origin.get("action") in ("tags", "cats"):
+        page = int(origin.get("page") or 0)
+        back_callback = f"{prefix}:{origin['action']}:{page}:0"
+        back_label = "Back to Tags" if origin["action"] == "tags" else "Back to Categories"
+
     return build_search_content(
         label,
         prefix,
@@ -137,16 +149,22 @@ def build_results_content(label: str, prefix: str, session_id: str, data: dict) 
         number_action="info",
         close_action="menu",
         intro="Select a numbered button below to view details and download.",
+        back_callback=back_callback,
+        back_label=back_label,
     )
 
 
-def _pair_table(chunk: list, prefix: str, action: str) -> tuple[list, str]:
-    """Bikin baris tombol 2 kolom + tabel rich 2 kolom dari daftar item."""
+def _pair_table(chunk: list, prefix: str, action: str, picker_page: int = 0) -> tuple[list, str]:
+    """Bikin baris tombol 2 kolom + tabel rich 2 kolom dari daftar item.
+
+    `picker_page` dititipkan di segmen ke-4 callback supaya listing hasil bisa
+    mengirim tombol `Back` ke halaman picker yang sama.
+    """
     rows = []
     for i in range(0, len(chunk), 2):
-        row = [InlineKeyboardButton(chunk[i]["name"][:28], callback_data=f"{prefix}:{action}:{chunk[i]['slug']}:0")]
+        row = [InlineKeyboardButton(chunk[i]["name"][:28], callback_data=f"{prefix}:{action}:{chunk[i]['slug']}:{picker_page}")]
         if i + 1 < len(chunk):
-            row.append(InlineKeyboardButton(chunk[i + 1]["name"][:28], callback_data=f"{prefix}:{action}:{chunk[i + 1]['slug']}:0"))
+            row.append(InlineKeyboardButton(chunk[i + 1]["name"][:28], callback_data=f"{prefix}:{action}:{chunk[i + 1]['slug']}:{picker_page}"))
         rows.append(row)
     table = "".join(
         f"<tr><td><b>{html.escape(chunk[i]['name'])}</b></td>"
@@ -163,7 +181,7 @@ def build_categories_content(label: str, prefix: str, page: int) -> tuple[str, s
     page = max(0, min(page, max_page - 1))
     chunk = cats[page * CATS_PER_PAGE: page * CATS_PER_PAGE + CATS_PER_PAGE]
 
-    rows, table = _pair_table(chunk, prefix, "cat")
+    rows, table = _pair_table(chunk, prefix, "cat", page)
 
     nav = []
     if page > 0:
@@ -198,7 +216,7 @@ def build_tags_content(label: str, prefix: str, page: int) -> tuple[str, str, In
     page = max(0, min(page, max_page - 1))
     chunk = tags[page * TAGS_PER_PAGE: page * TAGS_PER_PAGE + TAGS_PER_PAGE]
 
-    rows, table = _pair_table(chunk, prefix, "tag")
+    rows, table = _pair_table(chunk, prefix, "tag", page)
 
     nav = []
     if page > 0:

@@ -30,6 +30,8 @@ def build_search_content(
     heading: str | None = None,
     number_action: str = "dl",
     close_action: str = "close",
+    back_callback: str | None = None,
+    back_label: str = "Back",
 ) -> tuple[str, str, InlineKeyboardMarkup | None]:
     """Bangun `(rich_html, plain_html, markup)` untuk satu halaman hasil search.
 
@@ -40,6 +42,9 @@ def build_search_content(
     non-search, mis. "Latest Episodes" / listing genre).
     `number_action` / `close_action` mengatur aksi tombol angka & tombol tengah
     (default `dl` / `close`; mode browse Nekopoi memakai `view`).
+    `back_callback` (opsional) menambahkan tombol kembali sebelum tombol tengah —
+    dipakai listing browse supaya user bisa balik ke daftar tag/kategori asal,
+    bukan langsung lompat ke menu. `back_label` = teks tombolnya.
     """
     page = int(data.get("page") or 0)
     results = data.get("results") or []
@@ -116,6 +121,8 @@ def build_search_content(
     row_nav = []
     if page > 0:
         row_nav.append(InlineKeyboardButton("Prev", callback_data=f"{prefix}:nav:{search_id}:{page - 1}"))
+    if back_callback:
+        row_nav.append(InlineKeyboardButton(back_label, callback_data=back_callback))
     row_nav.append(InlineKeyboardButton("Close", callback_data=f"{prefix}:{close_action}:{search_id}:0"))
     if page < max_page - 1:
         row_nav.append(InlineKeyboardButton("Next", callback_data=f"{prefix}:nav:{search_id}:{page + 1}"))
