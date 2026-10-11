@@ -43,5 +43,17 @@ BROWSE = {
     "drop": ("Drop", "/drop", False),
 }
 
-# Urutan hari di `/schedule/` (label persis seperti di halaman).
+# Urutan hari di `/schedule/` (label persis seperti di halaman Anichin).
 SCHEDULE_DAYS = ("Senin", "Selasa", "Rabu", "Kamis", "Jum'at", "Sabtu", "Minggu", "Acak")
+
+DAY_EN_MAP = {
+    "senin": "Monday",
+    "selasa": "Tuesday",
+    "rabu": "Wednesday",
+    "kamis": "Thursday",
+    "jum'at": "Friday",
+    "jumat": "Friday",
+    "sabtu": "Saturday",
+    "minggu": "Sunday",
+    "acak": "Random",
+}

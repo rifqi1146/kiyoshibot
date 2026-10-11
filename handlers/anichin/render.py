@@ -37,6 +37,26 @@ from .constants import (
 )
 from .state import AZ_CACHE, GENRES_CACHE, SCHEDULE_CACHE
 
+# Label metadata Anichin memakai bahasa Indonesia (`Tipe`, `Negara`, `Durasi`,
+# `Tanggal rilis`, `Subber`). Diterjemahkan ke Inggris supaya konsisten dengan
+# kebijakan UI bot (semua UI English, minim emote).
+META_LABEL_MAP = {
+    "Status": "Status",
+    "Type": "Type",
+    "Tipe": "Type",
+    "Studio": "Studio",
+    "Network": "Network",
+    "Season": "Season",
+    "Negara": "Country",
+    "Durasi": "Duration",
+    "Episode": "Episodes",
+    "Tanggal rilis": "Released",
+    "Subber": "Fansub",
+}
+# Urutan tampilan metadata di kartu detail series.
+META_ORDER = ("Status", "Type", "Tipe", "Studio", "Network", "Season",
+              "Negara", "Durasi", "Episode", "Tanggal rilis", "Subber")
+
 
 def menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -249,7 +269,7 @@ def build_schedule_content(day_index: int = 0) -> tuple[str, str, InlineKeyboard
 
     body = "".join(
         f"<tr><td><b>{html.escape(it['title'])}</b></td>"
-        f"<td>{html.escape(it.get('jam') or '-')}</td>"
+        f"<td>{html.escape(it.get('time') or '-')}</td>"
         f"<td>{html.escape(it.get('ep') or '-')}</td></tr>"
         for it in items
     )
@@ -257,14 +277,15 @@ def build_schedule_content(day_index: int = 0) -> tuple[str, str, InlineKeyboard
         f"<h1>🗓 {html.escape(day['day'])}</h1>"
         f"<p>{len(items)} releases • Day {day_index + 1} of {len(days)}</p>"
         "<hr/>"
-        + (f"<table compact><tr><th>Title</th><th>Time</th><th>Ep</th></tr>{body}</table>"
+        + (f"<table compact><tr><th>Title</th><th>Time</th><th>Status</th></tr>{body}</table>"
            if items else "<p><i>No releases on this day.</i></p>")
         + "<hr/>"
         "<aside>💡 Schedule is informational — open a title to download it.</aside>"
     )
     plain_parts = [f"<b>🗓 {html.escape(day['day'])}</b>", f"{len(items)} releases", ""]
     for it in items:
-        plain_parts.append(f"• <b>{html.escape(it['title'])}</b> — {html.escape(it.get('jam') or '')} {html.escape(it.get('ep') or '')}")
+        status = it.get("ep") or ""
+        plain_parts.append(f"• <b>{html.escape(it['title'])}</b> — {html.escape(it.get('time') or '')} {html.escape(status)}")
     plain_html = "\n".join(plain_parts)
 
     nav = []
@@ -285,11 +306,13 @@ def build_detail_content(detail: dict, session_id: str, idx: int) -> tuple[str, 
     genres = detail.get("genres") or []
 
     meta_rows = []
-    for key in ("Status", "Type" if "Type" in meta else "Tipe", "Studio", "Network", "Season",
-                "Negara", "Durasi", "Episode", "Tanggal rilis", "Subber"):
+    seen_meta = set()
+    for key in META_ORDER:
         val = meta.get(key)
-        if val:
-            meta_rows.append(f"<tr><td><b>{html.escape(key)}</b></td><td>{html.escape(val)}</td></tr>")
+        en_key = META_LABEL_MAP.get(key, key)
+        if val and en_key not in seen_meta:
+            seen_meta.add(en_key)
+            meta_rows.append(f"<tr><td><b>{html.escape(en_key)}</b></td><td>{html.escape(val)}</td></tr>")
     meta_table = f"<table compact>{''.join(meta_rows)}</table>" if meta_rows else ""
     genre_line = ("<p><b>Genres:</b> " + html.escape(", ".join(genres)) + "</p>") if genres else ""
 
@@ -307,9 +330,13 @@ def build_detail_content(detail: dict, session_id: str, idx: int) -> tuple[str, 
     )
 
     plain_parts = [f"<b>🐉 {title}</b>", ""]
-    for key in ("Status", "Tipe", "Studio", "Network", "Season", "Negara", "Durasi", "Episode", "Subber"):
-        if meta.get(key):
-            plain_parts.append(f"• <b>{key}:</b> {html.escape(meta[key])}")
+    seen_plain = set()
+    for key in META_ORDER:
+        val = meta.get(key)
+        en_key = META_LABEL_MAP.get(key, key)
+        if val and en_key not in seen_plain:
+            seen_plain.add(en_key)
+            plain_parts.append(f"• <b>{en_key}:</b> {html.escape(val)}")
     if genres:
         plain_parts.append(f"• <b>Genres:</b> {html.escape(', '.join(genres))}")
     plain_parts.append("")

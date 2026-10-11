@@ -140,7 +140,7 @@ def probe_anichin(raw_url: str) -> dict:
         try:
             detail = _scrape_series_latest_episode(url)
         except Exception as e:
-            log.debug("Anichin series fallback gagal | url=%s err=%r", url, e)
+            log.debug("Anichin series fallback failed | url=%s err=%r", url, e)
             detail = None
         if detail and detail.get("episode_url"):
             ep_url = detail["episode_url"]
@@ -158,7 +158,7 @@ def probe_anichin(raw_url: str) -> dict:
     try:
         stream = extractor.resolve_stream_source(post.get("servers") or [], url) or {}
     except Exception as e:
-        log.debug("Anichin server stream probe gagal | url=%s err=%r", url, e)
+        log.debug("Anichin server stream probe failed | url=%s err=%r", url, e)
 
     # Halaman tanpa mirror resolusi TIDAK langsung dianggap gagal: selama ada
     # server streaming, halaman masih bisa diunduh (kualitas server yang mengisi
@@ -168,13 +168,13 @@ def probe_anichin(raw_url: str) -> dict:
         if servers:
             labels = [s.get("label") or "server" for s in servers]
             raise RuntimeError(
-                f"Episode ini tidak menyediakan mirror unduh dan server videonya "
-                f"({', '.join(labels)}) sudah tidak aktif di web Anichin. "
-                "Coba pilih episode Donghua lain."
+                f"This episode has no download mirrors and its video servers "
+                f"({', '.join(labels)}) are no longer active on Anichin. "
+                "Please try another episode."
             )
         raise RuntimeError(
-            "Tidak ada link unduh (mirror) maupun server video di halaman Anichin ini. "
-            "Kalau ini halaman series, buka salah satu episode-nya."
+            "No download mirrors or streaming servers found on this Anichin page. "
+            "If this is a series page, open one of its episodes."
         )
 
     res_list = []
@@ -190,7 +190,7 @@ def probe_anichin(raw_url: str) -> dict:
             try:
                 expanded = extractor.list_resolutions(m.get("url") or "", referer=url)
             except Exception as e:
-                log.debug("Anichin expand Multi gagal | url=%s err=%r", m.get("url"), e)
+                log.debug("Anichin expand Multi failed | url=%s err=%r", m.get("url"), e)
                 expanded = []
             if expanded:
                 for r in expanded:
@@ -323,7 +323,7 @@ def _download_gdrive(gid: str, out_path: str) -> int:
     if "text/html" in ct:
         text = r.content.decode("utf-8", "ignore")
         if "quota" in text.lower():
-            raise RuntimeError("Kuota Google Drive terlampaui.")
+            raise RuntimeError("Google Drive quota exceeded.")
         m = re.search(r'name="confirm"\s+value="([^"]+)"', text)
         if not m:
             m = re.search(r'href="(/uc\?export=download[^"]*confirm=[^"]+)"', text)
@@ -333,7 +333,7 @@ def _download_gdrive(gid: str, out_path: str) -> int:
                     headers=h, impersonate="chrome", timeout=120, stream=True,
                 )
             else:
-                raise RuntimeError("Google Drive butuh konfirmasi yang tidak dikenali.")
+                raise RuntimeError("Google Drive requires an unrecognized confirmation.")
         else:
             r = curl_requests.get(
                 "https://drive.usercontent.google.com/download",
@@ -343,7 +343,7 @@ def _download_gdrive(gid: str, out_path: str) -> int:
             ct = (r.headers.get("content-type") or "").lower()
 
     if r.status_code != 200 or "html" in ct:
-        raise RuntimeError(f"Google Drive tidak mengembalikan video ({r.status_code}, {ct or 'no ct'}).")
+        raise RuntimeError(f"Google Drive did not return a video ({r.status_code}, {ct or 'no ct'}).")
 
     total = 0
     with open(out_path, "wb") as f:
@@ -352,7 +352,7 @@ def _download_gdrive(gid: str, out_path: str) -> int:
                 f.write(chunk)
                 total += len(chunk)
                 if total > MAX_TG_SIZE:
-                    raise FileSizeLimitExceeded("File melebihi batas 2GB.")
+                    raise FileSizeLimitExceeded("File exceeds the 2GB limit.")
     return total
 
 
@@ -368,10 +368,10 @@ def _download_stream(url: str, out_path: str, referer: str = "") -> int:
         with_headers["Referer"] = extractor._header_safe(referer)
     r = curl_requests.get(url, headers=with_headers, impersonate="chrome", timeout=120, stream=True)
     if r.status_code != 200:
-        raise RuntimeError(f"Host file membalas HTTP {r.status_code}.")
+        raise RuntimeError(f"File host returned HTTP {r.status_code}.")
     ct = (r.headers.get("content-type") or "").lower()
     if "html" in ct:
-        raise RuntimeError(f"Host file mengembalikan HTML, bukan video ({ct}).")
+        raise RuntimeError(f"File host returned HTML instead of video ({ct}).")
     total = 0
     try:
         with open(out_path, "wb") as f:
@@ -380,7 +380,7 @@ def _download_stream(url: str, out_path: str, referer: str = "") -> int:
                     f.write(chunk)
                     total += len(chunk)
                     if total > MAX_TG_SIZE:
-                        raise FileSizeLimitExceeded("File melebihi batas 2GB.")
+                        raise FileSizeLimitExceeded("File exceeds the 2GB limit.")
     finally:
         try:
             r.close()
@@ -464,7 +464,7 @@ async def _download_segments_parallel(
                               timeout=120, stream=True)
         try:
             if r.status_code not in (200, 206):
-                raise RuntimeError(f"Segmen balas HTTP {r.status_code}.")
+                raise RuntimeError(f"Segment returned HTTP {r.status_code}.")
             n = 0
             with open(seg_path, "wb") as f:
                 for ch in r.iter_content(chunk_size=256 * 1024):
@@ -487,7 +487,7 @@ async def _download_segments_parallel(
             stats.sample(done_bytes)
             over = done_bytes > MAX_TG_SIZE
         if over:
-            raise FileSizeLimitExceeded("File melebihi batas 2GB.")
+            raise FileSizeLimitExceeded("File exceeds the 2GB limit.")
         if notify and status_msg_id:
             async with lock:
                 await stats.emit(
@@ -523,7 +523,7 @@ async def _download_segments_parallel(
         for i in range(1, count + 1):
             p = os.path.join(directory, f"{i:06d}.bin")
             if not os.path.exists(p) or os.path.getsize(p) == 0:
-                raise RuntimeError(f"Segmen {i - 1} tidak lengkap.")
+                raise RuntimeError(f"Segment {i - 1} is incomplete.")
             paths.append(p)
         return paths
 
@@ -551,7 +551,7 @@ async def _download_segments_parallel(
         )
         if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
             err = (res.stderr or b"").decode("utf-8", "replace").strip()[-300:]
-            raise RuntimeError(f"ffmpeg mux fMP4 gagal (exit={res.returncode}): {err or 'output kosong'}")
+            raise RuntimeError(f"ffmpeg fMP4 mux failed (exit={res.returncode}): {err or 'empty output'}")
         shutil.rmtree(work_dir, ignore_errors=True)
         return os.path.getsize(out_path)
 
@@ -575,7 +575,7 @@ async def _download_segments_parallel(
     # Jika jalur 1 gagal, fallback ke jalur 2 (byte-concat lalu remux).
     if res1.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         err1 = (res1.stderr or b"").decode("utf-8", "replace").strip()[-300:]
-        log.warning("ffmpeg -f concat gagal (exit=%s: %s), coba byte-concat", res1.returncode, err1)
+        log.warning("ffmpeg -f concat failed (exit=%s: %s), trying byte-concat", res1.returncode, err1)
         concat_ts = out_path + ".ts"
         try:
             await asyncio.to_thread(_byte_concat, video_paths, concat_ts)
@@ -588,7 +588,7 @@ async def _download_segments_parallel(
             )
             if res2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
                 err2 = (res2.stderr or b"").decode("utf-8", "replace").strip()[-300:]
-                raise RuntimeError(f"ffmpeg concat gagal (exit={res2.returncode}): {err2 or err1 or 'output kosong'}")
+                raise RuntimeError(f"ffmpeg concat failed (exit={res2.returncode}): {err2 or err1 or 'empty output'}")
         finally:
             if os.path.exists(concat_ts):
                 try:
@@ -671,9 +671,9 @@ async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
     rc = proc.returncode if proc.returncode is not None else proc.poll()
     if rc not in (0, None) or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         msg = (err_buf or b"").decode("utf-8", "replace").strip()[-400:]
-        raise RuntimeError(f"ffmpeg HLS gagal: {msg}")
+        raise RuntimeError(f"ffmpeg HLS failed: {msg}")
     if os.path.getsize(out_path) > MAX_TG_SIZE:
-        raise FileSizeLimitExceeded("File melebihi batas 2GB.")
+        raise FileSizeLimitExceeded("File exceeds the 2GB limit.")
     stats.log_done("Anichin download", label="Anichin")
 
 
@@ -705,7 +705,7 @@ async def anichin_server(
 
     servers = probe.get("servers") or []
     if not servers:
-        raise RuntimeError("Tidak ada server streaming di halaman ini.")
+        raise RuntimeError("No streaming servers found on this page.")
 
     if not metadata_ready and status_msg_id:
         from handlers.dl.progress import edit_status
@@ -716,7 +716,7 @@ async def anichin_server(
     if not _has_stream(info):
         info = await asyncio.to_thread(extractor.resolve_stream_source, servers, url)
     if not _has_stream(info):
-        raise RuntimeError("Tidak ada server streaming yang bisa diunduh (OK.ru/Rumble/StreamWish tidak tersedia).")
+        raise RuntimeError("No downloadable streaming server available (OK.ru/Rumble/StreamWish unavailable).")
 
     kind = info.get("kind") or "okru"
     want = 0
@@ -736,7 +736,7 @@ async def anichin_server(
     if kind == "okru":
         variant = extractor.pick_okru_variant(info.get("variants") or [], want)
         if not variant:
-            raise RuntimeError("Varian OK.ru tidak ditemukan.")
+            raise RuntimeError("OK.ru variant not found.")
         height = variant.get("height") or 0
         width = variant.get("width") or 0
         est_total = _est_bytes(info.get("duration"), variant.get("bandwidth"))
@@ -745,14 +745,14 @@ async def anichin_server(
                 extractor.okru_segments, variant, info.get("hls_master") or ""
             )
         except Exception as e:
-            log.warning("Anichin OK.ru playlist segmen gagal | err=%r", e)
+            log.warning("Anichin OK.ru segment playlist failed | err=%r", e)
             got = {}
         segments = got.get("segments") or []
         if not segments:
             # Fallback: ffmpeg serial pada master playlist.
             variant_url = variant.get("url") or ""
             if not variant_url:
-                raise RuntimeError("URL varian OK.ru tidak ditemukan.")
+                raise RuntimeError("OK.ru variant URL not found.")
             info = dict(info, _fallback_url=variant_url)
     else:
         segments = info.get("segments") or []
@@ -792,11 +792,11 @@ async def anichin_server(
                 title=title, notify=bool(status_msg_id), est_total=est_total,
             )
         else:
-            raise RuntimeError("Tidak ada segmen video yang bisa diunduh.")
+            raise RuntimeError("No video segments available to download.")
 
         if not os.path.exists(temp_video) or os.path.getsize(temp_video) == 0:
-            raise RuntimeError("File hasil unduhan server kosong.")
-        log.info("Anichin server sukses | title=%r kind=%s", title, kind)
+            raise RuntimeError("Server download produced an empty file.")
+        log.info("Anichin server success | title=%r kind=%s", title, kind)
 
         if fmt_key == "mp3":
             mp3_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp3")
@@ -807,7 +807,7 @@ async def anichin_server(
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             if res_mp3.returncode != 0 or not os.path.exists(mp3_path):
-                raise RuntimeError("Gagal mengekstrak MP3 dari video server.")
+                raise RuntimeError("Failed to extract MP3 from server video.")
             return {
                 "path": mp3_path,
                 "title": title,
@@ -864,12 +864,12 @@ async def anichin_download(
     mirrors = probe.get("mirrors") or []
     stream = probe.get("stream") or {}
     if not mirrors and not _has_stream(stream):
-        raise RuntimeError("Tidak ada link unduh di halaman ini.")
+        raise RuntimeError("No download links found on this page.")
 
     want = (format_id or "").strip().lower()
     # Halaman tanpa mirror tapi punya server streaming: langsung ke jalur server.
     if not mirrors:
-        log.info("Anichin tanpa mirror -> langsung server streaming | url=%s", url)
+        log.info("Anichin no mirrors -> straight to streaming server | url=%s", url)
         return await anichin_server(
             raw_url, fmt_key, bot, chat_id, status_msg_id,
             format_id=format_id, metadata_ready=metadata_ready,
@@ -920,7 +920,7 @@ async def anichin_download(
     if not candidates:
         # Fallback: server streaming (OK.ru / Rumble / VidHide-StreamWish) — tanpa captcha.
         if _has_stream(stream):
-            reason = "semua provider captcha" if captcha_blocked else "mirror kosong"
+            reason = "all providers captcha" if captcha_blocked else "empty mirror"
             log.info(
                 "Anichin %s -> fallback server streaming | url=%s kind=%s captcha=%s",
                 reason, url, stream.get("kind"), sorted(set(captcha_blocked)),
@@ -931,13 +931,13 @@ async def anichin_download(
             )
         if captcha_blocked:
             raise RuntimeError(
-                "Link unduh dilindungi captcha ("
+                "Download link is protected by captcha ("
                 + ", ".join(sorted(set(captcha_blocked)))
-                + "). Coba resolusi lain atau buka di browser."
+                + "). Try another resolution or open it in a browser."
             )
         raise RuntimeError(
-            "Gagal me-resolve link unduh (shortener/mirror mati). "
-            "Coba resolusi lain."
+            "Failed to resolve download link (shortener/mirror dead). "
+            "Try another resolution."
         )
 
     log.info(
@@ -961,7 +961,7 @@ async def anichin_download(
                 if "drive.google" in file_url:
                     gid = _gdrive_id(file_url)
                     if not gid:
-                        raise RuntimeError("Google Drive id tidak ditemukan.")
+                        raise RuntimeError("Google Drive ID not found.")
                     await asyncio.to_thread(_download_gdrive, gid, temp_video)
                 else:
                     direct = await asyncio.to_thread(
@@ -970,8 +970,8 @@ async def anichin_download(
                     await asyncio.to_thread(_download_stream, direct, temp_video, cand.get("files_url") or url)
 
                 if not os.path.exists(temp_video) or os.path.getsize(temp_video) == 0:
-                    raise RuntimeError("File hasil unduhan kosong.")
-                log.info("Anichin host sukses | host=%s label=%s", host, cand.get("label"))
+                    raise RuntimeError("Downloaded file is empty.")
+                log.info("Anichin host success | host=%s label=%s", host, cand.get("label"))
                 break
             except Exception as e:
                 last_err = e
@@ -986,11 +986,11 @@ async def anichin_download(
                 continue
         else:
             if failed_hosts:
-                log.info("Anichin semua host mirror gagal | hosts=%s", failed_hosts)
+                log.info("Anichin all mirror hosts failed | hosts=%s", failed_hosts)
             # Semua host mirror gagal -> coba server streaming (OK.ru/Rumble/VidHide).
             if _has_stream(stream):
                 log.info(
-                    "Anichin semua host mirror gagal -> fallback server streaming | url=%s kind=%s",
+                    "Anichin all mirror hosts failed -> fallback server streaming | url=%s kind=%s",
                     url, stream.get("kind"),
                 )
                 shutil.rmtree(work_dir, ignore_errors=True)
@@ -998,7 +998,7 @@ async def anichin_download(
                     raw_url, fmt_key, bot, chat_id, status_msg_id,
                     format_id=format_id, metadata_ready=metadata_ready,
                 )
-            raise RuntimeError(f"Semua host gagal. Terakhir: {last_err}")
+            raise RuntimeError(f"All hosts failed. Last error: {last_err}")
 
         label = target.get("label") or "video"
         if fmt_key == "mp3":
@@ -1010,7 +1010,7 @@ async def anichin_download(
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             if res_mp3.returncode != 0 or not os.path.exists(mp3_path):
-                raise RuntimeError("Gagal mengekstrak MP3 dari video.")
+                raise RuntimeError("Failed to extract MP3 from video.")
             return {
                 "path": mp3_path,
                 "title": title,

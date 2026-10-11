@@ -30,6 +30,7 @@ from curl_cffi import requests as curl_requests
 
 from .constants import (
     BASE_URL,
+    DAY_EN_MAP,
     HTTP_TIMEOUT,
     INDEX_TTL,
     MAX_RESULTS,
@@ -230,7 +231,8 @@ def fetch_schedule() -> list[dict]:
 
     Struktur: `div.bixbox.schedulepage.sch_<english_day>` berisi N `div.bsx`.
     Label hari Indonesia diambil dari `div.listSchh > h2` (urut Senin..Minggu,
-    lalu "Acak"). -> [{day, items: [{title, url, thumbnail, jam, ep}]}]
+    lalu "Acak"), lalu diterjemahkan ke Inggris (`DAY_EN_MAP`) supaya UI tetap
+    English. -> [{day, items: [{title, url, thumbnail, time, ep}]}]
     """
     now = time.time()
     if SCHEDULE_CACHE.get("days") and now - SCHEDULE_CACHE.get("ts", 0) < INDEX_TTL:
@@ -242,12 +244,12 @@ def fetch_schedule() -> list[dict]:
 
     soup = BeautifulSoup(raw, "html.parser")
 
-    # Label hari (Indonesia) urut dari div.listSchh.
+    # Label hari (Indonesia) urut dari div.listSchh -> terjemahkan ke Inggris.
     labels = []
     for l in soup.select("div.listSchh h2"):
         t = _clean(l.get_text(" ", strip=True))
         if t:
-            labels.append(t)
+            labels.append(DAY_EN_MAP.get(t.lower(), t))
 
     def _parse_items(block) -> list[dict]:
         items = []
@@ -263,12 +265,23 @@ def fetch_schedule() -> list[dict]:
             href = a["href"].strip()
             if href.startswith("/"):
                 href = BASE_URL + href
+            # `span.epx` = status rilis berbahasa Indonesia: "Jam HH:MM" (jadwal)
+            # atau "sudah rilis" (sudah tayang). Normalisasi ke English bersih.
+            ep_raw = _clean(ep_el.get_text(" ", strip=True)) if ep_el else ""
+            low_ep = ep_raw.lower()
+            if "sudah rilis" in low_ep or "sudah tayang" in low_ep or "tayang" in low_ep:
+                ep_txt = "Aired"
+            elif re.match(r"^Jam\s+\d{1,2}:\d{2}", ep_raw):
+                ep_txt = "Scheduled"
+            else:
+                ep_txt = ep_raw
             items.append({
                 "title": _clean(tt.get_text(" ", strip=True)) if tt else txt[:80],
                 "url": href,
                 "thumbnail": (img.get("src") or "").strip() if img else "",
+                "time": jm.group(1) if jm else "",
                 "jam": jm.group(1) if jm else "",
-                "ep": _clean(ep_el.get_text(" ", strip=True)) if ep_el else "",
+                "ep": ep_txt,
             })
         return items
 

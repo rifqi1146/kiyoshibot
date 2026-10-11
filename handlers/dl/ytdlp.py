@@ -34,6 +34,20 @@ YT_SAFE_EXTRACTOR_ARGS = [
     "youtube:player_client=default,web_embedded;player_skip=tv,tv_downgraded"
 ]
 
+
+def _spawn_sync(cmd: list[str], **kwargs):
+    """`subprocess.Popen` sinkron — WAJIB dipanggil via `asyncio.to_thread`.
+
+    PENTING (uvloop SIGSEGV): JANGAN pakai `asyncio.create_subprocess_exec`!
+    `uvloop.create_subprocess_exec` memakai `fork()` lewat libuv; di proses
+    Python multi-thread (curl_cffi / patchright / sqlite) `fork()` bisa
+    menabrak state libc dan anak proses mati `SIGSEGV` (`exit=-11`) tepat saat
+    `execve` — terkonfirmasi di dmesg (`python[..]: segfault .. in libc.so.6`).
+    `subprocess.Popen` memakai `posix_spawnp` (CLONE_VM | CLONE_VFORK) yang
+    100% aman terhadap kondisi itu.
+    """
+    return subprocess.Popen(cmd, **kwargs)
+
 def _clean_percent(value: str) -> float:
     text = str(value or "").replace("%", "").strip()
     try:
@@ -222,7 +236,9 @@ async def _kill_proc(proc, label: str, job_id: str):
         return
     try:
         proc.kill()
-        await proc.wait()
+        # `proc` bisa `subprocess.Popen` sinkron (posix_spawn) — `wait()` sinkron
+        # harus dijalankan di thread supaya tidak memblokir event loop.
+        await asyncio.to_thread(proc.wait)
         log.warning("%s process killed | job_id=%s", label, job_id)
     except ProcessLookupError:
         return
@@ -256,9 +272,16 @@ async def gallerydl_fallback(url: str, job_id: str, bot, chat_id, status_msg_id,
         ])
         log.info("Running gallery-dl fallback | url=%s job_id=%s", url, job_id)
         log.debug("gallery-dl command: %s", " ".join(cmd))
-        proc = await asyncio.create_subprocess_exec(*cmd, cwd=job_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        # `subprocess.Popen` via thread (posix_spawnp) — lihat catatan `_spawn_sync`:
+        # `create_subprocess_exec` di uvloop rawan SIGSEGV (-11).
+        proc = await asyncio.to_thread(
+            _spawn_sync, cmd, cwd=job_dir,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=GALLERYDL_TIMEOUT)
+            stdout, stderr = await asyncio.wait_for(
+                asyncio.to_thread(proc.communicate), timeout=GALLERYDL_TIMEOUT
+            )
         except asyncio.TimeoutError:
             await _kill_proc(proc, "gallery-dl", job_id)
             log.warning("gallery-dl timeout | url=%s job_id=%s timeout=%ss", url, job_id, GALLERYDL_TIMEOUT)
@@ -466,7 +489,12 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         nonlocal update_interval
         log.info("Running yt-dlp | url=%s job_id=%s fmt_key=%s", url, job_id, fmt_key)
         log.debug("yt-dlp command | %s", " ".join(cmd))
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        # `subprocess.Popen` via thread (posix_spawnp) — lihat catatan `_spawn_sync`:
+        # `create_subprocess_exec` di uvloop rawan SIGSEGV (-11) saat proses
+        # punya C-thread aktif (curl_cffi/patchright/sqlite).
+        proc = await asyncio.to_thread(
+            _spawn_sync, cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
         last_pct = -1.0
         stats = TransferStats()
         stdout_lines = []
@@ -475,7 +503,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         async def read_stdout():
             nonlocal last_pct
             while True:
-                line = await proc.stdout.readline()
+                line = await asyncio.to_thread(proc.stdout.readline)
                 if not line:
                     break
                 raw = line.decode(errors="ignore").strip()
@@ -510,7 +538,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
 
         async def read_stderr():
             while True:
-                line = await proc.stderr.readline()
+                line = await asyncio.to_thread(proc.stderr.readline)
                 if not line:
                     break
                 raw = line.decode(errors="ignore").rstrip()
@@ -520,7 +548,7 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         stdout_task = asyncio.create_task(read_stdout())
         stderr_task = asyncio.create_task(read_stderr())
         try:
-            await asyncio.wait_for(proc.wait(), timeout=YTDLP_TIMEOUT)
+            await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=YTDLP_TIMEOUT)
         except asyncio.TimeoutError:
             await _kill_proc(proc, "yt-dlp", job_id)
             raise RuntimeError(f"yt-dlp timeout after {YTDLP_TIMEOUT}s")

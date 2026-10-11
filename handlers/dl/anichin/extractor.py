@@ -109,7 +109,7 @@ def scrape_post(url: str) -> dict:
 
     code, raw, _ = _get(url)
     if code != 200 or not raw:
-        raise RuntimeError(f"HTTP {code} saat mengambil halaman Anichin")
+        raise RuntimeError(f"HTTP {code} while fetching Anichin page")
 
     soup = BeautifulSoup(raw, "html.parser")
     h1 = soup.select_one("h1.entry-title") or soup.find("h1")
@@ -218,7 +218,7 @@ def resolve_shortener(url: str, referer: str = "") -> str:
     # mencoba apa pun supaya pesan errornya jujur dan tidak menyesatkan.
     if is_captcha_shortener(u) or is_captcha_shortener(final) or "h-captcha" in raw or "g-recaptcha" in raw:
         log.warning(
-            "Anichin shortener butuh captcha (tidak bisa dilewati HTTP) | url=%s host=%s",
+            "Anichin shortener requires captcha (cannot be bypassed via HTTP) | url=%s host=%s",
             u, host or urlsplit(u).hostname,
         )
         return ""
@@ -324,7 +324,7 @@ def resolve_host_links(files_url: str) -> list[dict]:
 
     m = re.search(r"/mirstats\.php\?([^\"']+)", raw)
     if not m:
-        log.warning("Anichin mirstats endpoint tidak ditemukan | %s", files_url)
+        log.warning("Anichin mirstats endpoint not found | %s", files_url)
         return []
 
     api = "https://www.mirrored.to/mirstats.php?" + html_mod.unescape(m.group(1))
@@ -336,7 +336,7 @@ def resolve_host_links(files_url: str) -> list[dict]:
         time.sleep(MIRSTATS_POLL_DELAY)
 
     if not body:
-        log.warning("Anichin mirstats kosong | api=%s", api[:110])
+        log.warning("Anichin mirstats empty | api=%s", api[:110])
         return []
 
     soup = BeautifulSoup(body, "html.parser")
@@ -387,7 +387,7 @@ def resolve_out_url(host_entry: dict, referer: str = "") -> str:
             allow_redirects=True,
         )
     except Exception as e:
-        log.warning("Anichin /out_url gagal | host=%s err=%r", host_entry.get("host"), e)
+        log.warning("Anichin /out_url failed | host=%s err=%r", host_entry.get("host"), e)
         return ""
 
     body = html_mod.unescape(r.text or "")
@@ -428,7 +428,7 @@ def resolve_out_url(host_entry: dict, referer: str = "") -> str:
                 timeout=HTTP_TIMEOUT, allow_redirects=False,
             )
         except Exception as e:
-            log.warning("Anichin dl_go gagal | host=%s err=%r", host_entry.get("host"), e)
+            log.warning("Anichin dl_go failed | host=%s err=%r", host_entry.get("host"), e)
             return ""
         loc = html_mod.unescape(r2.headers.get("Location") or "")
         if loc:
@@ -467,7 +467,7 @@ def resolve_out_url(host_entry: dict, referer: str = "") -> str:
                     timeout=HTTP_TIMEOUT, allow_redirects=True,
                 )
             except Exception as e:
-                log.warning("Anichin dl_go stage2 gagal | host=%s err=%r", host_entry.get("host"), e)
+                log.warning("Anichin dl_go stage2 failed | host=%s err=%r", host_entry.get("host"), e)
                 return fa2
             # Host akhir biasanya mengembalikan halaman unduh; URL-nya sendiri
             # sudah cukup untuk diunduh (server menerima POST/GET form-nya).
@@ -766,7 +766,7 @@ def _filesdl_direct(url: str, referer: str = "") -> str:
                     "Referer": _header_safe(referer) or "https://www.mirrored.to/",
                 }, timeout=HTTP_TIMEOUT, allow_redirects=True)
         except Exception as e:
-            log.warning("FilesDLi fetch gagal | url=%s err=%r", url, e)
+            log.warning("FilesDLi fetch failed | url=%s err=%r", url, e)
             continue
         body = html_mod.unescape(r.text or "")
         if body:
@@ -1055,7 +1055,7 @@ def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
             try:
                 got = resolve_okru(u)
             except Exception as e:
-                log.warning("OK.ru resolve gagal | url=%s err=%r", u, e)
+                log.warning("OK.ru resolve failed | url=%s err=%r", u, e)
                 continue
             if got and got.get("variants"):
                 got["kind"] = "okru"
@@ -1071,7 +1071,7 @@ def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
         try:
             got = resolve_rumble(u)
         except Exception as e:
-            log.warning("Rumble resolve gagal | url=%s err=%r", u, e)
+            log.warning("Rumble resolve failed | url=%s err=%r", u, e)
             continue
         if got and (got.get("segments") or got.get("direct_url")):
             got["embed"] = u
@@ -1089,7 +1089,7 @@ def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
         try:
             got = resolve_dailymotion(u)
         except Exception as e:
-            log.warning("Dailymotion resolve gagal | url=%s err=%r", u, e)
+            log.warning("Dailymotion resolve failed | url=%s err=%r", u, e)
             continue
         if got and got.get("segments"):
             got["embed"] = u
@@ -1106,7 +1106,7 @@ def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
         try:
             got = resolve_embed_hls(u)
         except Exception as e:
-            log.warning("VidHide resolve gagal | url=%s err=%r", u, e)
+            log.warning("VidHide resolve failed | url=%s err=%r", u, e)
             continue
         if got and got.get("segments"):
             got["kind"] = "hls"
@@ -1138,7 +1138,7 @@ def resolve_embed_hls(embed_url: str) -> dict:
                 text = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)),
                                     m.group(4).split("|"))
         except Exception as e:
-            log.debug("VidHide unpack gagal | url=%s err=%r", embed_url, e)
+            log.debug("VidHide unpack failed | url=%s err=%r", embed_url, e)
 
     m3 = re.search(r'https?://[^\s"\'<>\\]+\.m3u8[^\s"\'<>\\]*', text)
     if not m3:
@@ -1315,7 +1315,7 @@ def resolve_okru(embed_url: str) -> dict:
         )
         data = r.json() or {}
     except Exception as e:
-        log.warning("OK.ru metadata gagal | mid=%s err=%r", mid, e)
+        log.warning("OK.ru metadata failed | mid=%s err=%r", mid, e)
         return {}
 
     dims = _okru_dims(data.get("hlsManifestUrl") or "")
