@@ -143,7 +143,18 @@ def probe_anichin(raw_url: str) -> dict:
                 post = ep_post
                 url = ep_url
 
-    if not mirrors:
+    # Server streaming (OK.ru) — jalur cadangan paling andal. Di-resolve di sini
+    # supaya picker bisa memakai tinggi nyata dan download worker tidak fetch ulang.
+    okru = {}
+    try:
+        okru = extractor.resolve_stream_source(post.get("servers") or [], url) or {}
+    except Exception as e:
+        log.debug("Anichin OK.ru probe gagal | url=%s err=%r", url, e)
+
+    # Halaman tanpa mirror resolusi TIDAK langsung dianggap gagal: selama ada
+    # server streaming OK.ru, halaman masih bisa diunduh (kualitas OK.ru yang
+    # mengisi picker). Ini yang mencegah "No valid resolutions available."
+    if not mirrors and not (okru.get("variants")):
         raise RuntimeError(
             "Tidak ada link unduh (mirror) di halaman Anichin ini. "
             "Kalau ini halaman series, buka salah satu episode-nya."
@@ -207,13 +218,47 @@ def probe_anichin(raw_url: str) -> dict:
         })
 
     res_list.sort(key=lambda x: x.get("height") or 0, reverse=True)
+
+    # Kalau halaman tidak punya mirror resolusi sama sekali, tawarkan kualitas
+    # OK.ru supaya picker tidak kosong ("No valid resolutions available").
+    # Kalau mirror ADA, OK.ru TIDAK ditambahkan ke picker (akan membanjiri daftar
+    # dengan tinggi "nyata" yang berbeda dari label nominal) — OK.ru tetap dipakai
+    # otomatis sebagai fallback saat semua host mirror gagal.
+    if not res_list and okru.get("variants"):
+        for v in reversed(okru["variants"]):
+            h = v.get("height") or 0
+            if h <= 0:
+                continue
+            fid = str(h)
+            if fid in seen:
+                continue
+            seen.add(fid)
+            res_list.append({
+                "height": h,
+                "format_id": fid,
+                "label": f"{h}p",
+                "has_audio": True,
+                "filesize": 0,
+                "total_size": 0,
+                "mirror_url": okru.get("embed"),
+                "server": "okru",
+            })
+        res_list.sort(key=lambda x: x.get("height") or 0, reverse=True)
+
     probe = {
         "title": post.get("title") or "Anichin Video",
         "thumbnail": post.get("thumbnail") or "",
         "mirrors": mirrors,
         "servers": post.get("servers") or [],
         "res_list": res_list,
+        "okru": okru,
     }
+    log.info(
+        "Anichin probe | title=%r mirrors=%s res=%s okru=%s servers=%d",
+        probe["title"], len(mirrors), [r["format_id"] for r in res_list],
+        [f'{v["height"]}p' for v in (okru.get("variants") or []) if v.get("height")],
+        len(probe["servers"]),
+    )
     cache_probe(url, probe)
     # Kalau URL asli adalah halaman series, simpan juga di key URL series supaya
     # probe kedua tidak resolve ulang (download worker memakai `raw_url` asli).
@@ -281,7 +326,10 @@ def _download_stream(url: str, out_path: str, referer: str = "") -> int:
 
     with_headers = {"User-Agent": UA}
     if referer:
-        with_headers["Referer"] = referer
+        # Nama file mirrored.to bisa memuat karakter Unicode (mis. `Ⅴ` U+2164);
+        # header Referer WAJIB ASCII/latin-1 atau curl_cffi melempar
+        # UnicodeEncodeError yang menyesatkan.
+        with_headers["Referer"] = extractor._header_safe(referer)
     r = curl_requests.get(url, headers=with_headers, impersonate="chrome", timeout=120, stream=True)
     if r.status_code != 200:
         raise RuntimeError(f"Host file membalas HTTP {r.status_code}.")
@@ -305,6 +353,325 @@ def _download_stream(url: str, out_path: str, referer: str = "") -> int:
     return total
 
 
+def _est_bytes(duration, bandwidth) -> int:
+    """Estimasi total byte dari `duration × bandwidth / 8` (aman terhadap tipe)."""
+    try:
+        dur = float(duration or 0)
+        bw = float(bandwidth or 0)
+    except (TypeError, ValueError):
+        return 0
+    if dur <= 0 or bw <= 0:
+        return 0
+    return int(dur * bw / 8)
+
+
+async def _download_segments_parallel(
+    segments: list[str],
+    referer: str,
+    out_path: str,
+    *,
+    bot=None, chat_id=None, status_msg_id=None,
+    title: str = "Anichin", notify: bool = False,
+    est_total: int = 0,
+    concurrency: int = 12,
+) -> int:
+    """Unduh segmen `.ts` OK.ru paralel lalu concat ke satu MP4.
+
+    Jauh lebih cepat dari ffmpeg serial (~1.1 MB/s): 12 koneksi paralel pada
+    CDN OK.ru. Tiap segmen ditulis ke file sendiri (bukan ditahan di RAM) supaya
+    episode besar tidak menghabiskan memori; concat byte-level (semua segmen
+    MPEG-TS) lalu ffmpeg `-c copy -movflags +faststart` -> MP4 faststart.
+    """
+    import curl_cffi.requests as curl_requests
+    from handlers.dl.progress import TransferStats
+
+    total_segs = len(segments)
+    stats = TransferStats(max(0, int(est_total or 0)))
+    work_dir = out_path + ".parts"
+    os.makedirs(work_dir, exist_ok=True)
+    concat_path = out_path + ".ts"
+    lock = asyncio.Lock()
+    done_bytes = 0
+    sem = asyncio.Semaphore(max(1, int(concurrency or 12)))
+
+    def _fetch(idx: int, url: str) -> int:
+        seg_path = os.path.join(work_dir, f"{idx:06d}.ts")
+        headers = {"User-Agent": UA}
+        if referer:
+            headers["Referer"] = referer
+        r = curl_requests.get(url, headers=headers, impersonate="chrome",
+                              timeout=120, stream=True)
+        try:
+            if r.status_code not in (200, 206):
+                raise RuntimeError(f"Segmen {idx} balas HTTP {r.status_code}.")
+            n = 0
+            with open(seg_path, "wb") as f:
+                for ch in r.iter_content(chunk_size=256 * 1024):
+                    if ch:
+                        f.write(ch)
+                        n += len(ch)
+            return n
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+
+    async def _worker(idx: int, url: str):
+        nonlocal done_bytes
+        async with sem:
+            size = await asyncio.to_thread(_fetch, idx, url)
+        async with lock:
+            done_bytes += size
+            stats.sample(done_bytes)
+            over = done_bytes > MAX_TG_SIZE
+        if over:
+            raise FileSizeLimitExceeded("File melebihi batas 2GB.")
+        if notify and status_msg_id:
+            async with lock:
+                await stats.emit(
+                    bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
+                    title=title, kind="Anichin download", label="Anichin",
+                )
+
+    tasks = [asyncio.create_task(_worker(i, u)) for i, u in enumerate(segments)]
+    try:
+        await asyncio.gather(*tasks)
+    except Exception:
+        for t in tasks:
+            t.cancel()
+        raise
+
+    # Concat berurutan dari file segmen (streaming, bukan menahan semua di RAM).
+    with open(concat_path, "wb") as out:
+        for i in range(total_segs):
+            seg_path = os.path.join(work_dir, f"{i:06d}.ts")
+            if not os.path.exists(seg_path) or os.path.getsize(seg_path) == 0:
+                raise RuntimeError(f"Segmen {i} tidak lengkap.")
+            with open(seg_path, "rb") as src:
+                shutil.copyfileobj(src, out, 1024 * 1024)
+    stats.log_done("Anichin download", label="Anichin")
+
+    # MPEG-TS -> MP4 faststart.
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-loglevel", "error", "-i", concat_path,
+        "-c", "copy", "-movflags", "+faststart", out_path,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    shutil.rmtree(work_dir, ignore_errors=True)
+    try:
+        os.remove(concat_path)
+    except OSError:
+        pass
+    if proc.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        msg = (stderr or b"").decode("utf-8", "replace").strip()[-300:]
+        raise RuntimeError(f"ffmpeg concat OK.ru gagal: {msg}")
+    return os.path.getsize(out_path)
+
+
+async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
+                           bot=None, chat_id=None, status_msg_id=None,
+                           title: str = "Anichin", notify: bool = False,
+                           est_total: int = 0) -> None:
+    """Unduh HLS via ffmpeg (`-c copy` + faststart).
+
+    Progress dipantau dari ukuran file keluaran (ffmpeg menulis inkremental)
+    supaya UI Telegram tetap bergerak; `-loglevel error` menjaga stderr bersih
+    untuk pesan error. `est_total` = estimasi total byte (`duration × bandwidth/8`)
+    supaya bar punya penyebut.
+    """
+    from handlers.dl.progress import TransferStats
+
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-user_agent", UA,
+        "-headers", f"Referer: {referer or playlist_url}\r\n",
+        "-i", playlist_url,
+        "-c", "copy", "-movflags", "+faststart",
+        out_path,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    stats = TransferStats(max(0, int(est_total or 0)))
+
+    async def _drain():
+        # `communicate()` menangani pembacaan stderr sekaligus menunggu proses,
+        # sehingga tidak ada race antara `stderr.read()` dan proses yang sudah
+        # keluar (yang bisa memblokir selamanya).
+        out, err = await proc.communicate()
+        return err or b""
+
+    drain_task = asyncio.create_task(_drain())
+    while proc.returncode is None:
+        if os.path.exists(out_path):
+            try:
+                cur = os.path.getsize(out_path)
+            except OSError:
+                cur = 0
+            stats.sample(cur)
+            if cur > MAX_TG_SIZE:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                break
+            if notify and status_msg_id:
+                await stats.emit(
+                    bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
+                    title=title, kind="Anichin download", label="Anichin",
+                )
+        await asyncio.sleep(0.5)
+
+    err_buf = b""
+    try:
+        err_buf = await drain_task
+    except asyncio.CancelledError:
+        pass
+
+    if proc.returncode not in (0, None) or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        msg = (err_buf or b"").decode("utf-8", "replace").strip()[-400:]
+        raise RuntimeError(f"ffmpeg HLS gagal: {msg}")
+    if os.path.getsize(out_path) > MAX_TG_SIZE:
+        raise FileSizeLimitExceeded("File melebihi batas 2GB.")
+    stats.log_done("Anichin download", label="Anichin")
+
+
+async def anichin_server(
+    raw_url: str,
+    fmt_key: str,
+    bot,
+    chat_id,
+    status_msg_id,
+    format_id: str | None = None,
+    has_audio: bool = False,
+    metadata_ready: bool = False,
+    known_size: int = 0,
+    engine: str | None = None,
+):
+    """Unduh dari server streaming Anichin (OK.ru) — jalur paling andal.
+
+    Dipakai `anichin_download` sebagai fallback setelah semua host mirror gagal,
+    dan oleh resolution picker (engine `anichin_server`) supaya user bisa memilih
+    server streaming secara eksplisit.
+    """
+    del has_audio, known_size, engine
+    url = (raw_url or "").strip()
+
+    probe = peek_probe(url)
+    if not probe:
+        probe = await asyncio.to_thread(probe_anichin, url)
+        cache_probe(url, probe)
+
+    servers = probe.get("servers") or []
+    if not servers:
+        raise RuntimeError("Tidak ada server streaming di halaman ini.")
+
+    if not metadata_ready and status_msg_id:
+        from handlers.dl.progress import edit_status
+        await edit_status(bot, chat_id, status_msg_id,
+                          "<b>Resolving OK.ru...</b>", label="Anichin")
+
+    info = await asyncio.to_thread(extractor.resolve_stream_source, servers, url)
+    if not info:
+        raise RuntimeError("Tidak ada server streaming yang bisa diunduh (OK.ru tidak tersedia).")
+
+    want = 0
+    m = re.search(r"(\d+)", str(format_id or ""))
+    if m:
+        want = int(m.group(1))
+    variant = extractor.pick_okru_variant(info.get("variants") or [], want)
+    if not variant:
+        raise RuntimeError("Varian OK.ru tidak ditemukan.")
+
+    title = probe.get("title") or info.get("title") or "Anichin Video"
+    work_dir = os.path.join(TMP_DIR, f"ac_{uuid.uuid4().hex[:10]}")
+    os.makedirs(work_dir, exist_ok=True)
+    temp_video = os.path.join(work_dir, f"{uuid.uuid4().hex[:8]}.mp4")
+
+    try:
+        log.info(
+            "Anichin OK.ru start | title=%r quality=%s %sx%s",
+            title, variant.get("name"), variant.get("width"), variant.get("height"),
+        )
+        if not metadata_ready and status_msg_id:
+            from handlers.dl.progress import edit_status
+            await edit_status(bot, chat_id, status_msg_id,
+                              "<b>Downloading OK.ru...</b>", label="Anichin")
+
+        # Jalur utama: unduh segmen .ts paralel (12 koneksi) -> concat -> MP4.
+        # Fallback: ffmpeg serial pada master playlist kalau playlist segmen
+        # tidak bisa dibaca.
+        got_segs = {}
+        try:
+            got_segs = await asyncio.to_thread(
+                extractor.okru_segments, variant, info.get("hls_master") or ""
+            )
+        except Exception as e:
+            log.warning("Anichin OK.ru playlist segmen gagal | err=%r", e)
+
+        if got_segs.get("segments"):
+            log.info(
+                "Anichin OK.ru parallel start | segs=%d quality=%s %sx%s",
+                len(got_segs["segments"]), variant.get("name"),
+                variant.get("width"), variant.get("height"),
+            )
+            await _download_segments_parallel(
+                got_segs["segments"], info.get("referer") or "https://ok.ru/", temp_video,
+                bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
+                title=title, notify=bool(status_msg_id),
+                est_total=_est_bytes(info.get("duration"), variant.get("bandwidth")),
+            )
+        else:
+            await _run_ffmpeg_hls(
+                variant["url"], info.get("referer") or "https://ok.ru/", temp_video,
+                bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
+                title=title, notify=bool(status_msg_id),
+                est_total=_est_bytes(info.get("duration"), variant.get("bandwidth")),
+            )
+
+        if not os.path.exists(temp_video) or os.path.getsize(temp_video) == 0:
+            raise RuntimeError("File hasil unduhan OK.ru kosong.")
+        log.info("Anichin OK.ru sukses | title=%r quality=%s", title, variant.get("name"))
+
+        if fmt_key == "mp3":
+            mp3_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp3")
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", temp_video,
+                "-vn", "-c:a", "libmp3lame", "-q:a", "2", mp3_path,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            if proc.returncode != 0 or not os.path.exists(mp3_path):
+                raise RuntimeError("Gagal mengekstrak MP3 dari video OK.ru.")
+            return {
+                "path": mp3_path,
+                "title": title,
+                "duration": info.get("duration") or 0,
+                "thumb": probe.get("thumbnail") or info.get("poster") or "",
+                "artist": "Anichin",
+            }
+
+        out_video = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp4")
+        shutil.move(temp_video, out_video)
+        return {
+            "path": out_video,
+            "title": title,
+            "duration": info.get("duration") or 0,
+            "thumb": probe.get("thumbnail") or info.get("poster") or "",
+            "width": variant.get("width") or 1280,
+            "height": variant.get("height") or 720,
+            # ffmpeg sudah menulis MP4 faststart -> lewati remux kedua di pipeline.
+            "remux_done": True,
+        }
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 async def anichin_download(
     raw_url: str,
     fmt_key: str,
@@ -318,8 +685,15 @@ async def anichin_download(
     engine: str | None = None,
 ):
     """Unduh episode Anichin. Lihat FLOW DOWNLOADER di docstring modul."""
-    del has_audio, known_size, engine
+    del has_audio, known_size
     url = (raw_url or "").strip()
+
+    # Engine eksplisit `anichin_server` -> langsung jalur server streaming (OK.ru).
+    if (engine or "") == "anichin_server":
+        return await anichin_server(
+            raw_url, fmt_key, bot, chat_id, status_msg_id,
+            format_id=format_id, metadata_ready=metadata_ready,
+        )
 
     probe = peek_probe(url)
     if not probe:
@@ -328,17 +702,31 @@ async def anichin_download(
 
     title = probe.get("title") or "Anichin Video"
     mirrors = probe.get("mirrors") or []
-    if not mirrors:
+    if not mirrors and not (probe.get("okru") or {}).get("variants"):
         raise RuntimeError("Tidak ada link unduh di halaman ini.")
 
     want = (format_id or "").strip().lower()
-    target = None
-    for m in mirrors:
-        if (m.get("label") or "").strip().lower() == want:
-            target = m
-            break
-    if not target:
-        target = mirrors[0]
+    # Halaman tanpa mirror tapi punya server streaming: langsung ke jalur server.
+    if not mirrors:
+        log.info("Anichin tanpa mirror -> langsung server OK.ru | url=%s", url)
+        return await anichin_server(
+            raw_url, fmt_key, bot, chat_id, status_msg_id,
+            format_id=format_id, metadata_ready=metadata_ready,
+        )
+    # Ambil SEMUA provider untuk resolusi yang dipilih (mis. `Mirrored` +
+    # `Terabox`). Kalau provider pertama butuh captcha, provider kedua dicoba.
+    # Cocokkan toleran: format_id bisa "1080p" (label soraurlx) atau "1080"
+    # (tinggi OK.ru) sementara label mirror bisa "1080p" / "Multi".
+    targets = [m for m in mirrors if (m.get("label") or "").strip().lower() == want]
+    if not targets:
+        wn = extractor.label_height(want)
+        if wn:
+            targets = [m for m in mirrors if extractor.label_height(m.get("label")) == wn]
+    if not targets:
+        targets = [m for m in mirrors if (m.get("label") or "").strip().lower() == "multi"]
+    if not targets:
+        targets = [mirrors[0]]
+    target = targets[0]
 
     if not metadata_ready and status_msg_id:
         from handlers.dl.progress import edit_status
@@ -347,15 +735,55 @@ async def anichin_download(
             f"<b>Resolving {target.get('label') or 'video'}...</b>", label="Anichin",
         )
 
-    candidates = await asyncio.to_thread(
-        extractor.resolve_all_candidates, target.get("url"), target.get("label") or "", url
-    )
+    # Kumpulkan kandidat dari SEMUA provider pada resolusi ini (mis. `Mirrored`,
+    # `Pixeldrain`, `Terabox`), bukan berhenti di provider pertama yang berhasil
+    # di-resolve. Provider pertama bisa resolve tapi gagal saat UNDUH; kandidat
+    # dari provider lain jadi fallback.
+    candidates = []
+    captcha_blocked = []
+    seen_cand = set()
+    for tgt in targets:
+        got = await asyncio.to_thread(
+            extractor.resolve_provider, tgt.get("url"), tgt.get("label") or "", url
+        )
+        if got:
+            for c in got:
+                key = (c.get("host"), c.get("url"))
+                if key in seen_cand:
+                    continue
+                seen_cand.add(key)
+                candidates.append(c)
+        elif extractor.is_captcha_shortener(tgt.get("url") or ""):
+            captcha_blocked.append(tgt.get("name") or tgt.get("url") or "")
+
     if not candidates:
-        raise RuntimeError("Gagal me-resolve link unduh (shortener/mirror mati).")
+        # Fallback terakhir: server streaming OK.ru (tanpa captcha, resolusi asli).
+        if (probe.get("okru") or {}).get("variants"):
+            reason = "semua provider captcha" if captcha_blocked else "mirror kosong"
+            log.info(
+                "Anichin %s -> fallback server OK.ru | url=%s captcha=%s",
+                reason, url, sorted(set(captcha_blocked)),
+            )
+            return await anichin_server(
+                raw_url, fmt_key, bot, chat_id, status_msg_id,
+                format_id=format_id, metadata_ready=metadata_ready,
+            )
+        if captcha_blocked:
+            raise RuntimeError(
+                "Link unduh dilindungi captcha ("
+                + ", ".join(sorted(set(captcha_blocked)))
+                + "). Coba resolusi lain atau buka di browser."
+            )
+        raise RuntimeError(
+            "Gagal me-resolve link unduh (shortener/mirror mati). "
+            "Coba resolusi lain."
+        )
 
     log.info(
-        "Anichin candidates | title=%r label=%s hosts=%s",
-        title, target.get("label"), [c.get("host") for c in candidates],
+        "Anichin candidates | title=%r label=%s providers=%s hosts=%s",
+        title, target.get("label"),
+        sorted({t.get("name") or "" for t in targets}),
+        [c.get("host") for c in candidates],
     )
 
     work_dir = os.path.join(TMP_DIR, f"ac_{uuid.uuid4().hex[:10]}")
@@ -374,7 +802,9 @@ async def anichin_download(
                         raise RuntimeError("Google Drive id tidak ditemukan.")
                     await asyncio.to_thread(_download_gdrive, gid, temp_video)
                 else:
-                    direct = await asyncio.to_thread(extractor.resolve_direct_file, file_url)
+                    direct = await asyncio.to_thread(
+                        extractor.resolve_direct_file, file_url, cand.get("files_url") or url
+                    )
                     await asyncio.to_thread(_download_stream, direct, temp_video, cand.get("files_url") or url)
 
                 if not os.path.exists(temp_video) or os.path.getsize(temp_video) == 0:
@@ -391,6 +821,14 @@ async def anichin_download(
                         pass
                 continue
         else:
+            # Semua host mirror gagal -> coba server streaming OK.ru (kalau ada).
+            if (probe.get("okru") or {}).get("variants"):
+                log.info("Anichin semua host mirror gagal -> fallback server OK.ru | url=%s", url)
+                shutil.rmtree(work_dir, ignore_errors=True)
+                return await anichin_server(
+                    raw_url, fmt_key, bot, chat_id, status_msg_id,
+                    format_id=format_id, metadata_ready=metadata_ready,
+                )
             raise RuntimeError(f"Semua host gagal. Terakhir: {last_err}")
 
         label = target.get("label") or "video"

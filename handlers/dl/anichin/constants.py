@@ -25,12 +25,19 @@ ANICHIN_HOSTS = ("anichin.moe", "www.anichin.moe")
 BASE_URL = "https://anichin.moe"
 
 # Shortener pada `div.soraurlx` (label resolusi -> link pendek).
+CAPTCHA_SHORTENER_HOSTS = (
+    "clk.asia",
+    "dekhe.click",
+    "clicksfly.com",
+)
+
+# Shortener pada `div.soraurlx` (label resolusi -> link pendek).
 SHORTENER_HOSTS = (
     "bit.ly",
     "inshorturl.in",
     "lifehei.my.id",
     "www.lifehei.my.id",
-)
+) + CAPTCHA_SHORTENER_HOSTS
 
 # Halaman perantara `mirrored.to`.
 MIRRORED_HOSTS = ("mirrored.to", "www.mirrored.to")

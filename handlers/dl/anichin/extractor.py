@@ -28,6 +28,7 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 
 from .constants import (
+    CAPTCHA_SHORTENER_HOSTS,
     HOST_PRIORITY,
     HTTP_TIMEOUT,
     MIRSTATS_MAX_POLLS,
@@ -47,15 +48,37 @@ def _http():
     return _session
 
 
-def _get(url: str, referer: str = "") -> tuple[int, str, str]:
+def _header_safe(value: str) -> str:
+    """Buat nilai header aman (ASCII/latin-1).
+
+    Nama file mirrored.to bisa memuat karakter Unicode seperti `Ⅴ` (U+2164)
+    di path URL. Kalau string itu dipakai sebagai header `Referer`, curl_cffi
+    melempar `UnicodeEncodeError: 'latin-1' codec can't encode character`.
+    Exception itu ditelan `_get` sehingga hasilnya 0 host tanpa jejak yang jelas.
+    Persen-encode karakter non-ASCII supaya header tetap valid.
+    """
+    if not value:
+        return ""
+    try:
+        value.encode("latin-1")
+        return value
+    except UnicodeEncodeError:
+        from urllib.parse import quote
+        # `safe` dipertahankan seluas mungkin supaya struktur URL tidak rusak.
+        return quote(value, safe=":/?#[]@!$&'()*+,;=%~.-_")
+
+
+def _get(url: str, referer: str = "", timeout: float | None = None) -> tuple[int, str, str]:
     headers = {"User-Agent": UA}
     if referer:
-        headers["Referer"] = referer
+        headers["Referer"] = _header_safe(referer)
     try:
-        r = _http().get(url, headers=headers, timeout=HTTP_TIMEOUT, allow_redirects=True)
+        r = _http().get(url, headers=headers, timeout=timeout or HTTP_TIMEOUT, allow_redirects=True)
         return r.status_code, (r.text or ""), str(r.url)
     except Exception as e:
-        log.debug("Anichin GET failed | url=%s err=%r", url, e)
+        # Jangan telan diam-diam: exception di sini (bukan HTTP non-200) hampir
+        # selalu masalah nyata (mis. header unicode, DNS, TLS).
+        log.warning("Anichin GET failed | url=%s err=%r", url, e)
         return 0, "", url
 
 
@@ -68,7 +91,12 @@ def _clean(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 def scrape_post(url: str) -> dict:
-    """-> {title, thumbnail, mirrors:[{label,name,url}], servers:[{label,url}], raw_html}"""
+    """-> {title, thumbnail, mirrors:[{label,name,url}], servers:[{label,url}], raw_html}
+
+    Tiap baris `div.soraurlx` bisa memuat LEBIH DARI SATU anchor (mis. `Mirrored`
+    + `Terabox`) untuk resolusi yang sama; semuanya dikumpulkan supaya downloader
+    bisa mencoba link berikutnya kalau yang pertama butuh captcha.
+    """
     import base64
 
     code, raw, _ = _get(url)
@@ -91,22 +119,20 @@ def scrape_post(url: str) -> dict:
     seen = set()
     for row in soup.select("div.soraurlx"):
         strong = row.find("strong")
-        a = row.find("a", href=True)
-        if not a:
-            continue
         label = _clean(strong.get_text(" ", strip=True)) if strong else ""
-        u = (a.get("href") or "").strip()
-        # Dedup per (label, url): dua resolusi berbeda boleh berbagi URL yang
-        # sama (mis. 360p & 1080p sama-sama `inshorturl.in/6OM29W`).
-        key = (label.lower(), u)
-        if not u or key in seen:
-            continue
-        seen.add(key)
-        mirrors.append({
-            "label": label,
-            "name": _clean(a.get_text(" ", strip=True)) or "Mirror",
-            "url": u,
-        })
+        for a in row.find_all("a", href=True):
+            u = (a.get("href") or "").strip()
+            # Dedup per (label, url, nama): dua resolusi berbeda boleh berbagi URL
+            # yang sama, dan satu resolusi boleh punya beberapa penyedia (Mirrored/Terabox).
+            key = (label.lower(), u, _clean(a.get_text(" ", strip=True)).lower())
+            if not u or key in seen:
+                continue
+            seen.add(key)
+            mirrors.append({
+                "label": label,
+                "name": _clean(a.get_text(" ", strip=True)) or "Mirror",
+                "url": u,
+            })
 
     servers = []
     sel = soup.select_one("select.mirror")
@@ -142,9 +168,11 @@ def scrape_post(url: str) -> dict:
 def resolve_shortener(url: str, referer: str = "") -> str:
     """Ikuti shortener sampai dapat URL `mirrored.to` (atau URL final).
 
-    `bit.ly` -> halaman preview dengan anchor "Continue to destination".
-    `lifehei.my.id` -> parameter `o=` base64 (URL tujuan langsung).
-    Fallback: ikuti redirect apa pun / ambil link eksternal pertama.
+    - `bit.ly` -> halaman preview dengan anchor "Continue to destination".
+    - `lifehei.my.id` -> parameter `o=` base64 (URL tujuan langsung).
+    - `clk.asia`/`dekhe.click` (Clicksfly) -> **butuh hCaptcha**, tujuan TIDAK
+      ada di HTML. Dikembalikan "" + log jelas (lihat `is_captcha_shortener`).
+    - Fallback: ikuti redirect / meta refresh / link `mirrored.to` pertama.
     """
     import base64
 
@@ -173,9 +201,20 @@ def resolve_shortener(url: str, referer: str = "") -> str:
     # Redirect sudah ke host tujuan (bukan shortener lagi).
     host = (urlsplit(final).hostname or "").lower()
     if host and not any(s in host for s in ("bit.ly", "bitly", "inshorturl", "lifehei")):
-        return final
+        if not is_captcha_shortener(final):
+            return final
 
     soup = BeautifulSoup(raw, "html.parser")
+
+    # Captcha (Clicksfly/hCaptcha): tujuan tidak ada di HTML. Deteksi SEBELUM
+    # mencoba apa pun supaya pesan errornya jujur dan tidak menyesatkan.
+    if is_captcha_shortener(u) or is_captcha_shortener(final) or "h-captcha" in raw or "g-recaptcha" in raw:
+        log.warning(
+            "Anichin shortener butuh captcha (tidak bisa dilewati HTTP) | url=%s host=%s",
+            u, host or urlsplit(u).hostname,
+        )
+        return ""
+
     # bit.ly preview: anchor "Continue to destination" / link ke host tujuan.
     for a in soup.select("a[href]"):
         href = html_mod.unescape(a.get("href") or "")
@@ -192,6 +231,21 @@ def resolve_shortener(url: str, referer: str = "") -> str:
     if m:
         return html_mod.unescape(m.group(1).strip())
     return final or ""
+
+
+def is_captcha_shortener(url: str) -> bool:
+    """True kalau URL shortener-nya butuh captcha (tujuan tak bisa di-resolve HTTP)."""
+    host = (urlsplit(url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in CAPTCHA_SHORTENER_HOSTS)
+
+
+def label_height(label) -> int:
+    """Tinggi (int) dari label resolusi apa pun: `1080p`, `1080`, `4K`, `Multi`->0."""
+    text = str(label or "").strip().lower()
+    if text in ("4k", "2160p"):
+        return 2160
+    m = re.search(r"(\d{3,4})", text)
+    return int(m.group(1)) if m else 0
 
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +316,7 @@ def resolve_host_links(files_url: str) -> list[dict]:
 
     m = re.search(r"/mirstats\.php\?([^\"']+)", raw)
     if not m:
-        log.debug("Anichin mirstats endpoint tidak ditemukan | %s", files_url)
+        log.warning("Anichin mirstats endpoint tidak ditemukan | %s", files_url)
         return []
 
     api = "https://www.mirrored.to/mirstats.php?" + html_mod.unescape(m.group(1))
@@ -274,6 +328,7 @@ def resolve_host_links(files_url: str) -> list[dict]:
         time.sleep(MIRSTATS_POLL_DELAY)
 
     if not body:
+        log.warning("Anichin mirstats kosong | api=%s", api[:110])
         return []
 
     soup = BeautifulSoup(body, "html.parser")
@@ -298,7 +353,12 @@ def resolve_host_links(files_url: str) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 def resolve_out_url(host_entry: dict, referer: str = "") -> str:
-    """POST `/out_url` -> ambil parameter `url=` (link file host asli)."""
+    """POST `/out_url` -> ambil parameter `url=` (link file host asli).
+
+    Beberapa host (mis. FilesDLi) tidak memakai `/out_url` melainkan halaman
+    perantara berisi form `POST /dl_go.php?fileid=<uid>`; halaman itu ditangani
+    di sini juga supaya tidak balik kosong.
+    """
     action = host_entry.get("action") or "/out_url"
     if action.startswith("/"):
         action = "https://www.mirrored.to" + action
@@ -308,14 +368,14 @@ def resolve_out_url(host_entry: dict, referer: str = "") -> str:
             data=host_entry.get("fields") or {},
             headers={
                 "User-Agent": UA,
-                "Referer": referer or "https://www.mirrored.to/",
+                "Referer": _header_safe(referer) or "https://www.mirrored.to/",
                 "Content-Type": "application/x-www-form-urlencoded",
             },
             timeout=HTTP_TIMEOUT,
-            allow_redirects=False,
+            allow_redirects=True,
         )
     except Exception as e:
-        log.debug("Anichin /out_url gagal | host=%s err=%r", host_entry.get("host"), e)
+        log.warning("Anichin /out_url gagal | host=%s err=%r", host_entry.get("host"), e)
         return ""
 
     body = html_mod.unescape(r.text or "")
@@ -325,12 +385,82 @@ def resolve_out_url(host_entry: dict, referer: str = "") -> str:
         loc = r.headers.get("Location") or ""
         if loc:
             target = html_mod.unescape(loc)
-    if not target:
-        return ""
-    if "url=" in target:
-        real = target.split("url=", 1)[1].split("&")[0]
-        return html_mod.unescape(real)
-    return target
+    if target:
+        if "url=" in target:
+            real = target.split("url=", 1)[1].split("&")[0]
+            return html_mod.unescape(real)
+        return target
+
+    # Halaman perantara (FilesDLi): form `POST /dl_go.php?fileid=<uid>`.
+    soup = BeautifulSoup(body, "html.parser")
+    for form in soup.select("form[action]"):
+        fa = html_mod.unescape(form.get("action") or "")
+        if "dl_go.php" not in fa:
+            continue
+        if fa.startswith("//"):
+            fa = "https:" + fa
+        elif fa.startswith("/"):
+            fa = "https://www.mirrored.to" + fa
+        data = {}
+        for i in form.select("input[name]"):
+            if (i.get("type") or "text").lower() == "hidden":
+                data[i.get("name")] = i.get("value") or ""
+        try:
+            r2 = _http().post(
+                fa, data=data,
+                headers={
+                    "User-Agent": UA,
+                    "Referer": _header_safe(action),
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                timeout=HTTP_TIMEOUT, allow_redirects=False,
+            )
+        except Exception as e:
+            log.warning("Anichin dl_go gagal | host=%s err=%r", host_entry.get("host"), e)
+            return ""
+        loc = html_mod.unescape(r2.headers.get("Location") or "")
+        if loc:
+            return loc
+        b2 = html_mod.unescape(r2.text or "")
+        m2 = re.search(r"URL=([^\s\"'>]+)", b2)
+        if m2:
+            t2 = m2.group(1)
+            if "url=" in t2:
+                return html_mod.unescape(t2.split("url=", 1)[1].split("&")[0])
+            return t2
+        # Rantai kedua: halaman `dl_go` mengembalikan form ke host akhir
+        # (mis. `//filesdl.ink/download.php?fileid=<uid>`). Ikuti sekali lagi.
+        soup2 = BeautifulSoup(b2, "html.parser")
+        for form2 in soup2.select("form[action]"):
+            fa2 = html_mod.unescape(form2.get("action") or "")
+            if not fa2:
+                continue
+            if fa2.startswith("//"):
+                fa2 = "https:" + fa2
+            elif fa2.startswith("/"):
+                fa2 = "https://www.mirrored.to" + fa2
+            data2 = {
+                i.get("name"): (i.get("value") or "")
+                for i in form2.select("input[name]")
+                if (i.get("type") or "text").lower() == "hidden"
+            }
+            try:
+                r3 = _http().post(
+                    fa2, data=data2,
+                    headers={
+                        "User-Agent": UA,
+                        "Referer": _header_safe(action),
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    timeout=HTTP_TIMEOUT, allow_redirects=True,
+                )
+            except Exception as e:
+                log.warning("Anichin dl_go stage2 gagal | host=%s err=%r", host_entry.get("host"), e)
+                return fa2
+            # Host akhir biasanya mengembalikan halaman unduh; URL-nya sendiri
+            # sudah cukup untuk diunduh (server menerima POST/GET form-nya).
+            return str(r3.url or fa2)
+    return ""
 
 
 def pick_best_host(hosts: list[dict]) -> dict | None:
@@ -408,10 +538,21 @@ def resolve_all_candidates(mirror_url: str, label: str = "", referer: str = "") 
     if not files_list:
         return []
 
+    # Cocokkan label dengan toleransi (resolusi "1080" vs "1080p" vs "1080").
+    def _num(x):
+        m = re.search(r"(\d+)", str(x or ""))
+        return int(m.group(1)) if m else 0
+
+    want = _num(label)
     chosen_files = None
-    if label:
+    if want:
         for f in files_list:
-            if (f.get("label") or "").lower() == label.lower():
+            if _num(f.get("label")) == want:
+                chosen_files = f
+                break
+    if not chosen_files and label:
+        for f in files_list:
+            if (f.get("label") or "").lower() == str(label).lower():
                 chosen_files = f
                 break
     if not chosen_files:
@@ -447,6 +588,56 @@ def resolve_all_candidates(mirror_url: str, label: str = "", referer: str = "") 
             "files_url": chosen_files["files_url"],
         })
     return out
+
+
+def resolve_provider(provider_url: str, label: str = "", referer: str = "") -> list[dict]:
+    """Satu provider mirror -> kandidat file.
+
+    Mendukung dua bentuk:
+    - shortener `mirrored.to` (bit.ly/inshorturl/lifehei) -> rantai `resolve_all_candidates`.
+    - link file host langsung (mis. `pixeldrain.com/u/<id>`) -> kandidat tunggal.
+    """
+    u = (provider_url or "").strip()
+    if not u:
+        return []
+
+    host = (urlsplit(u).hostname or "").lower()
+
+    # Shortener captcha (Clicksfly/hCaptcha): tujuan tidak ada di HTML.
+    # Jangan dianggap file langsung — kalau tidak, downloader mengunduh halaman
+    # captcha dan melaporkan "host mengembalikan HTML" yang menyesatkan.
+    if is_captcha_shortener(u):
+        return []
+
+    # Pixeldrain: URL-nya sudah file langsung (tanpa shortener).
+    m = re.search(r"pixeldrain\.com/u/([A-Za-z0-9]+)", u)
+    if m:
+        pid = m.group(1)
+        return [{
+            "host": "Pixeldrain",
+            "url": f"https://pixeldrain.com/api/file/{pid}",
+            "label": label,
+            "name": "Pixeldrain",
+            "files_url": u,
+        }]
+
+    if any(h in host for h in ("mirrored.to", "bit.ly", "bitly.com", "inshorturl", "lifehei")):
+        return resolve_all_candidates(u, label, referer=referer)
+
+    # Shortener safelink (pndk.to/SafelinkEarn) & link Telegram promosi tidak
+    # menuju file: jangan dianggap file langsung (kalau tidak, downloader akan
+    # mengunduh halaman HTML-nya dan melaporkan error yang menyesatkan).
+    if any(h in host for h in ("pndk.to", "safelinkearn", "t.me", "telegram.me", "telegram.dog")):
+        return []
+
+    # Bukan keduanya: anggap URL file langsung (mis. buzzheavier.com/<id>).
+    return [{
+        "host": host or "Direct",
+        "url": u,
+        "label": label,
+        "name": "Direct",
+        "files_url": u,
+    }]
 
 
 # --------------------------------------------------------------------------- #
@@ -514,7 +705,260 @@ def _streamwish_direct(url: str) -> str:
     return ""
 
 
-def resolve_direct_file(file_url: str) -> str:
+def _filesdl_direct(url: str, referer: str = "") -> str:
+    """FilesDLi (`filesdl.ink/download.php?fileid=…`).
+
+    Butuh POST form `fn`+`cn`, balasannya meta-refresh ke host file akhir
+    (`https://new-file-*.sbs/?…&file=…`). -> URL file, atau "" kalau gagal.
+    """
+    import re as _re
+
+    body = ""
+    for payload in ({"fn": "File", "cn": "SG"}, None):
+        try:
+            if payload:
+                r = _http().post(url, data=payload, headers={
+                    "User-Agent": UA,
+                    "Referer": _header_safe(referer) or "https://www.mirrored.to/",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                }, timeout=HTTP_TIMEOUT, allow_redirects=True)
+            else:
+                r = _http().get(url, headers={
+                    "User-Agent": UA,
+                    "Referer": _header_safe(referer) or "https://www.mirrored.to/",
+                }, timeout=HTTP_TIMEOUT, allow_redirects=True)
+        except Exception as e:
+            log.warning("FilesDLi fetch gagal | url=%s err=%r", url, e)
+            continue
+        body = html_mod.unescape(r.text or "")
+        if body:
+            break
+    if not body:
+        return ""
+    m = _re.search(r'URL=([^"\'>\s]+)', body, _re.I)
+    if m:
+        target = m.group(1).strip()
+        if target.startswith("//"):
+            target = "https:" + target
+        return target
+    return ""
+
+
+def parse_stream_servers(html: str) -> list[dict]:
+    """`select.mirror` -> daftar server streaming.
+
+    Tiap `<option>` berisi base64 yang mendekode ke `<iframe ... SRC="...">`.
+    -> [{label, url}]
+    """
+    import base64
+
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    sel = soup.select_one("select.mirror")
+    if not sel:
+        return []
+    out = []
+    seen = set()
+    for opt in sel.select("option"):
+        val = (opt.get("value") or "").strip()
+        if not val:
+            continue
+        try:
+            dec = base64.b64decode(val).decode("utf-8", "replace")
+        except Exception:
+            continue
+        m = re.search(r'(?:SRC|src)=["\']?([^"\'\s>]+)', dec)
+        if not m:
+            continue
+        u = m.group(1).strip()
+        if not u or u.startswith("data:") or u in seen:
+            continue
+        seen.add(u)
+        out.append({"label": _clean(opt.get_text(" ", strip=True)) or "server", "url": u})
+    return out
+
+
+def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
+    """Cari sumber streaming yang bisa diunduh langsung dari daftar server.
+
+    Hanya OK.ru yang didukung (metadata JSON publik tanpa captcha). Server lain
+    (Rumble/Dailymotion/RPMShare/Streamruby/...) butuh yt-dlp atau punya
+    proteksi — sengaja dilewati (repo melarang yt-dlp).
+
+    -> {host, embed, variants, title, duration, poster, referer} atau {}
+    """
+    for s in servers or []:
+        u = (s.get("url") or "").strip()
+        if not u:
+            continue
+        if re.search(r"ok\.ru/(?:videoembed|video|live)/\d+", u):
+            try:
+                got = resolve_okru(u)
+            except Exception as e:
+                log.warning("OK.ru resolve gagal | url=%s err=%r", u, e)
+                continue
+            if got and got.get("variants"):
+                got["embed"] = u
+                got["label"] = s.get("label") or "OK.ru"
+                return got
+    return {}
+
+
+def _okru_dims(hls_url: str) -> dict:
+    """`hlsManifestUrl` OK.ru -> {quality_name: {width, height, bandwidth, path}}.
+
+    Manifest memuat `#EXT-X-STREAM-INF:...,BANDWIDTH=5482080,QUALITY=full,RESOLUTION=1920x818`
+    diikuti baris path playlist media. Tanpa ini, API `videos[]` cuma memberi nama
+    kualitas (mobile/lowest/low/sd/hd/full) tanpa dimensi, sehingga picker tidak
+    bisa memetakan ke tinggi nyata. `bandwidth` dipakai untuk mengestimasi total
+    byte (`duration * bandwidth / 8`) supaya progress bar Telegram punya penyebut.
+    """
+    code, raw, _ = _get(hls_url)
+    if code != 200 or not raw:
+        return {}
+    dims = {}
+    lines = raw.splitlines()
+    for idx, line in enumerate(lines):
+        if not line.startswith("#EXT-X-STREAM-INF"):
+            continue
+        attrs = line
+        q = re.search(r"QUALITY=([A-Za-z0-9_]+)", attrs)
+        r = re.search(r"RESOLUTION=(\d+)x(\d+)", attrs)
+        b = re.search(r"(?:AVERAGE-)?BANDWIDTH=(\d+)", attrs)
+        if not (q and r):
+            continue
+        path = ""
+        for nxt in lines[idx + 1:]:
+            if nxt.strip() and not nxt.strip().startswith("#"):
+                path = nxt.strip()
+                break
+        dims[q.group(1).lower()] = {
+            "width": int(r.group(1)),
+            "height": int(r.group(2)),
+            "bandwidth": int(b.group(1)) if b else 0,
+            "path": path,
+        }
+    return dims
+
+
+def resolve_okru(embed_url: str) -> dict:
+    """OK.ru embed -> varian video progresif (tanpa yt-dlp).
+
+    `https://ok.ru/videoembed/<mid>` -> POST `dk?cmd=videoPlayerMetadata&mid=<mid>`
+    -> JSON memuat `videos[]` (URL MP4 progresif per kualitas) + `hlsManifestUrl`
+    (untuk dimensi nyata tiap kualitas). CDN OK.ru (`ok*.vkuser.net` /
+    `vd*.okcdn.ru`) melayani `video/mp4` tanpa captcha.
+
+    -> {host, variants:[{name,url,width,height}], title, duration, poster, referer}
+    """
+    m = re.search(r"ok\.ru/(?:videoembed|video|live)/(\d+)", embed_url or "")
+    if not m:
+        return {}
+    mid = m.group(1)
+    try:
+        r = _http().post(
+            f"https://ok.ru/dk?cmd=videoPlayerMetadata&mid={mid}",
+            data={},
+            headers={"User-Agent": UA, "Referer": "https://ok.ru/"},
+            timeout=HTTP_TIMEOUT,
+        )
+        data = r.json() or {}
+    except Exception as e:
+        log.warning("OK.ru metadata gagal | mid=%s err=%r", mid, e)
+        return {}
+
+    dims = _okru_dims(data.get("hlsManifestUrl") or "")
+    hls_master = (data.get("hlsManifestUrl") or "").strip()
+    variants = []
+    for v in data.get("videos") or []:
+        name = (v.get("name") or "").strip().lower()
+        u = (v.get("url") or "").strip()
+        if not u or v.get("disallowed"):
+            continue
+        d = dims.get(name) or {}
+        variants.append({
+            "name": name,
+            "url": u,
+            "width": d.get("width") or 0,
+            "height": d.get("height") or 0,
+            "bandwidth": d.get("bandwidth") or 0,
+            "hls_path": d.get("path") or "",
+        })
+    # Yang dimensinya tak diketahui ditaruh paling belakang supaya tidak menang
+    # saat pemilihan "kualitas tertinggi".
+    variants.sort(key=lambda x: (x.get("height") or 0))
+    if not variants:
+        return {}
+
+    movie = data.get("movie") or {}
+    try:
+        duration = int(float(movie.get("duration") or 0))
+    except (TypeError, ValueError):
+        duration = 0
+    return {
+        "host": "OK.ru",
+        "variants": variants,
+        "hls_master": hls_master,
+        "title": (movie.get("title") or "").strip(),
+        "duration": duration,
+        "poster": (movie.get("poster") or "").strip(),
+        "referer": "https://ok.ru/",
+    }
+
+
+def okru_segments(variant: dict, hls_master: str) -> dict:
+    """Playlist media OK.ru -> {media_url, segments:[url absolut], duration, bytes}.
+
+    Segmen `.ts` bisa diunduh paralel (jauh lebih cepat daripada ffmpeg serial
+    ~1.1 MB/s). `bytes` = jumlah `Content-Length` bila ada, dipakai progress.
+    """
+    from urllib.parse import urljoin
+
+    path = (variant or {}).get("hls_path") or ""
+    if not path or not hls_master:
+        return {}
+    media_url = urljoin(hls_master, path)
+    code, raw, _ = _get(media_url)
+    if code != 200 or not raw:
+        return {}
+    segs = []
+    durs = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#EXTINF"):
+            m = re.search(r"#EXTINF\s*:\s*([\d.]+)", line)
+            if m:
+                durs.append(float(m.group(1)))
+            continue
+        if line.startswith("#"):
+            continue
+        segs.append(urljoin(media_url, line))
+    if not segs:
+        return {}
+    return {
+        "media_url": media_url,
+        "segments": segs,
+        "duration": int(round(sum(durs))) if durs else 0,
+    }
+
+
+def pick_okru_variant(variants: list[dict], want_height: int = 0) -> dict | None:
+    """Pilih varian OK.ru paling dekat dengan tinggi yang diminta.
+
+    Kalau `want_height` 0 -> ambil kualitas tertinggi yang diketahui dimensinya.
+    """
+    usable = [v for v in variants if (v.get("height") or 0) > 0]
+    if not usable:
+        return variants[-1] if variants else None
+    if not want_height:
+        return usable[-1]
+    return min(usable, key=lambda v: abs((v.get("height") or 0) - want_height))
+
+
+def resolve_direct_file(file_url: str, referer: str = "") -> str:
     """Ubah halaman file host -> URL file langsung (per-host).
 
     -> URL langsung, atau `file_url` apa adanya kalau host belum didukung
@@ -527,6 +971,8 @@ def resolve_direct_file(file_url: str) -> str:
         return _gofile_direct(file_url) or file_url
     if "strwish" in host or "streamwish" in host or "streamhg" in host:
         return _streamwish_direct(file_url) or file_url
+    if "filesdl" in host:
+        return _filesdl_direct(file_url, referer=referer) or file_url
     return file_url
 
 

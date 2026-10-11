@@ -191,6 +191,16 @@ def is_supported_platform(url:str)->bool:
 def _format_id_for_engine(engine:str|None,height:int,picked:dict)->str:
     return str(picked.get("format_id") or "")
 
+def _engine_for_picked(engine:str|None,picked:dict)->str|None:
+    """Engine `*_server` kalau entri picker berasal dari server streaming.
+
+    Entri server (mis. OK.ru) tidak punya mirror shortener; worker harus
+    langsung ke jalur server, bukan rantai `mirrored.to`.
+    """
+    if picked and picked.get("server"):
+        return f"{engine or 'anichin'}_server"
+    return engine
+
 def _pick_auto_resolution(res_map:dict[int,dict],preferred_height:int):
     try:
         preferred_height=int(preferred_height or 0)
@@ -414,6 +424,7 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
                 "has_audio":bool(r.get("has_audio")),
                 "filesize":int(r.get("filesize") or 0),
                 "total_size":int(r.get("total_size") or 0),
+                "server":r.get("server") or "",
             }
     
     settings=get_user_settings(data["user"])
@@ -439,7 +450,7 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
                 format_id=_format_id_for_engine(engine,picked_height,picked),
                 has_audio=bool(picked.get("has_audio")),
                 label=f"{picked_height}p",
-                engine=engine,
+                engine=_engine_for_picked(engine,picked),
                 status_ready=status_ready,
                 known_size=int(picked.get("total_size") or 0),
             )
@@ -1261,7 +1272,7 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
             format_id=_format_id_for_engine(engine,height,picked),
             has_audio=bool(picked.get("has_audio")),
             label=f"{height}p",
-            engine=engine,
+            engine=_engine_for_picked(engine,picked),
             status_ready=True,
             known_size=int(picked.get("total_size") or 0),
         )
@@ -1274,7 +1285,7 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         format_id=_format_id_for_engine(engine,height,picked),
         has_audio=bool(picked.get("has_audio")),
         label=f"{height}p",
-        engine=engine,
+        engine=_engine_for_picked(engine,picked),
         known_size=int(picked.get("total_size") or 0),
     )
 
