@@ -17,6 +17,177 @@ A multi-function Telegram bot built with Python and `python-telegram-bot`, provi
 - Group and verification features
 - Entertainment and miscellaneous commands
 
+## Project Architecture & Directory Structure
+
+The project follows a modular, decoupled architecture where download engines remain strictly headless and isolated from the user-facing bot interfaces:
+
+```
+kiyoshibot/
+├── main.py                     # Supervisor launcher (manages local telegram-bot-api & bot.py)
+├── bot.py                      # Telegram application lifecycle, uvloop init & handler groups
+│
+├── database/                   # SQLite persistence layer (WAL mode, connection pooling)
+│   ├── db.py                   # Thread-safe pooled connection helper with busy_timeout=30s
+│   ├── download_db.py          # Download counters, quota checks & premium status store
+│   ├── payment_db.py           # Axiom QRIS invoices, payment status & transaction history
+│   ├── moderation_db.py        # Group moderation configs, warned users & mute states
+│   ├── caca_db.py              # Persona state, conversation context & user AI memory
+│   └── user_settings_db.py     # Per-user preferences (silent downloads, format picks, etc.)
+│
+├── handlers/                   # Command handlers, callback dispatchers & interactive UIs
+│   ├── commands.py             # Command dispatcher (supports list/string command aliases)
+│   ├── callbacks.py            # Central callback query regex router
+│   ├── messages.py             # Text message recorder, AI reply router & quotly buffer
+│   │
+│   ├── dl/                     # Headless download engines, stream scrapers & decrypters
+│   │   ├── router.py           # Link detector, rate-limits, format pickers & worker pool
+│   │   ├── service.py          # Download coordinator, ffmpeg remuxer & media dispatch
+│   │   ├── progress.py         # Unified transfer stats, adaptive ETA & status edit throttling
+│   │   ├── stages.py           # Staged status messages (metadata -> picker -> progress)
+│   │   ├── keyboards.py        # Format, resolution, engine & slideshow inline keyboards
+│   │   ├── state.py            # Shared DL_CACHE / DL_LIMIT_CACHE runtime registry
+│   │   ├── constants.py        # Premium-only / auto-download domain lists & tuning
+│   │   ├── utils.py            # URL normalization, ffprobe validation & URL extraction
+│   │   ├── remux.py            # ffmpeg faststart remux & MP3 audio extraction pipeline
+│   │   ├── ytdlp.py            # posix_spawn yt-dlp runner (immune to uvloop fork() SIGSEGV)
+│   │   ├── aria2.py            # Multi-socket 16-connection aria2c download engine
+│   │   ├── probe.py            # Per-site resolution prober & picker capability registry
+│   │   ├── sweeper.py          # TTL-based disk cleanup & orphan browser-profile reaper
+│   │   ├── mtproto_uploader.py # Telethon bot client for 2GB MTProto uploads
+│   │   ├── pyrogram_uploader.py # Pyrofork uploader with multi-connection streaming
+│   │   ├── moviebox/           # MovieBox direct stream resolver & signed CDN fetcher
+│   │   ├── anichin/            # Donghua shortener resolver & multi-server stream fallback
+│   │   ├── nekopoi/            # Streampoi Dean Edwards unpacker, ouo bypass & CDN direct
+│   │   ├── drakorid/           # Drakor.id multi-resolution CDN scraper & auth session
+│   │   ├── tiktok/             # Watermark stripper, slideshow renderer & direct scraper
+│   │   ├── bunkr/              # Multi-tier Bunkr album scraper & parallel CDN downloader
+│   │   ├── instagram/          # Instagram carousel, reels & story parallel downloader
+│   │   ├── retrotube/          # VOE.sx DDoS-Guard resolver & WP-Script stream extractor
+│   │   ├── simontok/           # AES-256-GCM player decryptor & HLS segment downloader
+│   │   ├── cosxplay/           # CosXplay direct MP4 scraper
+│   │   ├── darknessporn/       # DarknessPorn direct MP4 scraper
+│   │   ├── femdomvc/           # FemdomVC aria2c scraper
+│   │   ├── asiangirl/          # AsianGirl.porn AES-128 HLS parallel downloader
+│   │   ├── bdsmlust/           # BDSMLust embed resolver (bdsmstreak / bdsmx)
+│   │   ├── heavyr/             # Heavy-R HLS/direct MP4 resolver
+│   │   ├── cosplaytele/        # Cosplaytele photo gallery & Cossora HLS extractor
+│   │   ├── pawchive/           # Pawchive Kemono-style Patreon archive scraper
+│   │   ├── punishworld/        # PunishWorld stream extractor
+│   │   ├── youtube/            # YouTube video, Shorts & post downloader
+│   │   ├── twitter/            # Twitter/X media downloader
+│   │   ├── reddit/             # Reddit video & gallery downloader
+│   │   ├── facebook/           # Facebook video downloader
+│   │   ├── threads/            # Threads media downloader
+│   │   └── pinterest/          # Pinterest video & image downloader
+│   │
+│   ├── moviebox/               # MovieBox Explorer UI (Bot API 10.3 Rich Message, 59 sections)
+│   ├── anichin/                # Anichin Explorer UI (Schedule, Donghua list, Genres, A–Z)
+│   ├── nekopoi/                # Nekopoi Explorer UI (Browse, JAV/Hentai, Genres, Episode grid)
+│   ├── drakor/                 # Drakor.id Explorer UI (K-Drama/C-Drama browse, auto-login)
+│   ├── retrotubeexplorer/      # BecekKu & LendirQu Explorer UI (Browse, categories, tags)
+│   ├── asupan/                 # TikTok feed source (vendored web API scraper & signer)
+│   ├── caca/                   # Multi-persona conversational AI engine (7 personas)
+│   ├── proxy/                  # Local OpenAI-compatible proxy server & web grounding tools
+│   ├── moderation/             # Group admin moderation, sudo privileges & temp kick/ban
+│   ├── payment/                # /buypremium QRIS flow, invoice polling & premium activation
+│   ├── stats/                  # System telemetry, memory diagnostics & hardware metrics
+│   │
+│   ├── quotly.py               # Multi-message sticker/image quote renderer
+│   ├── manga.py                # Multi-source manga reader & in-memory PDF compiler
+│   ├── music.py                # High-speed music search & multi-source audio downloader
+│   ├── punishworldsearch.py    # /punish search command & download dispatcher
+│   ├── simontoksearch.py       # /simontok search command & download dispatcher
+│   ├── gsearch.py              # Google Programmable Search with pagination
+│   ├── welcome.py              # New member welcome, verification & CAPTCHA gate
+│   ├── join.py                 # Force-join channel gate & realtime leave detection
+│   ├── nsfw.py                 # Per-group NSFW toggle management
+│   ├── premium.py              # Premium grant/revoke & cascade user reset
+│   ├── premiumbenefit.py       # /premiumbenefit feature & domain benefit tables
+│   ├── setting.py              # Per-user settings menu (silent download, format defaults)
+│   ├── reload.py               # Hot module reload with dependency-ordered reimport
+│   ├── restart.py              # In-place process restart via os.execv
+│   ├── update.py               # Git pull & hot reload updater
+│   ├── backup.py               # Database backup / restore / auto-backup scheduler
+│   ├── broadcast.py            # Mass broadcast to users & groups
+│   ├── blacklist.py            # Global blacklist gate (message + callback groups)
+│   ├── cookies.py              # Owner-only Netscape cookies.txt uploader
+│   ├── collector.py            # Group & user metadata collector (throttled)
+│   ├── prefix_dollar.py        # `$` prefix custom command handler
+│   ├── asahotak.py             # Quiz game (reply-based answer matching)
+│   ├── susunkata.py            # Word-scramble quiz game
+│   ├── quiz.py                 # Multiple-choice inline quiz
+│   ├── ship.py                 # Fun "shipping" compatibility generator
+│   ├── waifu.py                # Waifu image fetch & preference picker
+│   ├── kang.py                 # Sticker/emoji kang (save) command
+│   ├── getsticker.py           # Convert media/message to sticker
+│   ├── spoiler.py              # Toggle spoiler mark on downloads
+│   ├── translate.py            # Multi-language text translation
+│   ├── networking.py           # /ip /domain /net /whoisdomain lookups
+│   ├── weather.py              # Weather forecast lookup
+│   ├── kurs.py                 # Currency exchange rates
+│   ├── speedtest.py            # Ookla speedtest runner
+│   ├── resi.py                 # Package tracking (courier receipt)
+│   ├── nobg.py                 # Background remover
+│   ├── upscale.py              # AI image upscaler
+│   ├── aitext.py               # AI text utilities
+│   ├── aiimagedetector.py      # AI-generated image detector
+│   ├── igstalk.py              # Instagram profile stalker
+│   ├── igstory.py              # Instagram story downloader
+│   ├── anime.py                # Anime search & info (NeoXR API)
+│   ├── quoteanime.py           # Anime quote generator
+│   ├── gemini.py               # Google Gemini AI chat handler
+│   ├── groq.py                 # Groq AI chat handler
+│   ├── donate.py               # Donation/support info
+│   ├── groups.py               # Group listing & management
+│   ├── reminder.py             # Timed reminder scheduler
+│   ├── share.py                # Shared-media gallery & re-send
+│   ├── delete.py               # Message deletion utilities
+│   ├── ping.py                 # Latency check
+│   ├── start.py                # /start, deep-links & verification entry
+│   ├── help.py                 # Public help menu
+│   ├── helpowner.py            # Owner-only command reference (OWNER_ID locked)
+│   ├── fasttelethon.py         # FastTelethon upload engine toggle
+│   ├── uploadengine.py         # Upload engine selector (MTProto / Pyrofork)
+│   └── __init__.py             # Handler package initializer
+│
+├── rag/                        # Retrieval-Augmented Generation subsystem
+│   ├── loader.py               # Document & context loader
+│   ├── chunker.py              # Semantic text chunking engine
+│   ├── retriever.py            # Local vector retrieval & relevance ranker
+│   └── prompt.py               # Grounded prompt synthesis
+│
+└── utils/                      # Cross-cutting utility modules & shared infrastructure
+    ├── menu_lock.py            # Fail-closed 4-tier inline button ownership guard
+    ├── rich_common.py          # Shared rich-message helpers (not-modified guard)
+    ├── rich_msg.py             # Bot API 10.3 Rich Message (HTML blocks) builder & fallback
+    ├── rich_search.py          # Unified compact search table layout with pagination
+    ├── rich_stream.py          # Streaming rich-message updater for AI drafts
+    ├── scrapling_browser.py    # Singleton stealth Playwright session for Cloudflare bypass
+    ├── axiom.py                # Axiom Payment QRIS gateway client (curl_cffi Chrome JA3)
+    ├── http.py                 # Shared aiohttp session with tuned timeouts & pool
+    ├── firecrawl.py            # Firecrawl web search + page scrape (grounding backend)
+    ├── jina.py                 # Jina AI reader & SERP fallback (grounding backend)
+    ├── recent_messages.py      # In-memory rolling message buffer for grand-reply context
+    ├── caca_memory.py          # Persona conversation memory store & cleanup
+    ├── gemini_memory.py        # Gemini chat memory store
+    ├── groq_memory.py          # Groq chat memory store
+    ├── nsfw.py                 # NSFW state helper
+    ├── config.py               # Central env/config accessor
+    ├── fonts.py                # Font asset loader for quote/image rendering
+    ├── text.py                 # Text sanitizing & formatting helpers
+    ├── logger.py               # Message/event logger (forwards to LOG_CHAT_ID)
+    ├── startup.py              # Startup warmup (browser, caches, PTB warnings)
+    ├── stop_draft.py           # Real-time message streaming draft cancellation listener
+    └── user_collector.py       # User metadata collector
+```
+
+### Architectural Highlights
+
+- **Headless Downloader Isolation:** Download scrapers and resolvers live strictly under `handlers/dl/<site>/`. They can be imported and executed in headless CLI/worker contexts without pulling any Telegram UI dependencies.
+- **Fail-Closed Ownership Guard:** All interactive menus and inline pickers are bound to the command caller via `utils/menu_lock.py`, preventing unauthorized group members from hijacking search sessions.
+- **UVLoop & Subprocess Safety:** Heavy CLI subprocesses (`yt-dlp`, `aria2c`, `ffmpeg`) use `subprocess.Popen` via `asyncio.to_thread` (`posix_spawn`) to guarantee immunity against `fork()` SIGSEGV (-11) crashes under `uvloop`.
+- **Bot API 10.3 Rich Messages:** Structured explorer menus leverage Telegram Bot API 10.3 rich formatting (`<h1>`, `<table compact>`, `<aside>`, collapsible sections) with automatic fallback to standard HTML.
+
 ## Quick Installation (Recommended)
 
 The recommended installation method is to use the provided installer script:
