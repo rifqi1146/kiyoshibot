@@ -39,8 +39,21 @@ SHORTENER_HOSTS = (
     "www.lifehei.my.id",
 ) + CAPTCHA_SHORTENER_HOSTS
 
+# Timeout khusus resolusi embed VidHide/StreamWish. CDN mereka sering tidak
+# responsif; tanpa batas ini probe bisa menggantung ~30s saat OK.ru tidak ada.
+VIDHIDE_TIMEOUT = float(os.getenv("ANICHIN_VIDHIDE_TIMEOUT", "15"))
+
 # Halaman perantara `mirrored.to`.
 MIRRORED_HOSTS = ("mirrored.to", "www.mirrored.to")
+
+# Host embed keluarga VidHide/StreamWish (packer Dean Edwards -> `master.m3u8`,
+# segmen `.ts` tanpa enkripsi). Dipakai sebagai fallback KEDUA setelah OK.ru.
+VIDHIDE_HOSTS = (
+    "vidhide", "vidhidepre", "vidhidepro", "vidhidevip", "streamwish", "strwish",
+    "streamhg", "morencius", "callistanise", "minochinos", "ryderjet", "rubystm",
+    "rubyvidhub", "filelions", "filemoon", "vidspeeder", "cloudyup", "dood.",
+    "playmogo", "dsvplay", "earnvids", "embedrise", "luluvid", "doodstream",
+)
 
 # Preferensi host file setelah POST /out_url. Nama host diambil dari `alt` ikon
 # di tabel `/mirstats.php` (DoodStream, GoFileIo, StreamWish, SendNow, TurboBit,

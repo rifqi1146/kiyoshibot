@@ -34,6 +34,8 @@ from .constants import (
     MIRSTATS_MAX_POLLS,
     MIRSTATS_POLL_DELAY,
     UA,
+    VIDHIDE_HOSTS,
+    VIDHIDE_TIMEOUT,
 )
 
 log = logging.getLogger(__name__)
@@ -630,7 +632,29 @@ def resolve_provider(provider_url: str, label: str = "", referer: str = "") -> l
     if any(h in host for h in ("pndk.to", "safelinkearn", "t.me", "telegram.me", "telegram.dog")):
         return []
 
-    # Bukan keduanya: anggap URL file langsung (mis. buzzheavier.com/<id>).
+    # Host file yang SUDAH dikenal -> URL langsung (tidak lewat rantai shortener).
+    if any(h in host for h in (
+        "pixeldrain.com", "buzzheavier.com", "gofile.io", "strwish.com", "streamwish",
+        "streamhg", "filesdl", "terabox", "1024tera", "drive.google", "megaup.net",
+        "turbobit.net", "send.now", "dsvplay", "dood.", "d.tube", "odysee.com",
+        "ok.ru", "rumble.com", "dailymotion",
+    )):
+        return [{
+            "host": host or "Direct",
+            "url": u,
+            "label": label,
+            "name": "Direct",
+            "files_url": u,
+        }]
+
+    # Sisanya: anggap SHORTENER generik (`tinyurl.com`, `shrinkme.click`, dst.)
+    # dan coba rantai resolusi yang sama dengan `mirrored.to`. Ini penting karena
+    # Anichin memakai shortener yang terus berganti.
+    got = resolve_all_candidates(u, label, referer=referer)
+    if got:
+        return got
+    # Shortener mati / tidak menghasilkan apa pun -> URL apa adanya sebagai
+    # percobaan terakhir (host lain mungkin menerimanya langsung).
     return [{
         "host": host or "Direct",
         "url": u,
@@ -782,12 +806,14 @@ def parse_stream_servers(html: str) -> list[dict]:
 def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
     """Cari sumber streaming yang bisa diunduh langsung dari daftar server.
 
-    Hanya OK.ru yang didukung (metadata JSON publik tanpa captcha). Server lain
-    (Rumble/Dailymotion/RPMShare/Streamruby/...) butuh yt-dlp atau punya
-    proteksi — sengaja dilewati (repo melarang yt-dlp).
+    Urutan: OK.ru (paling andal, ~93% episode) -> keluarga VidHide/StreamWish
+    (unpack packer Dean Edwards -> `master.m3u8`). Server lain (Dailymotion/
+    Rumble/RPMShare/Odysee/D-Tube/...) butuh yt-dlp atau punya proteksi —
+    sengaja dilewati (repo melarang yt-dlp).
 
-    -> {host, embed, variants, title, duration, poster, referer} atau {}
+    -> {kind: "okru"|"hls", host, embed, ...} atau {}
     """
+    # 1. OK.ru.
     for s in servers or []:
         u = (s.get("url") or "").strip()
         if not u:
@@ -799,10 +825,135 @@ def resolve_stream_source(servers: list[dict], episode_url: str = "") -> dict:
                 log.warning("OK.ru resolve gagal | url=%s err=%r", u, e)
                 continue
             if got and got.get("variants"):
+                got["kind"] = "okru"
                 got["embed"] = u
                 got["label"] = s.get("label") or "OK.ru"
                 return got
+
+    # 2. Keluarga VidHide/StreamWish (packer -> m3u8, segmen .ts tanpa enkripsi).
+    for s in servers or []:
+        u = (s.get("url") or "").strip()
+        if not u:
+            continue
+        host = (urlsplit(u).hostname or "").lower()
+        if not any(h in host for h in VIDHIDE_HOSTS):
+            continue
+        try:
+            got = resolve_embed_hls(u)
+        except Exception as e:
+            log.warning("VidHide resolve gagal | url=%s err=%r", u, e)
+            continue
+        if got and got.get("segments"):
+            got["kind"] = "hls"
+            got["embed"] = u
+            got["label"] = s.get("label") or "StreamWish"
+            return got
     return {}
+
+
+def resolve_embed_hls(embed_url: str) -> dict:
+    """Embed keluarga VidHide/StreamWish -> daftar segmen `.ts`.
+
+    Halaman embed memuat Dean Edwards packer; setelah di-unpack muncul URL
+    `master.m3u8`. Master diikuti ke varian resolusi TERTINGGI, lalu playlist
+    media diurai jadi segmen absolut (umumnya TANPA `#EXT-X-KEY`).
+
+    -> {host, media_url, segments, height, bandwidth, duration, referer}
+    """
+    code, raw, final = _get(embed_url)
+    if code != 200 or not raw:
+        return {}
+
+    text = raw
+    if "eval(function(p,a,c,k,e,d" in raw:
+        try:
+            from handlers.dl.retrotube.packer import _PACKER_RE, _unpack_eval
+            m = _PACKER_RE.search(raw)
+            if m:
+                text = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)),
+                                    m.group(4).split("|"))
+        except Exception as e:
+            log.debug("VidHide unpack gagal | url=%s err=%r", embed_url, e)
+
+    m3 = re.search(r'https?://[^\s"\'<>\\]+\.m3u8[^\s"\'<>\\]*', text)
+    if not m3:
+        return {}
+    master = m3.group(0)
+    referer = "https://" + (urlsplit(final).hostname or urlsplit(embed_url).hostname or "")
+
+    media, height, bandwidth = _media_playlist(master, referer, timeout=VIDHIDE_TIMEOUT)
+    segs = (media or {}).get("segments") or []
+    if not segs:
+        return {}
+    return {
+        "host": urlsplit(master).hostname or "cdn",
+        "media_url": media.get("media_url") or "",
+        "segments": segs,
+        "height": height,
+        "bandwidth": bandwidth,
+        "duration": media.get("duration") or 0,
+        "referer": referer,
+    }
+
+
+def _media_playlist(m3u8_url: str, referer: str = "", timeout: float | None = None) -> tuple[dict, int, int]:
+    """Master/media playlist -> (media_dict, height, bandwidth).
+
+    Master (`#EXT-X-STREAM-INF`) -> ikuti varian resolusi TERTINGGI (rekursif).
+    Playlist media -> segmen absolut + total durasi.
+    """
+    from urllib.parse import urljoin
+
+    code, raw, final = _get(m3u8_url, referer=referer, timeout=timeout)
+    if code != 200 or not raw:
+        return {}, 0, 0
+    lines = [l.strip() for l in raw.splitlines()]
+
+    best = None
+    for idx, line in enumerate(lines):
+        if not line.startswith("#EXT-X-STREAM-INF"):
+            continue
+        rm = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
+        bm = re.search(r"BANDWIDTH=(\d+)", line)
+        path = ""
+        for nxt in lines[idx + 1:]:
+            if nxt and not nxt.startswith("#"):
+                path = nxt
+                break
+        if not path:
+            continue
+        h = int(rm.group(2)) if rm else 0
+        bw = int(bm.group(1)) if bm else 0
+        if best is None or h > best[1]:
+            best = (path, h, bw)
+    if best:
+        sub, _, _ = _media_playlist(urljoin(m3u8_url, best[0]), referer, timeout=timeout)
+        return sub, best[1], best[2]
+
+    segs = []
+    durs = []
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith("#EXTINF"):
+            m = re.search(r"#EXTINF\s*:\s*([\d.]+)", line)
+            if m:
+                durs.append(float(m.group(1)))
+            continue
+        if line.startswith("#"):
+            continue
+        segs.append(urljoin(final or m3u8_url, line))
+    if not segs:
+        return {}, 0, 0
+    return (
+        {
+            "media_url": final or m3u8_url,
+            "segments": segs,
+            "duration": int(round(sum(durs))) if durs else 0,
+        },
+        0,
+        0,
+    )
 
 
 def _okru_dims(hls_url: str) -> dict:
@@ -814,6 +965,8 @@ def _okru_dims(hls_url: str) -> dict:
     bisa memetakan ke tinggi nyata. `bandwidth` dipakai untuk mengestimasi total
     byte (`duration * bandwidth / 8`) supaya progress bar Telegram punya penyebut.
     """
+    if not hls_url:
+        return {}
     code, raw, _ = _get(hls_url)
     if code != 200 or not raw:
         return {}
