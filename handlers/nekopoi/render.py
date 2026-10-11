@@ -415,7 +415,7 @@ def build_format_choice_content(
         "<hr/>"
         "<h3>Format Selection</h3>"
         "<ul>"
-        "<li><b>Video</b> — MP4 video file (HLS/direct)</li>"
+        "<li><b>Video</b> — MP4 video</li>"
         "<li><b>MP3</b> — Extracted audio track</li>"
         "</ul>"
         "<hr/>"
