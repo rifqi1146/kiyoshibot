@@ -76,6 +76,7 @@ PREMIUM_ONLY_DOMAINS = {
 
 PREMIUM_NO_NSFW_DOMAINS = {
     "drakorid.co",
+    "anichin.moe",
 }
 
 AUTO_DOWNLOAD_DOMAINS = {

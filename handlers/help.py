@@ -121,6 +121,7 @@ HELP_TEXT = {
     "features": (
         "### 🤩 Main Features\n"
         "\n"
+        "- `/anichin` — Browse, search & download Donghua from Anichin\n"
         "- `/anime` — Search anime\n"
         "- `/asahotak` — Random question\n"
         "- `/aidetect` — Detect AI-generated images\n"

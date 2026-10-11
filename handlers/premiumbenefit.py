@@ -25,6 +25,7 @@ BENEFITS = (
             ("/becekku", "Browse, search and download from Becekku."),
             ("/simontok", "Browse, search and download from Simontok."),
             ("/drakorid", "Search and browse Korean dramas on Drakor.id."),
+            ("/anichin", "Browse, search and download Donghua from Anichin."),
         ),
     ),
     ("Manga", (("/manga nh", "Read NH / nhentai manga."),)),

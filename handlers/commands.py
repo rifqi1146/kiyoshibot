@@ -37,6 +37,7 @@ from handlers.premiumbenefit import premiumbenefit_cmd
 from handlers.punishworldsearch import punish_cmd
 from handlers.simontoksearch import simontok_cmd
 from handlers.drakor import drakorid_cmd
+from handlers.anichin import anichin_cmd
 from handlers.susunkata import susunkata_cmd
 from handlers.ping import ping_cmd
 from handlers.premium import premium_cmd
@@ -120,6 +121,7 @@ COMMAND_HANDLERS = [
     ("domain", domain_cmd, True),
     ("donate", donate_cmd, False),
     ("drakorid", drakorid_cmd, False),
+    ("anichin", anichin_cmd, False),
     ("fasttelethon", fasttelethon_cmd, False),
     ("getmodel", getmodel_cmd, False),
     ("getsticker", getsticker_cmd, False),

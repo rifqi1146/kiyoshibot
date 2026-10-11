@@ -62,6 +62,12 @@ def supports_drakorid_resolution(url: str) -> bool:
         host = host[4:]
     return host == "drakorid.co"
 
+def supports_anichin_resolution(url: str) -> bool:
+    host = _host(url)
+    if host.startswith("www."):
+        host = host[4:]
+    return host == "anichin.moe"
+
 def supports_resolution_picker(url: str) -> bool:
     return (
         supports_ytdlp_resolution(url)
@@ -69,6 +75,7 @@ def supports_resolution_picker(url: str) -> bool:
         or supports_cosxplay_resolution(url)
         or supports_darknessporn_resolution(url)
         or supports_drakorid_resolution(url)
+        or supports_anichin_resolution(url)
     )
 
 def supports_both_resolution_engines(url: str) -> bool:
@@ -339,6 +346,15 @@ async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple
             return (probe.get("res_list") or []), None
         except Exception as e:
             log.warning("Drakor.id probe failed | url=%s err=%r", url, e)
+            return [], str(e)
+
+    if chosen == "anichin" or (not chosen and supports_anichin_resolution(url)):
+        try:
+            from .anichin.main import probe_anichin
+            probe = await asyncio.to_thread(probe_anichin, url)
+            return (probe.get("res_list") or []), None
+        except Exception as e:
+            log.warning("Anichin probe failed | url=%s err=%r", url, e)
             return [], str(e)
 
     # Jalur lama: engine ytdlp. Nekopoi tidak pernah lewat sini.
