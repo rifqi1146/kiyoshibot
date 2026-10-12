@@ -95,7 +95,7 @@ kiyoshibot/
 │   ├── stats/                  # System telemetry, memory diagnostics & hardware metrics
 │   │
 │   ├── quotly.py               # Multi-message sticker/image quote renderer
-│   ├── manga.py                # Multi-source manga reader & in-memory PDF compiler
+│   ├── manga/                  # Multi-source manga reader (MangaDex, Maid-Manga, nHentai)
 │   ├── music.py                # High-speed music search & multi-source audio downloader
 │   ├── gsearch.py              # Google Programmable Search with pagination
 │   ├── welcome.py              # New member welcome, verification & CAPTCHA gate
