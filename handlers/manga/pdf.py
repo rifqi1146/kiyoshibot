@@ -106,15 +106,22 @@ async def _send_pdf_task(chat_id, message_thread_id, context, title, urls, refer
     pdf_io.name = f"{safe_title}.pdf"
 
     try:
+        # PDF final WAJIB membalas ke pesan command user (reply_to_message_id),
+        # bukan dikirim polos. Pesan status dihapus supaya tidak menyisakan
+        # pesan ganda di chat.
         await context.bot.send_document(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             document=pdf_io,
             caption=f"📚 <b>{_escape(title)}</b>",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_to_message_id=reply_to_message_id,
         )
         log.info(f"Successfully sent PDF '{title}' to chat_id={chat_id}")
-        await status_msg.delete()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
     except Exception as e:
         log.error(f"Failed to send PDF '{title}': {e}")
         await status_msg.edit_text("❌ Failed to send PDF. It might be too large for Telegram API (Limit is 50MB for bots).")
