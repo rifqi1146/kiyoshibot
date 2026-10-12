@@ -17,7 +17,7 @@ from .constants import MAID_URL
 from .http import _escape, fetch_html, fetch_image_bytes, safe_render_page
 from .pdf import send_pdf_task
 from .rich import build_maid_detail_rich, edit_manga_rich
-from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_set
+from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_set, get_reply_target, set_reply_target
 
 log = logging.getLogger(__name__)
 
@@ -153,8 +153,16 @@ async def handle_maid_callback(query, context, data: str):
             ch_nav.append(InlineKeyboardButton("Ch Next ⏩", callback_data=f"maidread_{ctx['next_ch']}"))
         keyboard = InlineKeyboardMarkup([nav, ch_nav])
         caption = f"📖 <b>{_escape(manga_title)}</b> | Ch:{_escape(ch_num)}"
-        is_edit = hasattr(query, "edit_message_media")
-        await safe_render_page(query, context, img_bytes, caption, keyboard, is_edit, owner_id=query.from_user.id)
+        reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
+        # Pesan detail hilang, reader dikirim sebagai reply ke pesan command user.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await safe_render_page(
+            query, context, img_bytes, caption, keyboard, False,
+            owner_id=query.from_user.id, reply_to_message_id=reply_to,
+        )
 
     elif data.startswith("maidnav_"):
         parts = data.split("_")
@@ -203,5 +211,14 @@ async def handle_maid_callback(query, context, data: str):
                 text="❌ No pages found for PDF."
             )
         title = f"{manga_title} - Ch {ch_num}"
-        asyncio.create_task(send_pdf_task(query.message.chat_id, query.message.message_thread_id, context, title, urls, MAID_URL, "maid"))
+        reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
+        # Pesan detail hilang, PDF dikirim sebagai reply ke pesan command user.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        asyncio.create_task(send_pdf_task(
+            query.message.chat_id, query.message.message_thread_id, context,
+            title, urls, MAID_URL, "maid", reply_to_message_id=reply_to,
+        ))
 

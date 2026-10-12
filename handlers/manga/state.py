@@ -102,6 +102,41 @@ def _move_message_lock(old_chat_id: int, old_message_id: int, new_chat_id: int, 
         _MANGA_LOCK_TIMES[new_key] = time.time()
 
 
+# ---------------------------------------------------------------------------
+# Reply target per pesan (pesan reader/PDF membalas ke pesan command user)
+# ---------------------------------------------------------------------------
+# (chat_id, message_id) -> message_id pesan asal (command user) yang harus dibalas.
+_MANGA_REPLY_TARGETS: dict[tuple[int, int], int] = {}
+
+
+def set_reply_target(chat_id: int, message_id: int, reply_to_message_id: int | None):
+    """Daftarkan `reply_to_message_id` sebagai target balasan untuk pesan ini."""
+    if chat_id is None or message_id is None or reply_to_message_id is None:
+        return
+    _MANGA_REPLY_TARGETS[(int(chat_id), int(message_id))] = int(reply_to_message_id)
+
+
+def get_reply_target(chat_id: int, message_id: int):
+    """Ambil target balasan untuk pesan ini (None kalau tidak ada)."""
+    if chat_id is None or message_id is None:
+        return None
+    return _MANGA_REPLY_TARGETS.get((int(chat_id), int(message_id)))
+
+
+def clear_reply_target(chat_id: int, message_id: int):
+    if chat_id is None or message_id is None:
+        return
+    _MANGA_REPLY_TARGETS.pop((int(chat_id), int(message_id)), None)
+
+
+def _extract_reply_to(msg) -> int | None:
+    """Ambil message_id pesan yang dibalas oleh `msg` (bila ada)."""
+    rtm = getattr(msg, "reply_to_message", None)
+    if rtm is None:
+        return None
+    return getattr(rtm, "message_id", None)
+
+
 async def _ensure_callback_lock(query) -> bool:
     msg = query.message
     if not msg or not query.from_user:

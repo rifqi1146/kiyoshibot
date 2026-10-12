@@ -18,7 +18,7 @@ from .constants import MANGADEX_API, UPLOADS_URL
 from .http import _escape, fetch_image_bytes, fetch_json, safe_render_page
 from .pdf import send_pdf_task
 from .rich import build_mangadex_detail_rich, edit_manga_rich
-from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_set
+from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_set, get_reply_target, set_reply_target
 
 log = logging.getLogger(__name__)
 
@@ -146,8 +146,16 @@ async def handle_mangadex_callback(query, context, data: str):
                 message_thread_id=query.message.message_thread_id,
                 text="❌ Failed to download image."
             )
-        is_edit = data.startswith("switchch_") or hasattr(query, "edit_message_media")
-        await safe_render_page(query, context, img_bytes, caption_text, keyboard, is_edit, owner_id=query.from_user.id)
+        reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
+        # Pesan detail hilang, reader dikirim sebagai reply ke pesan command user.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await safe_render_page(
+            query, context, img_bytes, caption_text, keyboard, False,
+            owner_id=query.from_user.id, reply_to_message_id=reply_to,
+        )
 
     elif data.startswith("nav_"):
         parts = data.split("_")
@@ -179,4 +187,13 @@ async def handle_mangadex_callback(query, context, data: str):
         chapter_hash = server_data.get("chapter", {}).get("hash", "")
         urls = [f"{base_url}/data/{chapter_hash}/{p}" for p in server_data.get("chapter", {}).get("data", [])]
         title = f"{m_title} - Ch {m_ch} [{m_lang}]"
-        asyncio.create_task(send_pdf_task(query.message.chat_id, query.message.message_thread_id, context, title, urls, "https://mangadex.org/", "dex"))
+        reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
+        # Pesan detail hilang, PDF dikirim sebagai reply ke pesan command user.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        asyncio.create_task(send_pdf_task(
+            query.message.chat_id, query.message.message_thread_id, context,
+            title, urls, "https://mangadex.org/", "dex", reply_to_message_id=reply_to,
+        ))

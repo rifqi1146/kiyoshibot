@@ -16,17 +16,18 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
-async def send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source=""):
+async def send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source="", reply_to_message_id=None):
     async with _PDF_SEM:
-        await _send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source)
+        await _send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source, reply_to_message_id)
 
 
-async def _send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source=""):
+async def _send_pdf_task(chat_id, message_thread_id, context, title, urls, referer, source="", reply_to_message_id=None):
     log.info(f"Starting PDF generation for '{title}' ({len(urls)} pages) from '{source}'")
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
         message_thread_id=message_thread_id,
-        text=f"⏳ Downloading 0/{len(urls)} pages for PDF..."
+        text=f"⏳ Downloading 0/{len(urls)} pages for PDF...",
+        reply_to_message_id=reply_to_message_id,
     )
 
     async def fetch_one(session, url):

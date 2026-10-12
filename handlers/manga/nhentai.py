@@ -17,7 +17,7 @@ from .constants import NH_API_URL, NH_HEADERS
 from .http import _escape, fetch_image_bytes, fetch_json, safe_render_page
 from .pdf import send_pdf_task
 from .rich import build_nh_detail_rich, edit_manga_rich
-from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_has, _udata_set
+from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_has, _udata_set, get_reply_target, set_reply_target
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +60,25 @@ async def handle_nhentai_callback(query, context, data: str):
         rich_html, plain_html, markup, cover_url = await fetch_detail_view(gallery_id)
         if not rich_html:
             return await query.answer("❌ Server error.")
+        if getattr(query.message, "photo", None):
+            # Dari reader (pesan foto): hapus lalu kirim rich detail baru sebagai reply.
+            from .http import send_detail_view
+            chat_id = query.message.chat_id
+            thread_id = getattr(query.message, "message_thread_id", None)
+            reply_to = get_reply_target(chat_id, query.message.message_id)
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            sent = await send_detail_view(
+                context, chat_id, thread_id, rich_html, plain_html, markup,
+                owner_id=query.from_user.id, reply_to_message_id=reply_to,
+            )
+            if sent:
+                msg_id = sent.get("message_id") if isinstance(sent, dict) else getattr(sent, "message_id", None)
+                if msg_id and reply_to:
+                    set_reply_target(chat_id, msg_id, reply_to)
+            return
         await edit_manga_rich(context.bot, query.message.chat_id, query.message.message_id, rich_html, plain_html, markup)
         _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
 
@@ -107,8 +126,18 @@ async def handle_nhentai_callback(query, context, data: str):
         ])
         title = g_data["title"]["pretty"] or g_data["title"]["english"]
         caption_text = f"🔞 <b>{_escape(title[:100])}</b>\n📄 Page: {page_idx + 1}/{len(pages)}"
-        is_edit = bool(getattr(query.message, "photo", None))
-        await safe_render_page(query, context, img_bytes, caption_text, keyboard, is_edit, owner_id=query.from_user.id)
+        reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
+        is_edit = bool(getattr(query.message, "photo", None)) and data.startswith("nhnav_")
+        if not is_edit:
+            # Entry dari detail (nhread_): pesan detail hilang, reader dikirim sebagai reply.
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+        await safe_render_page(
+            query, context, img_bytes, caption_text, keyboard, is_edit,
+            owner_id=query.from_user.id, reply_to_message_id=reply_to,
+        )
 
     elif data.startswith("pdfnh_"):
         await query.answer("Preparing PDF...")
@@ -138,4 +167,13 @@ async def handle_nhentai_callback(query, context, data: str):
                 ext = path.split(".")[-1] if "." in path else "jpg"
                 urls.append(f"{img_server}/galleries/{g_data['media_id']}/{i + 1}.{ext}")
         title = g_data["title"]["pretty"] or g_data["title"]["english"]
-        asyncio.create_task(send_pdf_task(query.message.chat_id, query.message.message_thread_id, context, title, urls, "https://nhentai.net/", "nh"))
+        reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
+        # Pesan detail hilang, PDF dikirim sebagai reply ke pesan command user.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        asyncio.create_task(send_pdf_task(
+            query.message.chat_id, query.message.message_thread_id, context,
+            title, urls, "https://nhentai.net/", "nh", reply_to_message_id=reply_to,
+        ))

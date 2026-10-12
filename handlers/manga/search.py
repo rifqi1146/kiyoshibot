@@ -215,14 +215,21 @@ async def handle_search_callback(query, context, data_str: str):
         chat_id = query.message.chat_id
         message_id = query.message.message_id
         thread_id = getattr(query.message, "message_thread_id", None)
-        # Pesan hasil search hilang, lalu detail dikirim sebagai Rich Message baru.
+        cmd_msg_id = data.get("cmd_msg_id")
+        # Pesan hasil search hilang, lalu detail dikirim sebagai Rich Message baru
+        # yang membalas ke pesan command user.
         try:
             await query.message.delete()
         except Exception:
             pass
         from .http import send_detail_view
+        from .state import set_reply_target
         sent = await send_detail_view(
             context, chat_id, thread_id, rich_html, plain_html, keyboard,
-            owner_id=query.from_user.id,
+            owner_id=query.from_user.id, reply_to_message_id=cmd_msg_id,
         )
+        if sent:
+            msg_id = sent.get("message_id") if isinstance(sent, dict) else getattr(sent, "message_id", None)
+            if msg_id:
+                set_reply_target(chat_id, msg_id, cmd_msg_id)
         return

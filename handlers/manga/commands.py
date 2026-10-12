@@ -88,14 +88,20 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rich_html:
             return await status.edit_text("❌ Doujin not found (invalid code).", parse_mode="HTML")
         from .http import send_detail_view
+        from .state import set_reply_target
         try:
             await status.delete()
         except Exception:
             pass
-        await send_detail_view(
+        sent = await send_detail_view(
             context, status.chat_id, getattr(status, "message_thread_id", None),
             rich_html, plain_html, markup, owner_id=user.id if user else 0,
+            reply_to_message_id=msg.message_id,
         )
+        if sent:
+            msg_id = sent.get("message_id") if isinstance(sent, dict) else getattr(sent, "message_id", None)
+            if msg_id:
+                set_reply_target(status.chat_id, msg_id, msg.message_id)
         return
 
     results = await collect_results(source, full_query, context)
@@ -113,6 +119,7 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "page": 0,
         "user_id": user.id if user else 0,
         "chat_id": chat.id,
+        "cmd_msg_id": msg.message_id,
     })
     rich, plain, markup = render_search_page(source, sid, get_search(context, sid))
     await edit_search_rich(context.bot, status.chat_id, status.message_id, rich, plain, markup)

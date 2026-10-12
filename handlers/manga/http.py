@@ -15,7 +15,7 @@ from telegram import InputMediaPhoto
 from utils.http import get_http_session
 
 from .constants import USER_AGENT
-from .state import _move_message_lock, _set_message_lock
+from .state import _move_message_lock, _set_message_lock, clear_reply_target, get_reply_target, set_reply_target
 
 try:
     from PIL import Image
@@ -103,7 +103,7 @@ def enforce_telegram_photo_limits(img_bytes):
         return img_bytes
 
 
-async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit=True, owner_id=None):
+async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit=True, owner_id=None, reply_to_message_id=None):
     img_safe = await asyncio.to_thread(enforce_telegram_photo_limits, img_bytes)
     if owner_id is None and getattr(query, "from_user", None):
         owner_id = query.from_user.id
@@ -150,9 +150,12 @@ async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit
             photo=img_safe,
             caption=caption,
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard,
+            reply_to_message_id=reply_to_message_id,
         )
         _move_message_lock(query.message.chat_id, query.message.message_id, sent.chat_id, sent.message_id, fallback_user_id=owner_id)
+        if reply_to_message_id:
+            set_reply_target(sent.chat_id, sent.message_id, reply_to_message_id)
     except Exception as e:
         log.error(f"Failed to send filtered photo: {e}")
         try:
@@ -161,9 +164,12 @@ async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit
                 message_thread_id=query.message.message_thread_id,
                 text="<b>Telegram refuses to send this page.</b>",
                 parse_mode="HTML",
-                reply_markup=keyboard
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_message_id,
             )
             _move_message_lock(query.message.chat_id, query.message.message_id, sent.chat_id, sent.message_id, fallback_user_id=owner_id)
+            if reply_to_message_id:
+                set_reply_target(sent.chat_id, sent.message_id, reply_to_message_id)
         except Exception as send_err:
             log.warning(f"Failed to send manga fallback error message: {send_err}")
 
