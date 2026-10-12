@@ -168,51 +168,34 @@ async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit
             log.warning(f"Failed to send manga fallback error message: {send_err}")
 
 
-async def send_detail_photo(context, chat_id, message_thread_id, caption, keyboard, cover_url, referer="", owner_id=None):
-    """Kirim detail manga sebagai foto + caption (fallback ke teks bila foto gagal).
+async def send_detail_view(context, chat_id, message_thread_id, rich_html, plain_html, keyboard, owner_id=None, reply_to_message_id=None):
+    """Kirim detail manga sebagai Rich Message (Bot API 10.3).
 
-    Dipakai oleh alur search: setelah pesan hasil search dihapus, detail dikirim
-    sebagai pesan baru berupa foto cover + caption + tombol chapter.
+    Cover sudah dibawa sebagai `<img src="..."/>` di dalam `rich_html` sehingga
+    tidak perlu upload foto terpisah. Fallback otomatis ke `sendMessage` plain HTML
+    bila server Bot API tidak mendukung `sendRichMessage`.
     """
-    photo = None
-    if cover_url:
-        raw = await fetch_image_bytes(cover_url, referer=referer or "https://mangadex.org/")
-        if raw:
-            photo = await asyncio.to_thread(enforce_telegram_photo_limits, raw)
+    from .rich import send_manga_rich
 
-    sent = None
     try:
-        if photo:
-            sent = await context.bot.send_photo(
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                photo=photo,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-        else:
-            sent = await context.bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
+        sent = await send_manga_rich(
+            context.bot,
+            chat_id,
+            rich_html,
+            plain_html,
+            keyboard,
+            reply_to_message_id=reply_to_message_id,
+            message_thread_id=message_thread_id,
+        )
     except Exception as e:
-        log.warning(f"Failed to send manga detail photo, falling back to text: {e}")
-        try:
-            sent = await context.bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-        except Exception as e2:
-            log.error(f"Failed to send manga detail fallback text: {e2}")
-            return None
+        log.error(f"Failed to send manga detail rich message: {e}")
+        return None
 
-    if sent and owner_id is not None:
-        _set_message_lock(chat_id, sent.message_id, owner_id)
+    msg_id = None
+    if isinstance(sent, dict):
+        msg_id = sent.get("message_id")
+    else:
+        msg_id = getattr(sent, "message_id", None)
+    if msg_id is not None and owner_id is not None:
+        _set_message_lock(chat_id, msg_id, owner_id)
     return sent

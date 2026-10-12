@@ -81,13 +81,21 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     register_message_owner(status.chat_id, status.message_id, user.id if user else 0)
 
-    # nHentai: input kode numerik -> langsung buka detail (foto cover + caption).
+    # nHentai: input kode numerik -> langsung buka detail Rich Message.
     if source == "nh" and full_query.isdigit():
         await status.edit_text("⏳ Loading details...", parse_mode="HTML")
-        caption, markup, cover_url = await nh_fetch_detail_view(full_query)
-        if not caption:
+        rich_html, plain_html, markup, cover_url = await nh_fetch_detail_view(full_query)
+        if not rich_html:
             return await status.edit_text("❌ Doujin not found (invalid code).", parse_mode="HTML")
-        await _send_detail_photo(context, status, caption, markup, cover_url, "https://nhentai.net/", user.id if user else 0)
+        from .http import send_detail_view
+        try:
+            await status.delete()
+        except Exception:
+            pass
+        await send_detail_view(
+            context, status.chat_id, getattr(status, "message_thread_id", None),
+            rich_html, plain_html, markup, owner_id=user.id if user else 0,
+        )
         return
 
     results = await collect_results(source, full_query, context)
@@ -108,16 +116,3 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
     rich, plain, markup = render_search_page(source, sid, get_search(context, sid))
     await edit_search_rich(context.bot, status.chat_id, status.message_id, rich, plain, markup)
-
-
-async def _send_detail_photo(context, status, caption, markup, cover_url, referer, owner_id):
-    from .http import send_detail_photo
-    try:
-        await status.delete()
-    except Exception:
-        pass
-    sent = await send_detail_photo(
-        context, status.chat_id, getattr(status, "message_thread_id", None),
-        caption, markup, cover_url, referer=referer, owner_id=owner_id,
-    )
-    return sent

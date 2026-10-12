@@ -25,7 +25,7 @@ from utils.rich_search import build_search_content, edit_search_rich
 
 from . import maid, mangadex, nhentai
 from .constants import MAID_URL, MANGADEX_API, NH_API_URL, NH_HEADERS
-from .http import fetch_html, fetch_json, send_detail_photo
+from .http import fetch_html, fetch_json
 from .state import _move_message_lock, _udata_get, _udata_set
 
 log = logging.getLogger(__name__)
@@ -163,6 +163,7 @@ def render_search_page(source: str, sid: str, data: dict):
 
 
 async def _build_detail(source: str, item: dict, context):
+    """-> (rich_html, plain_html, keyboard, cover_url)."""
     if source == "dex":
         return await mangadex.fetch_detail_view(item["id"], 0)
     if source == "maid":
@@ -207,22 +208,21 @@ async def handle_search_callback(query, context, data_str: str):
             return await query.answer("Invalid selection.", show_alert=True)
         item = results[idx]
         await query.answer("Loading details...")
-        caption, keyboard, cover_url = await _build_detail(source, item, context)
-        if not caption:
+        rich_html, plain_html, keyboard, cover_url = await _build_detail(source, item, context)
+        if not rich_html:
             return await query.answer("Failed to load details.", show_alert=True)
 
         chat_id = query.message.chat_id
         message_id = query.message.message_id
         thread_id = getattr(query.message, "message_thread_id", None)
-        # Pesan hasil search hilang, lalu detail dikirim sebagai foto baru.
+        # Pesan hasil search hilang, lalu detail dikirim sebagai Rich Message baru.
         try:
             await query.message.delete()
         except Exception:
             pass
-        sent = await send_detail_photo(
-            context, chat_id, thread_id, caption, keyboard, cover_url,
-            referer=REFERER_BY_SOURCE.get(source, ""), owner_id=query.from_user.id,
+        from .http import send_detail_view
+        sent = await send_detail_view(
+            context, chat_id, thread_id, rich_html, plain_html, keyboard,
+            owner_id=query.from_user.id,
         )
-        if sent:
-            _move_message_lock(chat_id, message_id, sent.chat_id, sent.message_id, fallback_user_id=query.from_user.id)
         return

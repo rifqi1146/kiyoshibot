@@ -16,6 +16,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from .constants import NH_API_URL, NH_HEADERS
 from .http import _escape, fetch_image_bytes, fetch_json, safe_render_page
 from .pdf import send_pdf_task
+from .rich import build_nh_detail_rich, edit_manga_rich
 from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_has, _udata_set
 
 log = logging.getLogger(__name__)
@@ -33,49 +34,34 @@ def get_nh_cover_url(g_data):
     return f"https://i.nhentai.net/galleries/{media_id}/1.{ext}"
 
 
-def build_nh_detail_ui(data):
-    title = data["title"]["pretty"] or data["title"]["english"]
-    tags = ", ".join(t["name"] for t in data["tags"] if t["type"] == "tag")
-    if len(tags) > 500:
-        tags = tags[:500] + "..."
-    text = (
-        f"📚 <b>{_escape(title)}</b>\n\n"
-        f"🆔 <b>Code:</b> <code>{_escape(data['id'])}</code>\n"
-        f"📄 <b>Pages:</b> {_escape(data['num_pages'])}\n"
-        f"❤️ <b>Favorites:</b> {_escape(data['num_favorites'])}\n"
-        f"🏷 <b>Tags:</b> {_escape(tags)}"
-    )
-    keyboard = [
+def build_nh_keyboard(data) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("📖 Read Now", callback_data=f"nhread_read_{data['id']}_0")],
         [InlineKeyboardButton("⬇️ Download PDF", callback_data=f"pdfnh_{data['id']}")],
-        [InlineKeyboardButton("❌ Close", callback_data="close_manga")]
-    ]
-    return text, InlineKeyboardMarkup(keyboard)
+        [InlineKeyboardButton("❌ Close", callback_data="close_manga")],
+    ])
 
 
 async def fetch_detail_view(gallery_id: str):
-    """-> (caption_html, keyboard, cover_url) untuk pesan foto detail nHentai."""
+    """-> (rich_html, plain_html, keyboard, cover_url) untuk detail nHentai."""
     g_data = await fetch_json(f"{NH_API_URL}/galleries/{gallery_id}", custom_headers=NH_HEADERS)
     if not g_data or "title" not in g_data:
-        return None, None, None
-    text, markup = build_nh_detail_ui(g_data)
+        return None, None, None, None
     cover_url = get_nh_cover_url(g_data)
-    return text, markup, cover_url
+    rich_html, plain_html = build_nh_detail_rich(g_data, cover_url or "")
+    keyboard = build_nh_keyboard(g_data)
+    return rich_html, plain_html, keyboard, cover_url
 
 
 async def handle_nhentai_callback(query, context, data: str):
     if data.startswith("nhdetail_"):
         gallery_id = data.split("_")[1]
         await query.answer("Loading details... ⏳")
-        caption, markup, cover_url = await fetch_detail_view(gallery_id)
-        if not caption:
+        rich_html, plain_html, markup, cover_url = await fetch_detail_view(gallery_id)
+        if not rich_html:
             return await query.answer("❌ Server error.")
-        if query.message.photo:
-            await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=markup)
-            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
-        else:
-            await query.edit_message_text(caption, parse_mode="HTML", reply_markup=markup)
-            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
+        await edit_manga_rich(context.bot, query.message.chat_id, query.message.message_id, rich_html, plain_html, markup)
+        _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
 
     elif data.startswith("nhread_") or data.startswith("nhnav_"):
         await query.answer("Downloading page... ⏳")

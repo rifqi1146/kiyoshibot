@@ -16,18 +16,19 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from .constants import MAID_URL
 from .http import _escape, fetch_html, fetch_image_bytes, safe_render_page
 from .pdf import send_pdf_task
+from .rich import build_maid_detail_rich, edit_manga_rich
 from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_set
 
 log = logging.getLogger(__name__)
 
 
 async def fetch_detail_view(path: str, short_id: str, offset: int = 0, context=None):
-    """-> (caption_html, keyboard, cover_url) untuk pesan foto detail series."""
+    """-> (rich_html, plain_html, keyboard, cover_url) untuk detail series."""
     if not path:
-        return None, None, None
+        return None, None, None, None
     html_doc = await fetch_html(f"{MAID_URL}{path}")
     if not html_doc:
-        return None, None, None
+        return None, None, None, None
     soup = BeautifulSoup(html_doc, "html.parser")
     title_tag = soup.select_one(".series-title h2, .series-titlex h2")
     title = title_tag.text.strip() if title_tag else "Unknown Title"
@@ -77,12 +78,8 @@ async def fetch_detail_view(path: str, short_id: str, offset: int = 0, context=N
         keyboard.append(list_nav)
     keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_manga")])
 
-    caption = (
-        f"📚 <b>{_escape(title)}</b>\n\n"
-        f"📝 {_escape(desc[:300])}...\n\n"
-        f"🗂 <i>Chapters {offset + 1}-{min(offset + 5, total_ch)} of {total_ch}</i>"
-    )
-    return caption, InlineKeyboardMarkup(keyboard), cover_url
+    rich_html, plain_html = build_maid_detail_rich(title, desc, offset, total_ch, cover_url or "")
+    return rich_html, plain_html, InlineKeyboardMarkup(keyboard), cover_url
 
 
 async def _parse_maid_chapter(url_path: str, context):
@@ -110,15 +107,11 @@ async def handle_maid_callback(query, context, data: str):
         if not path:
             return await query.answer("❌ Session expired.", show_alert=True)
         await query.answer(f"Loading chapters {offset + 1}-{offset + 5}...")
-        caption, keyboard, cover_url = await fetch_detail_view(path, short_id, offset, context)
-        if not caption:
+        rich_html, plain_html, keyboard, cover_url = await fetch_detail_view(path, short_id, offset, context)
+        if not rich_html:
             return await query.answer("❌ Failed to load page.")
-        if query.message.photo:
-            await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=keyboard)
-            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
-        else:
-            await query.edit_message_text(caption, parse_mode="HTML", reply_markup=keyboard)
-            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
+        await edit_manga_rich(context.bot, query.message.chat_id, query.message.message_id, rich_html, plain_html, keyboard)
+        _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
 
     elif data.startswith("maidread_"):
         await query.answer("Opening chapter... ⏳")
