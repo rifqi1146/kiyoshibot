@@ -73,6 +73,7 @@ from .constants import (
     PROGRESS_MIN_INTERVAL,
     PROGRESS_MAX_INTERVAL,
     PROGRESS_TARGET_EDITS,
+    NEKOPOI_PROGRESS_INTERVAL,
     FFMPEG_TIMEOUT,
     VARIANT_LABEL,
 )
@@ -233,8 +234,74 @@ def _probe_direct_size(url: str, headers: dict) -> int:
         return 0
 
 
-async def download_direct_mp4(url: str, out_path: str, bot, chat_id, status_msg_id, title: str, label: str, headers: dict):
-    """Unduh MP4 langsung (HTTP stream) -> out_path. Return ukuran."""
+def _probe_range_size(url: str, headers: dict) -> int:
+    """Ukuran file dari request `Range: bytes=0-0` (baca `Content-Range`).
+
+    Dipakai jalur unduh direct (DoodStream/Pixeldrain) yang tidak membawa
+    `total_size` dari probe. Tanpa denominator ini progress bar Telegram tidak
+    dirender (`TransferStats.total == 0` -> hanya "X downloaded"), jadi user
+    kehilangan bar + persen + ETA. Request 1 byte ini murah (~1 round-trip).
+    """
+    try:
+        r = _http().get(url, headers={**headers, "Range": "bytes=0-0"}, stream=True, timeout=_HTTP_TIMEOUT)
+        cr = r.headers.get("Content-Range") or ""
+        cl = r.headers.get("Content-Length") or 0
+        r.close()
+        m = re.search(r"/(\d+)\s*$", cr)
+        if m:
+            return int(m.group(1))
+        return int(cl or 0)
+    except Exception as e:
+        log.debug("probe range size gagal | %s : %r", url[:80], e)
+        return 0
+
+
+async def download_direct_mp4(url: str, out_path: str, bot, chat_id, status_msg_id, title: str, label: str, headers: dict, total_size: int = 0):
+    """Unduh MP4 langsung -> out_path. Return ukuran.
+
+    **aria2c multi-koneksi DULU**, streaming curl_cffi hanya sebagai fallback.
+
+    DoodStream / Pixeldrain men-throttle PER-KONEKSI: setelah burst awal
+    (~10 MB), satu koneksi turun ke ~100-170 KB/s (terukur 27.5 MB butuh >150
+    detik lewat curl_cffi satu koneksi). Kedua CDN mendukung HTTP Range
+    (`206 Partial Content` + `Content-Range`), jadi 16 koneksi paralel aria2c
+    menembus throttle itu — pola yang sama sudah dipakai MovieBox/FemdomVC
+    (`handlers.dl.aria2.download_aria2`).
+
+    `total_size` (kalau pemanggil tahu, mis. dari probe varian) dipakai agar
+    progress bar Telegram punya denominator sejak awal; kalau 0, probe
+    Content-Range sekali via request `Range: bytes=0-0` yang murah.
+    """
+    from handlers.dl.aria2 import download_aria2
+
+    if total_size <= 0:
+        total_size = _probe_range_size(url, headers)
+
+    try:
+        ok = await download_aria2(
+            url,
+            out_path,
+            headers=headers,
+            total_size=total_size,
+            kind="Nekopoi download",
+            label=f"Nekopoi {label}",
+            title=title,
+            bot=bot,
+            chat_id=chat_id,
+            status_msg_id=status_msg_id,
+            notify=bool(status_msg_id),
+            edit_interval=NEKOPOI_PROGRESS_INTERVAL,
+            timeout=_HTTP_TIMEOUT * 12,
+        )
+        if ok:
+            return os.path.getsize(out_path)
+        log.info("Nekopoi aria2c tidak tersedia/gagal, fallback streaming | url=%s", url[:80])
+    except FileSizeLimitExceeded:
+        raise
+    except Exception as e:
+        log.warning("Nekopoi aria2c exception, fallback streaming | err=%r", e)
+
+    # Fallback: streaming curl_cffi satu koneksi (lambat kalau CDN throttle).
     def _do():
         r = _http().get(url, headers=headers, stream=True, timeout=_HTTP_TIMEOUT)
         if r.status_code not in (200, 206):
@@ -402,19 +469,31 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
     deadline = time.time() + timeout_ms / 1000.0
 
     def _reached_target(u: str) -> bool:
-        """Sukses HANYA kalau sudah keluar dari semua host shortener.
+        """Sukses HANYA kalau mendarat di HOST FILE YANG DIKENAL.
 
-        Jangan pakai `h != start_host`: ouo.io nge-redirect otomatis ke
-        ouo.press (sekeluarga) SEBELUM halaman termuat, jadi begitu halaman
-        kebuka page.url sudah `ouo.press` padahal tombolnya belum diklik sama
-        sekali. Akibatnya URL shortener dikira hasil akhir -> diteruskan ke
-        pengecekan pixeldrain di main.py -> "Gagal mem-bypass link Pixeldrain".
+        Dua jebakan yang harus dihindari:
+        - `h != start_host`: ouo.io nge-redirect otomatis ke ouo.press
+          (sekeluarga) SEBELUM halaman termuat, jadi begitu halaman kebuka
+          page.url sudah `ouo.press` padahal tombolnya belum diklik.
+        - `_is_final_target` saja TIDAK cukup: popunder iklan ouo membajak tab
+          ke domain acak (`pwpnotif.com`, `gz.budgingtusseh.qpon`) yang bukan
+          host shortener -> dikira target final -> diteruskan ke pengecekan
+          pixeldrain -> "Gagal mem-bypass link Pixeldrain".
+        Karena itu hanya `_is_known_file_host` yang dihitung sukses.
         """
         h = (urlsplit(u or "").hostname or "").lower()
-        if not h:
+        if not h or h == start_host:
             return False
-        if h == start_host:
+        return _is_known_file_host(u)
+
+    def _is_ad_hijack(u: str) -> bool:
+        """Tab dibajak popunder iklan: keluar dari shortener tapi bukan host file."""
+        h = (urlsplit(u or "").hostname or "").lower()
+        if not h or h == start_host:
             return False
+        if _is_known_file_host(u):
+            return False
+        # Masih di keluarga shortener (ouo.press, halaman /go/, dsb.) -> normal.
         return _is_final_target(u)
 
     def _auto(page):
@@ -474,7 +553,9 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
                 except Exception:
                     pass
 
-            # 3. Tunggu redirect ke target final (keluar dari domain ouo)
+            # 3. Tunggu redirect ke target final (host file yang dikenal).
+            #    Popunder iklan bisa membajak tab ke domain acak -> batal
+            #    langsung (menunggu lebih lama tidak akan memulihkan tab).
             for _ in range(45):
                 if time.time() > deadline:
                     break
@@ -482,10 +563,13 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
                 if _reached_target(u):
                     result["url"] = u
                     return
+                if _is_ad_hijack(u):
+                    log.debug("ouo tab dibajak iklan, batal | %s -> %s", url, u)
+                    return
                 page.wait_for_timeout(300)
 
             # Fallback untuk shortener non-ouo / markup generik
-            if not _reached_target(page.url):
+            if not _reached_target(page.url) and not _is_ad_hijack(page.url):
                 for cand in ("#continue", ".btn-main", ".btn-continue", "a.btn", "button"):
                     loc = page.locator(cand)
                     if loc.count() and loc.first.is_visible() and loc.first.is_enabled():
@@ -539,6 +623,10 @@ def bypass_ouo(url: str, retries: int = 1) -> str | None:
             log.info("Bypass ouo attempt 1 miss, retry sekali lagi | %s", url)
             target = _bypass_ouo_stealth(url)
 
+    if target and not _is_known_file_host(target):
+        log.info("Bypass ouo mendarat di host bukan file (%s), tolak", target)
+        target = None
+
     if target:
         log.info("Bypass ouo.io sukses | %s -> %s", url, target)
     else:
@@ -568,11 +656,29 @@ def _is_final_target(url: str) -> bool:
     return not any(h == s or h.endswith("." + s) for s in _SHORTENER_HOSTS)
 
 
+# Host penyimpan file yang valid sebagai tujuan akhir bypass ouo.
+# ouo.io kadang melempar POPUNDER IKLAN yang membajak tab browser ke domain
+# acak (`pwpnotif.com`, `gz.budgingtusseh.qpon`, dsb.). Domain itu BUKAN host
+# shortener, jadi `_is_final_target` menganggapnya "target final" padahal iklan
+# -> URL sampah diteruskan ke pengecekan pixeldrain -> "Gagal mem-bypass link".
+# Solusi: keluar dari ouo HANYA dihitung sukses kalau mendarat di host file
+# yang benar-benar dikenal dari post Nekopoi.
+_KNOWN_FILE_HOSTS = ("pixeldrain.com", "mp4upload.com", "mirrored.to", "krakenfiles.com")
+
+
+def _is_known_file_host(url: str) -> bool:
+    """True kalau host `url` adalah penyimpan file yang didukung/dikenal."""
+    h = (urlsplit(url).hostname or "").lower()
+    return any(h == d or h.endswith("." + d) for d in _KNOWN_FILE_HOSTS)
+
+
 def _follow_http_redirects(url: str, hops: int = 5) -> str | None:
     """Ikuti redirect satu-per-satu (tanpa auto) + meta-refresh + JS location.
 
     Untuk shortener non-ouo (mis. `linkpoi.me`) yang cuma melempar Location /
-    meta refresh. Return url tujuan kalau berbeda, else None.
+    meta refresh. Sukses HANYA kalau mendarat di host file yang dikenal
+    (`_is_known_file_host`); halaman iklan di tengah jalan tidak dihitung.
+    Return url tujuan kalau berbeda, else None.
     """
     headers = {"User-Agent": UA, "Referer": url}
     cur = url
@@ -587,7 +693,7 @@ def _follow_http_redirects(url: str, hops: int = 5) -> str | None:
             nxt = urljoin(cur, loc)
             if nxt != cur:
                 cur = nxt
-                if _is_final_target(cur):
+                if _is_known_file_host(cur):
                     return cur
                 continue
         if r.status_code in (200, 301, 302, 303, 307, 308):
@@ -600,10 +706,57 @@ def _follow_http_redirects(url: str, hops: int = 5) -> str | None:
                 m = re.search(pat, text, re.I)
                 if m:
                     nxt = urljoin(cur, m.group(1))
-                    if nxt != cur and _is_final_target(nxt):
+                    if nxt != cur and _is_known_file_host(nxt):
                         return nxt
         break
-    return cur if cur != url else None
+    return None
+
+
+def _shortener_quick_status(url: str) -> int:
+    """GET cepat satu kali ke shortener -> HTTP status (0 kalau error jaringan).
+
+    Dipakai `shortener_dead` untuk mendeteksi host shortener yang MATI (balas
+    5xx di SEMUA path, mis. `linkpoi.me` sejak 2026) sebelum menyerahkan ke
+    browser stealth. Tanpa pre-check ini, host mati bikin Scrapling buka browser
+    (~50s: launch + polling tombol yang tidak pernah ada + retry Cloudflare)
+    cuma buat gagal — user menunggu ~1 menit per tautan.
+    """
+    try:
+        r = _http().get(url, headers={"User-Agent": UA}, timeout=PROBE_TIMEOUT, allow_redirects=False)
+        return int(r.status_code)
+    except Exception as e:
+        log.debug("shortener pre-check gagal | %s : %r", url, e)
+        return 0
+
+
+# {host: (ts, dead)} — hasil cek hidup/matinya shortener, TTL 10 menit.
+# Di-cache PER HOST (bukan per URL): satu post Nekopoi punya 6+ tautan linkpoi
+# dan cek per-URL bikin probe lambat tanpa manfaat (host mati = semua path 5xx).
+_SHORTENER_DEAD_CACHE: dict = {}
+_SHORTENER_DEAD_TTL = 600.0
+
+
+def shortener_dead(url: str) -> bool:
+    """True kalau host shortener `url` balas 5xx (host mati).
+
+    Dipakai `resolve_shortener` (fast-fail sebelum browser stealth) DAN
+    `main.probe_nekopoi` (buang tautan host mati dari daftar varian supaya
+    sumber lain — DoodStream — mengisi tinggi tersebut, bukan dibayangi baris
+    Pixeldrain yang mustahil ditembus).
+
+    Error jaringan (status 0) TIDAK dianggap mati: bisa cuma hiccup sesaat,
+    dan browser stealth masih punya peluang. Hanya 5xx yang deterministik.
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    if not host:
+        return False
+    now = time.time()
+    hit = _SHORTENER_DEAD_CACHE.get(host)
+    if hit and now - hit[0] < _SHORTENER_DEAD_TTL:
+        return hit[1]
+    dead = _shortener_quick_status(url) >= 500
+    _SHORTENER_DEAD_CACHE[host] = (now, dead)
+    return dead
 
 
 def resolve_shortener(url: str) -> str | None:
@@ -618,14 +771,21 @@ def resolve_shortener(url: str) -> str | None:
     if host.endswith("ouo.io") or host.endswith("ouo.press"):
         return bypass_ouo(url)
 
+    # Pre-check murah: shortener yang balas 5xx (host mati, mis. linkpoi.me)
+    # TIDAK akan pernah hidup lagi lewat browser stealth — langsung menyerah
+    # supaya fallback ke sumber lain (Mp4Upload/DoodStream) jalan dalam <1s.
+    if shortener_dead(url):
+        log.info("Shortener mati (5xx), dilewati | %s", url)
+        return None
+
     got = _follow_http_redirects(url)
-    if got and _is_final_target(got):
+    if got and _is_known_file_host(got):
         log.info("Shortener terresolusi via redirect | %s -> %s", url, got)
         return got
 
     log.debug("Redirect HTTP shortener mentok, fallback ke browser | %s", url)
     target = _bypass_ouo_stealth(url)
-    if target and _is_final_target(target):
+    if target and _is_known_file_host(target):
         log.info("Shortener terresolusi via browser | %s -> %s", url, target)
         return target
     log.debug("shortener resolution failed | %s", url)
@@ -727,29 +887,107 @@ PROBE_TIMEOUT = float(os.getenv("NEKOPOI_PROBE_TIMEOUT", "8"))
 PROBE_ATTEMPTS = int(os.getenv("NEKOPOI_PROBE_ATTEMPTS", "1"))
 
 
+# streampoi menyajikan DUA bentuk URL embed untuk file yang sama:
+#   - `https://streampoi.com/embed-<code>.html` -> HTML pemain (packer langsung)
+#   - `https://streampoi.com/e/<code>`          -> halaman "splash" iklan
+# Sejak streampoi memasang splash di `/e/<code>` (HTML ~2.4KB berisi tombol play
+# + form POST ke `/dl`), GET langsung ke `/e/<code>` TIDAK lagi memuat skrip
+# packer -> `probe_stream` gagal "Skrip packer tidak ditemukan di embed" padahal
+# stream-nya sehat. Bentuk kanonik `embed-<code>.html` menyajikan packer langsung.
+_STREAMPOI_E_RE = re.compile(r"streampoi\.com/e/([A-Za-z0-9]+)", re.I)
+_STREAMPOI_CODE_RE = re.compile(r"streampoi\.com/(?:e/|embed-)([A-Za-z0-9]+)", re.I)
+
+
+def _normalize_streampoi_embed(url: str) -> str:
+    """`streampoi.com/e/<code>` -> `streampoi.com/embed-<code>.html`."""
+    m = _STREAMPOI_E_RE.search(url)
+    if m:
+        return f"https://streampoi.com/embed-{m.group(1)}.html"
+    return url
+
+
+def _streampoi_file_code(url: str) -> str | None:
+    m = _STREAMPOI_CODE_RE.search(url)
+    return m.group(1) if m else None
+
+
+def _extract_master_from_html(text: str) -> str | None:
+    """HTML embed -> URL master.m3u8 (unpack Dean Edwards), atau None."""
+    m = _PACKER_RE.search(text)
+    if not m:
+        return None
+    try:
+        unpacked = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"))
+    except Exception as e:
+        log.debug("unpack packer gagal | %r", e)
+        return None
+    fm = re.search(r"file\s*:\s*\"([^\"]+)\"", unpacked) or re.search(r"file\s*:\s*'([^']+)'", unpacked)
+    return fm.group(1) if fm else None
+
+
+def _streampoi_post_dl(embed_url: str, referer: str) -> str:
+    """Form splash `/e/<code>` -> POST `/dl` -> HTML packer -> master.m3u8.
+
+    Halaman splash streampoi memuat `<form action="/dl" method="POST">` dengan
+    hidden input `op=embed`, `file_code=<code>`, `auto=1`, `referer=<post>`.
+    Submit form itu mengembalikan HTML pemain lengkap (packer ada).
+    """
+    code = _streampoi_file_code(embed_url)
+    if not code:
+        return ""
+    origin = embed_origin(embed_url)
+    try:
+        r = _http().post(
+            urljoin(origin, "/dl"),
+            data={"op": "embed", "file_code": code, "auto": "1", "referer": referer or ""},
+            headers={"User-Agent": UA, "Referer": embed_url, "Origin": origin.rstrip("/")},
+            timeout=_HTTP_TIMEOUT,
+        )
+    except Exception as e:
+        log.debug("streampoi /dl POST gagal | %s : %r", embed_url, e)
+        return ""
+    if r.status_code != 200:
+        return ""
+    return _extract_master_from_html(r.text) or ""
+
+
 def probe_stream(emb_url: str, referer: str) -> str:
     """Buka embed -> unpack packer -> URL master.m3u8.
 
     Sengaja timeout ketat + percobaan sedikit (lihat `PROBE_TIMEOUT`): embed yang
     hidup balas <1 detik, sedangkan embed yang mati butuh ~40 detik per percobaan
     cuma buat dapet error — terlalu mahal kalau probe ini di path user-facing.
+
+    Urutan: bentuk kanonik `embed-<code>.html` dulu (packer langsung), lalu URL
+    asli, terakhir form splash `POST /dl`.
     """
-    text = _get(
-        emb_url,
-        referer=referer,
-        attempts=PROBE_ATTEMPTS,
-        timeout=PROBE_TIMEOUT,
-    )
-    m = _PACKER_RE.search(text)
-    if not m:
-        raise RuntimeError("Skrip packer tidak ditemukan di embed")
-    unpacked = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"))
-    fm = re.search(r"file\s*:\s*\"([^\"]+)\"", unpacked) or re.search(r"file\s*:\s*'([^']+)'", unpacked)
-    if not fm:
-        raise RuntimeError("URL master.m3u8 tidak ditemukan di embed")
-    master = fm.group(1)
-    _dbg("master found | %s", master)
-    return master
+    candidates: list[str] = []
+    norm = _normalize_streampoi_embed(emb_url)
+    if norm != emb_url:
+        candidates.append(norm)
+    candidates.append(emb_url)
+
+    last_err: Exception | None = None
+    for u in candidates:
+        try:
+            text = _get(u, referer=referer, attempts=PROBE_ATTEMPTS, timeout=PROBE_TIMEOUT)
+        except RuntimeError as e:
+            last_err = e
+            continue
+        master = _extract_master_from_html(text)
+        if master:
+            _dbg("master found | %s", master)
+            return master
+
+    # Fallback terakhir: form splash `/e/<code>` (GET-nya cuma halaman iklan).
+    master = _streampoi_post_dl(emb_url, referer)
+    if master:
+        _dbg("master found via /dl POST | %s", master)
+        return master
+
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Skrip packer tidak ditemukan di embed")
 
 
 def _dood_variant_from_html(embed_url: str, html: str, title_hint: str = "") -> dict | None:

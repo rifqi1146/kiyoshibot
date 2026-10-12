@@ -181,6 +181,13 @@ def probe_nekopoi(raw_url: str) -> dict:
             mp4_hrefs = [a["href"] for a in row.find_all("a", href=True)
                          if "mp4upload" in a.get_text(strip=True).lower()]
 
+            # Buang tautan yang shortener-nya MATI (mis. linkpoi.me balas 500
+            # di semua path). Kalau tidak dibuang, baris ini "membayangi"
+            # tinggi tersebut di picker padahal mustahil diunduh, dan varian
+            # DoodStream untuk tinggi yang sama jadi tidak pernah terpakai.
+            hrefs = [u for u in hrefs if not ext.shortener_dead(u)]
+            mp4_hrefs = [u for u in mp4_hrefs if not ext.shortener_dead(u)]
+
             if not hrefs and not mp4_hrefs:
                 continue
 
@@ -422,7 +429,7 @@ async def nekopoi_download(
                 tmp_mp4 = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_tmp.mp4")
                 final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
                 try:
-                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, headers)
+                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, headers, total_size=int(chosen.get("size") or 0))
                     await asyncio.to_thread(ext._run_ffmpeg, [
                         "ffmpeg", "-y", "-loglevel", "error",
                         "-i", tmp_mp4, "-vn", "-acodec", "libmp3lame", "-q:a", "2", final_path,
@@ -448,7 +455,7 @@ async def nekopoi_download(
                 return result
 
             final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp4")
-            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, headers)
+            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, headers, total_size=int(chosen.get("size") or 0))
             size = os.path.getsize(final_path)
             if size > MAX_TG_SIZE:
                 raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
@@ -476,6 +483,7 @@ async def nekopoi_download(
             direct_url = ""
             src_headers: dict = {"User-Agent": ext.UA}
             src_kind = ""
+            src_size = 0
             last_src_err: Exception | None = None
             for kind, ouo_url in srcs:
                 label_kind = "Pixeldrain" if kind == "pixeldrain" else "Mp4Upload"
@@ -488,7 +496,8 @@ async def nekopoi_download(
                             direct_url = f"https://pixeldrain.com/api/file/{pid}"
                             src_headers = {"User-Agent": ext.UA}
                             src_kind = "Pixeldrain"
-                            log.info("Nekopoi Pixeldrain ready | pid=%s url=%s", pid, direct_url)
+                            src_size = await asyncio.to_thread(ext._probe_direct_size, direct_url, {"User-Agent": ext.UA})
+                            log.info("Nekopoi Pixeldrain ready | pid=%s url=%s size=%s", pid, direct_url, src_size)
                             break
                         log.info("Nekopoi Pixeldrain failed (%s), fallback ke Mp4Upload", bypassed)
                     else:
@@ -498,6 +507,7 @@ async def nekopoi_download(
                                 direct_url = cdn
                                 src_headers = {"User-Agent": ext.UA, "Referer": "https://www.mp4upload.com/"}
                                 src_kind = "Mp4Upload"
+                                src_size = int(_sz or 0)
                                 log.info("Nekopoi Mp4Upload ready | cdn=%s size=%s", cdn, _sz)
                                 break
                         log.info("Nekopoi Mp4Upload failed | url=%s", ouo_url)
@@ -517,7 +527,7 @@ async def nekopoi_download(
                 tmp_mp4 = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_tmp.mp4")
                 final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
                 try:
-                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, src_headers)
+                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, src_headers, total_size=src_size)
                     await asyncio.to_thread(ext._run_ffmpeg, [
                         "ffmpeg", "-y", "-loglevel", "error",
                         "-i", tmp_mp4, "-vn", "-acodec", "libmp3lame", "-q:a", "2", final_path,
@@ -543,7 +553,7 @@ async def nekopoi_download(
                 return result
 
             final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp4")
-            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, src_headers)
+            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, src_headers, total_size=src_size)
             size = os.path.getsize(final_path)
             if size > MAX_TG_SIZE:
                 raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
