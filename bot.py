@@ -60,6 +60,7 @@ BOT_COMMANDS=[
     ("nekopoi","Browse, search & download from Nekopoi"),
     ("simontok","Browse, search & download from Simontok"),
     ("punish","Browse, search & download from PunishWorld"),
+    ("cosxplay","Browse, search & download from CosXplay"),
     ("becekku","Browse, search & download from Becekku"),
     ("lendirqu","Browse, search & download from LendirQu"),
     ("drakorid","Browse & search Korean dramas"),

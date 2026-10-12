@@ -129,6 +129,7 @@ HELP_TEXT = {
         "- `/asupan` — Random TikTok content\n"
         "- `/becekku` — Browse, search & download from Becekku\n"
         "- `/buypremium` — Buy premium access via dynamic QRIS\n"
+        "- `/cosxplay` — Browse, search & download from CosXplay\n"
         "- `/dl` — Download videos from supported platforms\n"
         "- `/drakorid` — Browse & search Asian dramas on Drakor.id\n"
         "- `/gsearch` — Search on Google\n"

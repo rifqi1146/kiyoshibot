@@ -16,6 +16,7 @@ from handlers.manga import manga_callback
 from handlers.retrotubeexplorer import lendirqu_callback, becekku_callback
 from handlers.nekopoi import nekopoi_callback
 from handlers.punishworld import punish_callback
+from handlers.cosxplay import cosxplay_callback
 from handlers.simontok import simontok_callback
 from handlers.drakor import drakorid_callback
 from handlers.moviebox import moviebox_callback
@@ -52,6 +53,7 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(becekku_callback, pattern=r"^bq:"))
     app.add_handler(CallbackQueryHandler(nekopoi_callback, pattern=r"^nk:"))
     app.add_handler(CallbackQueryHandler(punish_callback, pattern=r"^pw:"))
+    app.add_handler(CallbackQueryHandler(cosxplay_callback, pattern=r"^cx:"))
     app.add_handler(CallbackQueryHandler(simontok_callback, pattern=r"^sm:"))
     app.add_handler(CallbackQueryHandler(drakorid_callback, pattern=r"^dk:"))
     app.add_handler(CallbackQueryHandler(moviebox_callback, pattern=r"^mb:"))

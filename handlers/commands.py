@@ -35,6 +35,7 @@ from handlers.retrotubeexplorer import lendirqu_cmd, becekku_cmd
 from handlers.nekopoi import nekopoi_cmd
 from handlers.premiumbenefit import premiumbenefit_cmd
 from handlers.punishworld import punish_cmd
+from handlers.cosxplay import cosxplay_cmd
 from handlers.simontok import simontok_cmd
 from handlers.drakor import drakorid_cmd
 from handlers.moviebox import moviebox_cmd
@@ -143,6 +144,7 @@ COMMAND_HANDLERS = [
     ("becekku", becekku_cmd, False),
     ("nekopoi", nekopoi_cmd, False),
     ("punish", punish_cmd, False),
+    ("cosxplay", cosxplay_cmd, False),
     ("simontok", simontok_cmd, False),
     ("menu", help_cmd, True),
     ("mode", mode_cmd, False),

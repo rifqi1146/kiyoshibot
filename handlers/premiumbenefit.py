@@ -21,6 +21,7 @@ BENEFITS = (
         (
             ("/nekopoi", "Browse, search and download from Nekopoi."),
             ("/punish", "Browse, search and download from PunishWorld."),
+            ("/cosxplay", "Browse, search and download from CosXplay."),
             ("/lendirqu", "Browse, search and download from LendirQu."),
             ("/becekku", "Browse, search and download from Becekku."),
             ("/simontok", "Browse, search and download from Simontok."),
