@@ -494,7 +494,7 @@ async def build_nh_search_list(query: str, page: int, context: ContextTypes.DEFA
     keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_manga")])
     return f"🔍 nHentai results: <b>{_escape(query)}</b> (Page {page}/{data['num_pages']})", InlineKeyboardMarkup(keyboard)
 
-NH_API_KEY = os.getenv("NH_API")
+NH_API_KEY = os.getenv("NH_API_KEY")
 NH_HEADERS = {"User-Agent": "PrivateMangaBot/3.0 (Telegram Bot)"}
 if NH_API_KEY:
     NH_HEADERS["Authorization"] = f"Key {NH_API_KEY}"
