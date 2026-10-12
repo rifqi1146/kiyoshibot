@@ -1,8 +1,8 @@
-"""nHentai API client, UI builder, dan callback handler.
+"""nHentai API client, detail view, dan callback handler.
 
 Menangani fitur nHentai (premium-only):
-- Search & paginasi (`nhsearch_`)
-- Detail gallery (`nhdetail_`)
+- Detail gallery -> dibangun `fetch_detail_view`, dikirim sebagai foto cover
+  oleh layer search (`search.py`).
 - Reader & navigasi halaman (`nhread_`, `nhnav_`)
 - Unduh PDF (`pdfnh_`)
 
@@ -11,10 +11,10 @@ Menangani fitur nHentai (premium-only):
 import asyncio
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .constants import NH_API_URL, NH_HEADERS
-from .http import _escape, enforce_telegram_photo_limits, fetch_image_bytes, fetch_json, safe_render_page
+from .http import _escape, fetch_image_bytes, fetch_json, safe_render_page
 from .pdf import send_pdf_task
 from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_has, _udata_set
 
@@ -53,81 +53,29 @@ def build_nh_detail_ui(data):
     return text, InlineKeyboardMarkup(keyboard)
 
 
-async def build_nh_search_list(query: str, page: int, context):
-    data = await fetch_json(f"{NH_API_URL}/search", {"query": query, "page": page}, custom_headers=NH_HEADERS)
-    if not data or not data.get("result"):
-        return None, None
-    _udata_set(context, "last_nh_query", query)
-    keyboard = []
-    for item in data["result"]:
-        raw_title = item["english_title"] or "Unknown"
-        title = raw_title[:40] + "..." if len(raw_title) > 40 else raw_title
-        gallery_id = item["id"]
-        keyboard.append([InlineKeyboardButton(f"📖 {title}", callback_data=f"nhdetail_{gallery_id}")])
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"nhsearch_{page - 1}"))
-    if data["num_pages"] > page:
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"nhsearch_{page + 1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-    keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_manga")])
-    return f"🔍 nHentai results: <b>{_escape(query)}</b> (Page {page}/{data['num_pages']})", InlineKeyboardMarkup(keyboard)
+async def fetch_detail_view(gallery_id: str):
+    """-> (caption_html, keyboard, cover_url) untuk pesan foto detail nHentai."""
+    g_data = await fetch_json(f"{NH_API_URL}/galleries/{gallery_id}", custom_headers=NH_HEADERS)
+    if not g_data or "title" not in g_data:
+        return None, None, None
+    text, markup = build_nh_detail_ui(g_data)
+    cover_url = get_nh_cover_url(g_data)
+    return text, markup, cover_url
 
 
 async def handle_nhentai_callback(query, context, data: str):
-    if data.startswith("nhsearch_"):
-        page = int(data.split("_")[1])
-        q = _udata_get(context, "last_nh_query", "")
-        if not q:
-            return await query.answer("❌ Search session expired.", show_alert=True)
-        text, markup = await build_nh_search_list(q, page, context)
-        if text:
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
-
-    elif data.startswith("nhdetail_"):
+    if data.startswith("nhdetail_"):
         gallery_id = data.split("_")[1]
         await query.answer("Loading details... ⏳")
-        g_data = await fetch_json(f"{NH_API_URL}/galleries/{gallery_id}", custom_headers=NH_HEADERS)
-        if not g_data:
+        caption, markup, cover_url = await fetch_detail_view(gallery_id)
+        if not caption:
             return await query.answer("❌ Server error.")
-        text, markup = build_nh_detail_ui(g_data)
-        cover_url = get_nh_cover_url(g_data)
-        cover_bytes = await fetch_image_bytes(cover_url, referer="https://nhentai.net/")
         if query.message.photo:
-            if cover_bytes:
-                img_safe = await asyncio.to_thread(enforce_telegram_photo_limits, cover_bytes)
-                await query.edit_message_media(
-                    media=InputMediaPhoto(media=img_safe, caption=text, parse_mode="HTML"),
-                    reply_markup=markup
-                )
-                _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
-            else:
-                await query.message.delete()
-                sent = await context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    message_thread_id=query.message.message_thread_id,
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=markup
-                )
-                _move_message_lock(query.message.chat_id, query.message.message_id, sent.chat_id, sent.message_id, fallback_user_id=query.from_user.id)
+            await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=markup)
+            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
         else:
-            if cover_bytes:
-                await query.message.delete()
-                img_safe = await asyncio.to_thread(enforce_telegram_photo_limits, cover_bytes)
-                sent = await context.bot.send_photo(
-                    chat_id=query.message.chat_id,
-                    message_thread_id=query.message.message_thread_id,
-                    photo=img_safe,
-                    caption=text,
-                    parse_mode="HTML",
-                    reply_markup=markup
-                )
-                _move_message_lock(query.message.chat_id, query.message.message_id, sent.chat_id, sent.message_id, fallback_user_id=query.from_user.id)
-            else:
-                await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
-                _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
+            await query.edit_message_text(caption, parse_mode="HTML", reply_markup=markup)
+            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
 
     elif data.startswith("nhread_") or data.startswith("nhnav_"):
         await query.answer("Downloading page... ⏳")

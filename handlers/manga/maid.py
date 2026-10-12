@@ -1,15 +1,14 @@
-"""Maid-Manga scraper, UI builder, dan callback handler.
+"""Maid-Manga scraper, detail view, dan callback handler.
 
 Menangani fitur Maid-Manga (`maid.my.id`):
-- Search (`/manga maid <query>`)
-- Detail series & daftar chapter (`maiddet_`)
+- Detail series & daftar chapter -> dibangun `fetch_detail_view`, dikirim sebagai
+  foto cover oleh layer search (`search.py`).
 - Reader chapter & navigasi halaman (`maidread_`, `maidnav_`)
 - Unduh PDF (`pdfmaid_`)
 """
 import asyncio
 import hashlib
 import logging
-import urllib.parse
 
 from bs4 import BeautifulSoup
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,37 +21,68 @@ from .state import _move_message_lock, _set_message_lock, _udata_get, _udata_set
 log = logging.getLogger(__name__)
 
 
-async def search_maid(full_query: str, context):
-    """Search Maid-Manga -> (text, markup) atau (error_text, None)."""
-    url = f"{MAID_URL}/?s={urllib.parse.quote(full_query)}"
-    html_doc = await fetch_html(url)
+async def fetch_detail_view(path: str, short_id: str, offset: int = 0, context=None):
+    """-> (caption_html, keyboard, cover_url) untuk pesan foto detail series."""
+    if not path:
+        return None, None, None
+    html_doc = await fetch_html(f"{MAID_URL}{path}")
     if not html_doc:
-        return "❌ Failed to contact the Maid-Manga server.", None
-
+        return None, None, None
     soup = BeautifulSoup(html_doc, "html.parser")
+    title_tag = soup.select_one(".series-title h2, .series-titlex h2")
+    title = title_tag.text.strip() if title_tag else "Unknown Title"
+    desc_tag = soup.select_one(".series-synops")
+    desc = desc_tag.text.strip() if desc_tag else "No description available."
+    cover_tag = soup.select_one(".series-thumb img")
+    cover_url = cover_tag.get("src") if cover_tag else None
+    if cover_url:
+        if cover_url.startswith("//"):
+            cover_url = "https:" + cover_url
+        elif cover_url.startswith("/"):
+            cover_url = MAID_URL + cover_url
+        elif cover_url.startswith("data:"):
+            cover_url = None
+
+    all_chapters = soup.select(".series-chapterlist li a")
+    total_ch = len(all_chapters)
     keyboard = []
-    hasil_unik = set()
-    items = soup.select('a[href*="/manga/"], a[href*="/komik/"]')
-    for link_tag in items:
-        href = link_tag.get("href", "")
-        title = link_tag.get("title") or link_tag.text.strip()
-        title = " ".join(title.split())
-        if not title or href in hasil_unik:
-            continue
-        hasil_unik.add(href)
-        path = href.replace(MAID_URL, "")
-        short_id = hashlib.md5(path.encode()).hexdigest()[:8]
-        _udata_set(context, f"maid_map_{short_id}", path)
-        keyboard.append([InlineKeyboardButton(f"📖 {title[:35]}", callback_data=f"maiddet_{short_id}")])
-        if len(keyboard) >= 5:
-            break
-
-    if not keyboard:
-        return "❌ Manga not found in Maid-Manga.", None
-
+    for i, ch in enumerate(all_chapters):
+        ch_url = ch.get("href", "")
+        ch_path = ch_url.replace(MAID_URL, "")
+        ch_span = ch.find("span")
+        if ch_span:
+            date_span = ch_span.find("span", class_="date")
+            if date_span:
+                date_span.extract()
+            ch_num = ch_span.text.strip().replace("Chapter ", "").replace("chapter ", "").strip()
+        else:
+            ch_num = "?"
+        ch_sid = hashlib.md5(ch_path.encode()).hexdigest()[:8]
+        if context is not None:
+            _udata_set(context, f"maid_map_{ch_sid}", ch_path)
+            n_sid = hashlib.md5(all_chapters[i - 1].get("href").replace(MAID_URL, "").encode()).hexdigest()[:8] if i > 0 else None
+            p_sid = hashlib.md5(all_chapters[i + 1].get("href").replace(MAID_URL, "").encode()).hexdigest()[:8] if i < total_ch - 1 else None
+            _udata_set(context, f"maid_ctx_{ch_sid}", {"next_ch": n_sid, "prev_ch": p_sid, "title": title, "ch_num": ch_num})
+        if offset <= i < offset + 5:
+            keyboard.append([
+                InlineKeyboardButton(f"📖 Ch. {ch_num}", callback_data=f"maidread_{ch_sid}"),
+                InlineKeyboardButton("⬇️ PDF", callback_data=f"pdfmaid_{ch_sid}"),
+            ])
+    list_nav = []
+    if offset > 0:
+        list_nav.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"maiddet_{short_id}_{offset - 5}"))
+    if offset + 5 < total_ch:
+        list_nav.append(InlineKeyboardButton("Older ➡️", callback_data=f"maiddet_{short_id}_{offset + 5}"))
+    if list_nav:
+        keyboard.append(list_nav)
     keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_manga")])
-    text = f"🔍 <b>Maid-Manga:</b> <code>{_escape(full_query)}</code>"
-    return text, InlineKeyboardMarkup(keyboard)
+
+    caption = (
+        f"📚 <b>{_escape(title)}</b>\n\n"
+        f"📝 {_escape(desc[:300])}...\n\n"
+        f"🗂 <i>Chapters {offset + 1}-{min(offset + 5, total_ch)} of {total_ch}</i>"
+    )
+    return caption, InlineKeyboardMarkup(keyboard), cover_url
 
 
 async def _parse_maid_chapter(url_path: str, context):
@@ -80,78 +110,15 @@ async def handle_maid_callback(query, context, data: str):
         if not path:
             return await query.answer("❌ Session expired.", show_alert=True)
         await query.answer(f"Loading chapters {offset + 1}-{offset + 5}...")
-        html_doc = await fetch_html(f"{MAID_URL}{path}")
-        if not html_doc:
+        caption, keyboard, cover_url = await fetch_detail_view(path, short_id, offset, context)
+        if not caption:
             return await query.answer("❌ Failed to load page.")
-        soup = BeautifulSoup(html_doc, "html.parser")
-        title_tag = soup.select_one(".series-title h2, .series-titlex h2")
-        title = title_tag.text.strip() if title_tag else "Unknown Title"
-        desc_tag = soup.select_one(".series-synops")
-        desc = desc_tag.text.strip() if desc_tag else "No description available."
-        cover_tag = soup.select_one(".series-thumb img")
-        cover_url = cover_tag.get("src") if cover_tag else None
-        if cover_url:
-            if cover_url.startswith("//"):
-                cover_url = "https:" + cover_url
-            elif cover_url.startswith("/"):
-                cover_url = MAID_URL + cover_url
-            elif cover_url.startswith("data:"):
-                cover_url = None
-        all_chapters = soup.select(".series-chapterlist li a")
-        total_ch = len(all_chapters)
-        keyboard = []
-        for i, ch in enumerate(all_chapters):
-            ch_url = ch.get("href", "")
-            ch_path = ch_url.replace(MAID_URL, "")
-            ch_span = ch.find("span")
-            if ch_span:
-                date_span = ch_span.find("span", class_="date")
-                if date_span:
-                    date_span.extract()
-                ch_num = ch_span.text.strip().replace("Chapter ", "").replace("chapter ", "").strip()
-            else:
-                ch_num = "?"
-            ch_sid = hashlib.md5(ch_path.encode()).hexdigest()[:8]
-            _udata_set(context, f"maid_map_{ch_sid}", ch_path)
-            n_sid = hashlib.md5(all_chapters[i - 1].get("href").replace(MAID_URL, "").encode()).hexdigest()[:8] if i > 0 else None
-            p_sid = hashlib.md5(all_chapters[i + 1].get("href").replace(MAID_URL, "").encode()).hexdigest()[:8] if i < total_ch - 1 else None
-            _udata_set(context, f"maid_ctx_{ch_sid}", {"next_ch": n_sid, "prev_ch": p_sid, "title": title, "ch_num": ch_num})
-            if offset <= i < offset + 5:
-                keyboard.append([
-                    InlineKeyboardButton(f"📖 Ch. {ch_num}", callback_data=f"maidread_{ch_sid}"),
-                    InlineKeyboardButton("⬇️ PDF", callback_data=f"pdfmaid_{ch_sid}")
-                ])
-        list_nav = []
-        if offset > 0:
-            list_nav.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"maiddet_{short_id}_{offset - 5}"))
-        if offset + 5 < total_ch:
-            list_nav.append(InlineKeyboardButton("Older ➡️", callback_data=f"maiddet_{short_id}_{offset + 5}"))
-        if list_nav:
-            keyboard.append(list_nav)
-        keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_manga")])
-        caption = (
-            f"📚 <b>{_escape(title)}</b>\n\n"
-            f"📝 {_escape(desc[:300])}...\n\n"
-            f"🗂 <i>Chapters {offset + 1}-{min(offset + 5, total_ch)} of {total_ch}</i>"
-        )
         if query.message.photo:
-            await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=keyboard)
             _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
         else:
-            if cover_url:
-                await query.message.delete()
-                sent = await context.bot.send_photo(
-                    chat_id=query.message.chat_id,
-                    message_thread_id=query.message.message_thread_id,
-                    photo=cover_url,
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                _move_message_lock(query.message.chat_id, query.message.message_id, sent.chat_id, sent.message_id, fallback_user_id=query.from_user.id)
-            else:
-                await query.edit_message_text(caption, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-                _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
+            await query.edit_message_text(caption, parse_mode="HTML", reply_markup=keyboard)
+            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
 
     elif data.startswith("maidread_"):
         await query.answer("Opening chapter... ⏳")
@@ -244,3 +211,4 @@ async def handle_maid_callback(query, context, data: str):
             )
         title = f"{manga_title} - Ch {ch_num}"
         asyncio.create_task(send_pdf_task(query.message.chat_id, query.message.message_thread_id, context, title, urls, MAID_URL, "maid"))
+

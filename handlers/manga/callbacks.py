@@ -1,10 +1,12 @@
 """Central callback query dispatcher untuk manga reader.
 
-Mendistribusikan event berdasarkan provider:
-- Umum: `ignore`, `close_manga`
-- MangaDex: `msearch_`, `detailmanga_`, `readmanga_`, `switchch_`, `nav_`, `pdfdex_`
-- Maid-Manga: `maiddet_`, `maidread_`, `maidnav_`, `pdfmaid_`
-- nHentai: `nhsearch_`, `nhdetail_`, `nhread_`, `nhnav_`, `pdfnh_`
+Routing berdasarkan prefix:
+- `mgdex:` / `mgmaid:` / `mgnh:` -> layer search Rich Message (`search.py`):
+  `nav`, `open` (hapus pesan search + kirim foto detail), `close`.
+- `detailmanga_`, `readmanga_`, `switchch_`, `nav_`, `pdfdex_` -> MangaDex.
+- `maiddet_`, `maidread_`, `maidnav_`, `pdfmaid_` -> Maid-Manga.
+- `nhdetail_`, `nhread_`, `nhnav_`, `pdfnh_` -> nHentai.
+- `ignore`, `close_manga` -> umum.
 """
 import logging
 
@@ -15,12 +17,15 @@ from database import premium
 from database.nsfw_db import is_nsfw_allowed
 from handlers.join import require_join_or_block
 
+from . import search
 from .maid import handle_maid_callback
 from .mangadex import handle_mangadex_callback
 from .nhentai import handle_nhentai_callback
 from .state import _clear_message_lock, _ensure_callback_lock
 
 log = logging.getLogger(__name__)
+
+_SEARCH_PREFIXES = ("mgdex:", "mgmaid:", "mgnh:")
 
 
 def _is_nsfw_enabled(chat_id: int, chat_type: str) -> bool:
@@ -40,7 +45,7 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # nHentai gate premium
-    if data.startswith(("nhsearch_", "nhdetail_", "nhread_", "nhnav_", "pdfnh_")):
+    if data.startswith(("mgnh:", "nhdetail_", "nhread_", "nhnav_", "pdfnh_")):
         user = update.effective_user
         if not user or not premium.check(user.id):
             return await query.answer("❌ NH manga is only available for premium users.", show_alert=True)
@@ -56,14 +61,18 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             return
 
-    # Dispatch ke sub-modul yang bertanggung jawab
-    if data.startswith(("msearch_", "detailmanga_", "readmanga_", "switchch_", "nav_", "pdfdex_")):
+    # Layer search Rich Message
+    if data.startswith(_SEARCH_PREFIXES):
+        return await search.handle_search_callback(query, context, data)
+
+    # Detail / reader per provider
+    if data.startswith(("detailmanga_", "readmanga_", "switchch_", "nav_", "pdfdex_")):
         return await handle_mangadex_callback(query, context, data)
 
     if data.startswith(("maiddet_", "maidread_", "maidnav_", "pdfmaid_")):
         return await handle_maid_callback(query, context, data)
 
-    if data.startswith(("nhsearch_", "nhdetail_", "nhread_", "nhnav_", "pdfnh_")):
+    if data.startswith(("nhdetail_", "nhread_", "nhnav_", "pdfnh_")):
         return await handle_nhentai_callback(query, context, data)
 
     log.debug("Unhandled manga callback: %s", data)

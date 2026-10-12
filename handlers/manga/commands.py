@@ -1,5 +1,9 @@
-"""Command handler `/manga <source> <query/code>`."""
-import asyncio
+"""Command handler `/manga <source> <query/code>`.
+
+Search manga memakai Rich Message (Bot API 10.3) yang seragam dengan `/simontok`,
+`/punish`, dan `/nekopoi` (lihat `search.py`). Klik tombol nomor -> pesan hasil
+search dihapus, lalu detail dikirim sebagai foto cover + caption.
+"""
 import logging
 
 from telegram import Update
@@ -8,15 +12,28 @@ from telegram.ext import ContextTypes
 from database import premium
 from database.nsfw_db import is_nsfw_allowed
 from handlers.join import require_join_or_block
+from utils.menu_lock import register_message_owner
+from utils.rich_search import edit_search_rich
 
 from .constants import NH_API_URL, NH_HEADERS
-from .http import _escape, enforce_telegram_photo_limits, fetch_image_bytes, fetch_json
-from .maid import search_maid
-from .mangadex import build_search_list
-from .nhentai import build_nh_detail_ui, build_nh_search_list, get_nh_cover_url
-from .state import _move_message_lock, _set_message_lock
+from .http import _escape, fetch_json
+from .nhentai import fetch_detail_view as nh_fetch_detail_view
+from .search import (
+    LABEL_BY_SOURCE,
+    collect_results,
+    get_search,
+    new_search_id,
+    render_search_page,
+    store_search,
+)
 
 log = logging.getLogger(__name__)
+
+_SOURCE_ALIASES = {
+    "dex": "dex", "mangadex": "dex",
+    "maid": "maid", "maidmanga": "maid",
+    "nh": "nh", "nhentai": "nh",
+}
 
 
 def _is_nsfw_enabled(chat_id: int, chat_type: str) -> bool:
@@ -45,63 +62,62 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await msg.reply_text(help_txt, parse_mode="HTML")
 
-    source = context.args[0].lower()
-    full_query = " ".join(context.args[1:])
+    source = _SOURCE_ALIASES.get(context.args[0].lower())
+    full_query = " ".join(context.args[1:]).strip()
     user = update.effective_user
 
-    if source in ["nh", "nhentai"] and (not user or not premium.check(user.id)):
-        return await update.message.reply_text("❌ NH manga is only available for premium users.")
+    if source is None:
+        return await msg.reply_text(
+            "❌ <b>Unknown source.</b>\nChoose <code>dex</code>, <code>maid</code>, or <code>nh</code>.",
+            parse_mode="HTML",
+        )
+
+    if source == "nh" and (not user or not premium.check(user.id)):
+        return await msg.reply_text("❌ NH manga is only available for premium users.")
 
     status = await msg.reply_text(
-        f"🔍 Processing <code>{_escape(full_query)}</code> in <b>{_escape(source.upper())}</b>...",
-        parse_mode="HTML"
+        f"🔍 Searching <code>{_escape(full_query)}</code> in <b>{_escape(LABEL_BY_SOURCE[source])}</b>...",
+        parse_mode="HTML",
     )
-    _set_message_lock(status.chat_id, status.message_id, update.effective_user.id)
+    register_message_owner(status.chat_id, status.message_id, user.id if user else 0)
 
-    if source in ["dex", "mangadex"]:
-        text, markup = await build_search_list(full_query, 0, context)
-        if text:
-            await status.edit_text(text, parse_mode="HTML", reply_markup=markup)
-        else:
-            await status.edit_text("❌ Manga not found in MangaDex.", parse_mode="HTML")
+    # nHentai: input kode numerik -> langsung buka detail (foto cover + caption).
+    if source == "nh" and full_query.isdigit():
+        await status.edit_text("⏳ Loading details...", parse_mode="HTML")
+        caption, markup, cover_url = await nh_fetch_detail_view(full_query)
+        if not caption:
+            return await status.edit_text("❌ Doujin not found (invalid code).", parse_mode="HTML")
+        await _send_detail_photo(context, status, caption, markup, cover_url, "https://nhentai.net/", user.id if user else 0)
+        return
 
-    elif source in ["maid", "maidmanga"]:
-        text, markup = await search_maid(full_query, context)
-        if markup:
-            await status.edit_text(text, parse_mode="HTML", reply_markup=markup)
-        else:
-            await status.edit_text(text, parse_mode="HTML")
-
-    elif source in ["nh", "nhentai"]:
-        if full_query.isdigit():
-            data = await fetch_json(f"{NH_API_URL}/galleries/{full_query}", custom_headers=NH_HEADERS)
-            if not data or "error" in data or "title" not in data:
-                return await status.edit_text("❌ Doujin not found (invalid code).", parse_mode="HTML")
-            text, markup = build_nh_detail_ui(data)
-            cover_url = get_nh_cover_url(data)
-            cover_bytes = await fetch_image_bytes(cover_url, referer="https://nhentai.net/")
-            if cover_bytes:
-                await status.delete()
-                img_safe = await asyncio.to_thread(enforce_telegram_photo_limits, cover_bytes)
-                sent = await context.bot.send_photo(
-                    status.chat_id,
-                    photo=img_safe,
-                    caption=text,
-                    parse_mode="HTML",
-                    reply_markup=markup
-                )
-                _move_message_lock(status.chat_id, status.message_id, sent.chat_id, sent.message_id, fallback_user_id=update.effective_user.id)
-            else:
-                await status.edit_text(text, parse_mode="HTML", reply_markup=markup)
-        else:
-            text, markup = await build_nh_search_list(full_query, 1, context)
-            if text:
-                await status.edit_text(text, parse_mode="HTML", reply_markup=markup)
-            else:
-                await status.edit_text("❌ Doujin not found.", parse_mode="HTML")
-
-    else:
-        await status.edit_text(
-            "❌ <b>Unknown source.</b>\nChoose <code>dex</code>, <code>maid</code>, or <code>nh</code>.",
-            parse_mode="HTML"
+    results = await collect_results(source, full_query, context)
+    if not results:
+        return await status.edit_text(
+            f"❌ No results for <code>{_escape(full_query)}</code> in <b>{_escape(LABEL_BY_SOURCE[source])}</b>.",
+            parse_mode="HTML",
         )
+
+    sid = new_search_id()
+    store_search(context, sid, {
+        "source": source,
+        "query": full_query,
+        "results": results,
+        "page": 0,
+        "user_id": user.id if user else 0,
+        "chat_id": chat.id,
+    })
+    rich, plain, markup = render_search_page(source, sid, get_search(context, sid))
+    await edit_search_rich(context.bot, status.chat_id, status.message_id, rich, plain, markup)
+
+
+async def _send_detail_photo(context, status, caption, markup, cover_url, referer, owner_id):
+    from .http import send_detail_photo
+    try:
+        await status.delete()
+    except Exception:
+        pass
+    sent = await send_detail_photo(
+        context, status.chat_id, getattr(status, "message_thread_id", None),
+        caption, markup, cover_url, referer=referer, owner_id=owner_id,
+    )
+    return sent

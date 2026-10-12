@@ -1,10 +1,13 @@
-"""MangaDex API client + builder UI + callback handler.
+"""MangaDex API client + detail view + callback handler.
 
-Menangani fitur MangaDex:
-- Search manga & paginasi (`msearch_`)
-- Detail manga & daftar chapter (`detailmanga_`)
-- Reader chapter & navigasi halaman (`readmanga_`, `switchch_`, `nav_`)
-- Unduh PDF (`pdfdex_`)
+Detail manga (caption + tombol chapter) dibangun oleh `fetch_detail_view` dan
+dikirim sebagai foto cover oleh layer search (`search.py`).
+
+Callback yang ditangani di sini (pesan detail yang sudah berupa foto):
+- `detailmanga_<manga_id>_<offset>` -> halaman chapter Older/Newer (edit caption).
+- `readmanga_<chapter_id>` / `switchch_<chapter_id>` -> buka chapter.
+- `nav_<chapter_id>_<idx>` -> navigasi halaman reader.
+- `pdfdex_<chapter_id>` -> unduh PDF.
 """
 import asyncio
 import logging
@@ -68,105 +71,60 @@ def get_nav_keyboard(chapter_id: str, current_idx: int, total_pages: int, prev_c
     return InlineKeyboardMarkup([page_nav, chapter_nav])
 
 
-async def build_search_list(query: str, offset: int, context):
-    search_url = f"{MANGADEX_API}/manga"
-    params = {"title": query, "limit": 5, "offset": offset, "contentRating[]": ["safe", "suggestive", "erotica", "pornographic"]}
-    data = await fetch_json(search_url, params)
-    if not data or not data.get("data"):
-        return None, None
+async def fetch_detail_view(manga_id: str, offset: int = 0):
+    """-> (caption_html, keyboard, cover_url) untuk pesan foto detail manga."""
+    m_data = await fetch_json(f"{MANGADEX_API}/manga/{manga_id}?includes[]=cover_art")
+    if not m_data or not m_data.get("data"):
+        return None, None, None
+    manga = m_data["data"]
+    titles = manga["attributes"]["title"]
+    title = titles.get("en") or titles.get("ja-ro") or next(iter(titles.values()), "Unknown")
+    desc = (manga["attributes"]["description"].get("en") or "No description available.")[:250] + "..."
+    cover_file = next((rel["attributes"]["fileName"] for rel in manga["relationships"] if rel.get("type") == "cover_art"), None)
+    cover_url = f"{UPLOADS_URL}/covers/{manga_id}/{cover_file}" if cover_file else None
+
+    feed = await fetch_json(f"{MANGADEX_API}/manga/{manga_id}/feed", {
+        "translatedLanguage[]": ["en", "id"],
+        "limit": 10,
+        "offset": offset,
+        "order[chapter]": "desc",
+    })
     keyboard = []
-    for manga in data["data"]:
-        title = manga["attributes"]["title"].get("en", manga["attributes"]["title"].get("ja-ro", "Unknown"))
-        _udata_set(context, "last_manga_query", query)
-        keyboard.append([InlineKeyboardButton(f"📖 {title[:35]}", callback_data=f"detailmanga_{manga['id']}_0")])
+    if feed and feed.get("data"):
+        for ch in feed["data"]:
+            ch_num = ch["attributes"]["chapter"] or "Oneshot"
+            lang = ch["attributes"]["translatedLanguage"].upper()
+            keyboard.append([
+                InlineKeyboardButton(f"📖 Ch.{ch_num} [{lang}]", callback_data=f"readmanga_{ch['id']}"),
+                InlineKeyboardButton("⬇️ PDF", callback_data=f"pdfdex_{ch['id']}"),
+            ])
     nav_buttons = []
     if offset > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"msearch_{offset - 5}"))
-    if data["total"] > offset + 5:
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"msearch_{offset + 5}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"detailmanga_{manga_id}_{offset - 10}"))
+    if feed and feed.get("total", 0) > offset + 10:
+        nav_buttons.append(InlineKeyboardButton("Older ➡️", callback_data=f"detailmanga_{manga_id}_{offset + 10}"))
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_manga")])
-    return f"🔍 MangaDex results: <b>{_escape(query)}</b> ({(offset // 5) + 1})", InlineKeyboardMarkup(keyboard)
+    caption = f"📚 <b>{_escape(title)}</b>\n\n📝 {_escape(desc)}"
+    return caption, InlineKeyboardMarkup(keyboard), cover_url
 
 
 async def handle_mangadex_callback(query, context, data: str):
-    if data.startswith("msearch_"):
-        offset = int(data.split("_")[1])
-        q = _udata_get(context, "last_manga_query", "")
-        if not q:
-            return await query.answer("❌ Search session expired.", show_alert=True)
-        text, markup = await build_search_list(q, offset, context)
-        if text:
-            if query.message.photo:
-                await query.message.delete()
-                sent = await context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    message_thread_id=query.message.message_thread_id,
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=markup
-                )
-                _move_message_lock(query.message.chat_id, query.message.message_id, sent.chat_id, sent.message_id, fallback_user_id=query.from_user.id)
-            else:
-                await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
-
-    elif data.startswith("detailmanga_"):
+    if data.startswith("detailmanga_"):
         parts = data.split("_")
         manga_id = parts[1]
         offset = int(parts[2]) if len(parts) > 2 else 0
         await query.answer("Loading chapter list...")
-        m_data = await fetch_json(f"{MANGADEX_API}/manga/{manga_id}?includes[]=cover_art")
-        if not m_data:
+        caption, keyboard, cover_url = await fetch_detail_view(manga_id, offset)
+        if not caption:
             return await query.answer("❌ Server error.")
-        manga = m_data["data"]
-        title = manga["attributes"]["title"].get("en", manga["attributes"]["title"].get("ja-ro", "Unknown"))
-        desc = manga["attributes"]["description"].get("en", "No description available.")[:250] + "..."
-        cover_file = next((rel["attributes"]["fileName"] for rel in manga["relationships"] if rel["type"] == "cover_art"), None)
-        cover_url = f"{UPLOADS_URL}/covers/{manga_id}/{cover_file}" if cover_file else None
-        feed = await fetch_json(f"{MANGADEX_API}/manga/{manga_id}/feed", {
-            "translatedLanguage[]": ["en", "id"],
-            "limit": 10,
-            "offset": offset,
-            "order[chapter]": "desc"
-        })
-        keyboard = []
-        if feed and feed.get("data"):
-            for ch in feed["data"]:
-                ch_num = ch["attributes"]["chapter"] or "Oneshot"
-                lang = ch["attributes"]["translatedLanguage"].upper()
-                keyboard.append([
-                    InlineKeyboardButton(f"📖 Ch.{ch_num} [{lang}]", callback_data=f"readmanga_{ch['id']}"),
-                    InlineKeyboardButton("⬇️ PDF", callback_data=f"pdfdex_{ch['id']}")
-                ])
-        nav_buttons = []
-        if offset > 0:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Newer", callback_data=f"detailmanga_{manga_id}_{offset - 10}"))
-        if feed and feed.get("total", 0) > offset + 10:
-            nav_buttons.append(InlineKeyboardButton("Older ➡️", callback_data=f"detailmanga_{manga_id}_{offset + 10}"))
-        if nav_buttons:
-            keyboard.append(nav_buttons)
-        keyboard.append([InlineKeyboardButton("🔙 Return to search", callback_data="msearch_0")])
-        keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close_manga")])
-        caption = f"📚 <b>{_escape(title)}</b>\n\n📝 {_escape(desc)}"
         if query.message.photo:
-            await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_caption(caption=caption, parse_mode="HTML", reply_markup=keyboard)
             _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
         else:
-            if cover_url:
-                await query.message.delete()
-                sent = await context.bot.send_photo(
-                    chat_id=query.message.chat_id,
-                    message_thread_id=query.message.message_thread_id,
-                    photo=cover_url,
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                _move_message_lock(query.message.chat_id, query.message.message_id, sent.chat_id, sent.message_id, fallback_user_id=query.from_user.id)
-            else:
-                await query.edit_message_text(caption, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-                _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
+            await query.edit_message_text(caption, parse_mode="HTML", reply_markup=keyboard)
+            _set_message_lock(query.message.chat_id, query.message.message_id, query.from_user.id)
 
     elif data.startswith("readmanga_") or data.startswith("switchch_"):
         await query.answer("Downloading page... ⏳")
