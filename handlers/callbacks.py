@@ -16,7 +16,7 @@ from handlers.manga import manga_callback
 from handlers.retrotubeexplorer import lendirqu_callback, becekku_callback
 from handlers.nekopoi import nekopoi_callback
 from handlers.punishworldsearch import punish_callback
-from handlers.simontoksearch import simontok_callback
+from handlers.simontok import simontok_callback
 from handlers.drakor import drakorid_callback
 from handlers.moviebox import moviebox_callback
 from handlers.anichin import anichin_callback

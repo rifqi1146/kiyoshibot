@@ -85,6 +85,7 @@ kiyoshibot/
 │   ├── nekopoi/                # Nekopoi Explorer UI (Browse, JAV/Hentai, Genres, Episode grid)
 │   ├── drakor/                 # Drakor.id Explorer UI (K-Drama/C-Drama browse, auto-login)
 │   ├── retrotubeexplorer/      # BecekKu & LendirQu Explorer UI (Browse, categories, tags)
+│   ├── simontok/               # Simontok Explorer UI (Bot API 10.3 Rich Message, browse, genres)
 │   ├── asupan/                 # TikTok feed source (vendored web API scraper & signer)
 │   ├── caca/                   # Multi-persona conversational AI engine (7 personas)
 │   ├── proxy/                  # Local OpenAI-compatible proxy server & web grounding tools
@@ -96,7 +97,6 @@ kiyoshibot/
 │   ├── manga.py                # Multi-source manga reader & in-memory PDF compiler
 │   ├── music.py                # High-speed music search & multi-source audio downloader
 │   ├── punishworldsearch.py    # /punish search command & download dispatcher
-│   ├── simontoksearch.py       # /simontok search command & download dispatcher
 │   ├── gsearch.py              # Google Programmable Search with pagination
 │   ├── welcome.py              # New member welcome, verification & CAPTCHA gate
 │   ├── join.py                 # Force-join channel gate & realtime leave detection
