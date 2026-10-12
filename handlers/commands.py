@@ -34,7 +34,7 @@ from handlers.spoiler import spoiler_cmd
 from handlers.retrotubeexplorer import lendirqu_cmd, becekku_cmd
 from handlers.nekopoi import nekopoi_cmd
 from handlers.premiumbenefit import premiumbenefit_cmd
-from handlers.punishworldsearch import punish_cmd
+from handlers.punishworld import punish_cmd
 from handlers.simontok import simontok_cmd
 from handlers.drakor import drakorid_cmd
 from handlers.moviebox import moviebox_cmd
