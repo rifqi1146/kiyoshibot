@@ -5,20 +5,17 @@ import html
 import uuid
 import hashlib
 import time
-import base64
-import random
-import string
 import logging
 import asyncio
 import aiohttp
 import aiofiles
-from urllib.parse import urlparse,parse_qs,unquote
+from urllib.parse import urlparse
 from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from curl_cffi.requests import AsyncSession
-from handlers.dl.utils import progress_bar, check_media_size_limit, FileSizeLimitExceeded
-from handlers.dl.progress import render_progress_text, edit_status, TransferStats, log_progress, log_done, prune_edit_cache
+from handlers.dl.utils import check_media_size_limit, FileSizeLimitExceeded
+from handlers.dl.progress import render_progress_text, edit_status, TransferStats, prune_edit_cache
 
 log=logging.getLogger(__name__)
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
@@ -29,9 +26,17 @@ IG_PROGRESS_INTERVAL=float(os.getenv("INSTAGRAM_PROGRESS_INTERVAL","1.5"))
 IG_AIOHTTP_CHUNK_SIZE=int(os.getenv("INSTAGRAM_AIOHTTP_CHUNK_SIZE",str(256*1024)))
 IG_CAROUSEL_CONCURRENCY=int(os.getenv("INSTAGRAM_CAROUSEL_CONCURRENCY","6"))
 
-GRAPHQL_ENDPOINT="https://www.instagram.com/graphql/query/"
-POLARIS_ACTION="PolarisPostActionLoadPostQueryQuery"
-GRAPHQL_DOC_ID="8845758582119845"
+IG_HOME_URL="https://www.instagram.com/"
+GRAPHQL_ENDPOINT="https://www.instagram.com/api/graphql"
+POLARIS_ACTION="PolarisLoggedOutDesktopWWWPostRootContentQuery"
+GRAPHQL_DOC_ID="27130156389949648"
+IG_APP_ID="936619743392459"
+IG_ASBD_ID="359341"
+IG_B64_ALPHABET="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+IG_TOKEN_TTL=1800.0
+_IG_HTTP=None
+_IG_HTTP_LOCK=asyncio.Lock()
+_IG_TOKEN_CACHE={"lsd":"","csrf":"","ts":0.0}
 IG_WEB_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 WEB_HEADERS={
     "User-Agent":IG_WEB_USER_AGENT,
@@ -215,115 +220,245 @@ def _caption_from_media(media:dict)->str:
             return text
     return ""
 
+def _extract_lsd_token(html_text:str)->str:
+    m=re.search(r'\["LSD",\[\],\{"token":"([^"]+)"',html_text or "")
+    if m:
+        return m.group(1)
+    m=re.search(r'<script[^>]*\bid="__eqmc"[^>]*>(.*?)</script>',html_text or "",flags=re.S)
+    if m:
+        try:
+            return str(json.loads(m.group(1)).get("l") or "")
+        except Exception as e:
+            log.debug("Instagram LSD eqmc parse failed | err=%r",e)
+    return ""
+
+def _cookie_value(session,name:str)->str:
+    try:
+        val=session.cookies.get(name)
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    return ""
+
+async def _ig_http()->AsyncSession:
+    global _IG_HTTP
+    if _IG_HTTP is None:
+        _IG_HTTP=AsyncSession(impersonate="chrome")
+    return _IG_HTTP
+
+async def _ig_reset_http():
+    global _IG_HTTP
+    old=_IG_HTTP
+    _IG_HTTP=None
+    if old is not None:
+        try:
+            await old.close()
+        except Exception as e:
+            log.debug("Instagram session close failed | err=%r",e)
+    try:
+        from .mobile_session import reset_session
+        reset_session()
+    except Exception:
+        pass
+
+close_instagram_session=_ig_reset_http
+
+async def _ig_tokens(force:bool=False)->tuple[str,str]:
+    async with _IG_HTTP_LOCK:
+        now=time.monotonic()
+        if not force and _IG_TOKEN_CACHE["lsd"] and (now-_IG_TOKEN_CACHE["ts"])<IG_TOKEN_TTL:
+            return _IG_TOKEN_CACHE["lsd"],_IG_TOKEN_CACHE["csrf"]
+        session=await _ig_http()
+        lsd=""
+        csrf=""
+        try:
+            resp=await session.get(IG_HOME_URL,timeout=20)
+            lsd=_extract_lsd_token(resp.text or "")
+            csrf=_cookie_value(session,"csrftoken")
+        except Exception as e:
+            log.warning("Instagram session bootstrap failed | err=%r",e)
+        if lsd:
+            _IG_TOKEN_CACHE.update(lsd=lsd,csrf=csrf,ts=now)
+        return _IG_TOKEN_CACHE["lsd"],_IG_TOKEN_CACHE["csrf"]
+
+def _shortcode_to_pk(shortcode:str)->str:
+    sc=(shortcode or "").strip()
+    if len(sc)>28:
+        sc=sc[:-28]
+    value=0
+    for ch in sc:
+        idx=IG_B64_ALPHABET.find(ch)
+        if idx<0:
+            raise RuntimeError(f"Instagram invalid shortcode: {shortcode}")
+        value=value*64+idx
+    return str(value)
+
+def _pick_largest(candidates:list[dict]|None)->tuple[str,int,int]:
+    best=None
+    for c in candidates or []:
+        if not isinstance(c,dict):
+            continue
+        url=str(c.get("url") or "").strip()
+        if not url:
+            continue
+        w=int(c.get("width") or 0)
+        h=int(c.get("height") or 0)
+        area=w*h
+        if best is None or area>best[0]:
+            best=(area,url,w,h)
+    return (best[1],best[2],best[3]) if best else ("",0,0)
+
+def _polaris_node_item(node:dict|None)->dict|None:
+    if not isinstance(node,dict):
+        return None
+    mt=int(node.get("media_type") or 0)
+    vv=node.get("video_versions") or []
+    dims=node.get("dimensions") or {}
+    w=int(node.get("original_width") or dims.get("width") or 0)
+    h=int(node.get("original_height") or dims.get("height") or 0)
+    is_video=mt==2 or bool(vv) or bool(node.get("is_video")) or bool(node.get("video_url"))
+
+    if is_video:
+        url=""
+        if isinstance(vv,list) and vv:
+            url=str((vv[0] or {}).get("url") or "").strip()
+        if not url:
+            url=str(node.get("video_url") or "").strip()
+        if not url:
+            url=str(node.get("display_url") or "").strip()
+        if not url:
+            return None
+        candidates=(node.get("image_versions2") or {}).get("candidates")
+        thumb_url,_,_=_pick_largest(candidates)
+        thumb=thumb_url or str(node.get("display_url") or node.get("display_uri") or "").strip()
+        return {"type":"video","url":url,"thumbnail":thumb,"width":w,"height":h}
+
+    candidates=(node.get("image_versions2") or {}).get("candidates")
+    url,cand_w,cand_h=_pick_largest(candidates)
+    if not url:
+        url=str(node.get("display_url") or node.get("display_uri") or "").strip()
+    if not url:
+        return None
+    if not w:
+        w=cand_w
+    if not h:
+        h=cand_h
+    return {"type":"photo","url":url,"thumbnail":"","width":w,"height":h}
+
 def _parse_gql_media(media:dict)->dict:
     if not isinstance(media,dict):
         return {"caption":"","username":"","nickname":"","items":[]}
-    typename=str(media.get("__typename") or media.get("typename") or "").strip()
-    owner=media.get("owner") or {}
-    username=(owner.get("username") or "").strip()
-    nickname=(owner.get("full_name") or owner.get("fullName") or "").strip()
+    owner=media.get("owner") or media.get("user") or {}
+    username=str(owner.get("username") or "").strip()
+    nickname=str(owner.get("full_name") or owner.get("fullName") or "").strip()
     caption=_caption_from_media(media)
     items=[]
-    def add_item(kind:str,url:str,thumb:str="",dims:dict|None=None):
-        url=str(url or "").strip()
-        if not url:
-            return
-        dims=dims or {}
-        items.append({"type":kind,"url":url,"thumbnail":str(thumb or "").strip(),"width":int(dims.get("width") or 0),"height":int(dims.get("height") or 0)})
-    def node_kind(node:dict)->str:
-        node_type=str(node.get("__typename") or node.get("typename") or "").strip()
-        if node_type in ("GraphVideo","XDTGraphVideo"):
-            return "video"
-        if node_type in ("GraphImage","XDTGraphImage"):
-            return "photo"
-        # Embed responses drop __typename; fall back to the is_video flag / video_url presence.
-        if node.get("is_video") or node.get("video_url"):
-            return "video"
-        if node.get("display_url"):
-            return "photo"
-        return ""
-    def add_node(node:dict,dims:dict|None=None):
-        kind=node_kind(node or {})
-        if kind=="video":
-            add_item("video",node.get("video_url") or node.get("display_url"),node.get("display_url"),node.get("dimensions") or dims)
-        elif kind=="photo":
-            add_item("photo",node.get("display_url"),"",node.get("dimensions") or dims)
-    if typename in ("GraphVideo","XDTGraphVideo"):
-        add_item("video",media.get("video_url"),media.get("display_url"),media.get("dimensions"))
-    elif typename in ("GraphImage","XDTGraphImage"):
-        add_item("photo",media.get("display_url"),"",media.get("dimensions"))
-    elif typename in ("GraphSidecar","XDTGraphSidecar"):
-        for edge in (((media.get("edge_sidecar_to_children") or {}).get("edges")) or []):
-            add_node((edge or {}).get("node") or {})
+
+    carousel=media.get("carousel_media")
+    sidecar_edges=((media.get("edge_sidecar_to_children") or {}).get("edges")) or []
+
+    if isinstance(carousel,list) and carousel:
+        for node in carousel:
+            it=_polaris_node_item(node)
+            if it:
+                items.append(it)
+    elif sidecar_edges:
+        for edge in sidecar_edges:
+            node=(edge or {}).get("node") or {}
+            it=_polaris_node_item(node)
+            if it:
+                items.append(it)
     else:
-        # No typename at all: derive from flags, or treat sidecar children as a last resort.
-        add_node(media)
-        if not items:
-            for edge in (((media.get("edge_sidecar_to_children") or {}).get("edges")) or []):
-                add_node((edge or {}).get("node") or {})
+        it=_polaris_node_item(media)
+        if it:
+            items.append(it)
+
     return {"caption":caption,"username":username,"nickname":nickname,"items":items}
-
-def _rand_alpha(n:int)->str:
-    return "".join(random.choice(string.ascii_letters) for _ in range(n))
-
-def _rand_b64(n_bytes:int)->str:
-    return base64.urlsafe_b64encode(os.urandom(n_bytes)).decode().rstrip("=")
-
-def _build_gql_request():
-    rollout_hash="1019933358"
-    session_data=_rand_b64(8)
-    csrf_token=_rand_b64(24)
-    device_id=_rand_b64(18)
-    machine_id=_rand_b64(18)
-    headers={
-        "x-ig-app-id":"936619743392459",
-        "x-fb-lsd":session_data,
-        "x-csrftoken":csrf_token,
-        "x-bloks-version-id":"6309c8d03d8a3f47a1658ba38b304a3f837142ef5f637ebf1f8f52d4b802951e",
-        "x-asbd-id":"129477",
-        "x-fb-friendly-name":POLARIS_ACTION,
-        "content-type":"application/x-www-form-urlencoded",
-        "cookie":"; ".join([f"csrftoken={csrf_token}",f"ig_did={device_id}","wd=1280x720","dpr=2",f"mid={machine_id}","ig_nrcb=1"]),
-    }
-    body={
-        "__d":"www","__a":"1","__s":"::"+_rand_alpha(6),"__hs":"20126.HYP:instagram_web_pkg.2.1...0","__req":"b",
-        "__ccg":"EXCELLENT","__rev":rollout_hash,"__hsi":"7436540909012459023","__dyn":_rand_b64(90),"__csr":_rand_b64(90),
-        "__user":"0","__comet_req":"7","libav":"0","dpr":"2","lsd":session_data,"jazoest":str(random.randint(1000,99999)),
-        "__spin_r":rollout_hash,"__spin_b":"trunk","__spin_t":str(int(time.time())),
-        "fb_api_caller_class":"RelayModern","fb_api_req_friendly_name":POLARIS_ACTION,"server_timestamps":"true","doc_id":GRAPHQL_DOC_ID,
-    }
-    return headers,body
 
 async def _fetch_gql_metadata(raw_url:str)->dict:
     shortcode=_extract_shortcode(raw_url)
     if not shortcode:
         raise RuntimeError("Instagram shortcode not found")
-    gql_headers,gql_body=_build_gql_request()
-    headers={**WEB_HEADERS,**gql_headers}
-    body=dict(gql_body)
-    body["variables"]=json.dumps({"shortcode":shortcode,"fetch_tagged_user_count":None,"hoisted_comment_id":None,"hoisted_reply_id":None},separators=(",",":"))
-    session=await get_http_session()
-    async with session.post(GRAPHQL_ENDPOINT,data=body,headers=headers,timeout=aiohttp.ClientTimeout(total=25),allow_redirects=True) as resp:
-        text=await resp.text()
-        log.info("Instagram GraphQL metadata fetch | status=%s len=%s",resp.status,len(text or ""))
-        if resp.status>=400:
-            raise RuntimeError(f"Instagram GraphQL HTTP {resp.status}")
+    media_id=_shortcode_to_pk(shortcode)
+
+    for attempt in range(2):
+        lsd,csrf=await _ig_tokens(force=attempt>0)
+        session=await _ig_http()
+        headers={
+            "X-IG-App-ID":IG_APP_ID,
+            "X-ASBD-ID":IG_ASBD_ID,
+            "X-IG-WWW-Claim":"0",
+            "Origin":"https://www.instagram.com",
+            "Accept":"*/*",
+            "X-Requested-With":"XMLHttpRequest",
+            "X-FB-Friendly-Name":POLARIS_ACTION,
+            "Referer":f"https://www.instagram.com/p/{shortcode}/",
+        }
+        if lsd:
+            headers["X-FB-LSD"]=lsd
+        if csrf:
+            headers["X-CSRFToken"]=csrf
+
+        body={
+            "lsd":lsd or "",
+            "fb_api_caller_class":"RelayModern",
+            "fb_api_req_friendly_name":POLARIS_ACTION,
+            "server_timestamps":"true",
+            "variables":json.dumps({"media_id":media_id},separators=(",",":")),
+            "doc_id":GRAPHQL_DOC_ID,
+        }
+
+        try:
+            resp=await session.post(GRAPHQL_ENDPOINT,data=body,headers=headers,timeout=25)
+        except Exception as e:
+            if attempt==0:
+                await _ig_reset_http()
+                continue
+            raise RuntimeError(f"Instagram GraphQL request failed: {e}") from e
+
+        text=resp.text or ""
+        log.info("Instagram GraphQL metadata fetch | status=%s len=%s attempt=%s",resp.status_code,len(text),attempt+1)
+
+        if resp.status_code in (401,403):
+            if attempt==0:
+                await _ig_reset_http()
+                continue
+            raise RuntimeError(f"Instagram GraphQL HTTP {resp.status_code}")
+
+        if resp.status_code>=400:
+            raise RuntimeError(f"Instagram GraphQL HTTP {resp.status_code}")
+
         try:
             data=json.loads(text)
         except Exception as e:
             raise RuntimeError(f"Instagram GraphQL invalid JSON: {e}") from e
-    if not isinstance(data,dict):
-        raise RuntimeError("Instagram GraphQL invalid response")
-    if str(data.get("status") or "").lower() not in ("ok",""):
-        raise RuntimeError(f"Instagram GraphQL bad status: {data.get('status')}")
-    media=(data.get("data") or {}).get("xdt_shortcode_media") or (data.get("data") or {}).get("shortcode_media") or _json_find_media(data)
-    if not isinstance(media,dict):
-        keys=list((data.get("data") or {}).keys()) if isinstance(data.get("data"),dict) else []
-        raise RuntimeError(f"Instagram GraphQL shortcode_media not found | data_keys={keys}")
-    parsed=_parse_gql_media(media)
-    if parsed.get("caption") or parsed.get("username") or parsed.get("nickname") or parsed.get("items"):
-        return parsed
-    raise RuntimeError("Instagram GraphQL metadata empty")
+
+        if not isinstance(data,dict):
+            raise RuntimeError("Instagram GraphQL invalid response")
+
+        media=(data.get("data") or {}).get("xig_polaris_media")
+        if not isinstance(media,dict):
+            media=_json_find_media(data)
+        if not isinstance(media,dict):
+            errs=data.get("errors")
+            raise RuntimeError(f"Instagram GraphQL media not found | errors={errs}")
+
+        prod=media.get("if_not_gated_logged_out")
+        if not isinstance(prod,dict) or not prod:
+            gate=media.get("gating_ruling") or {}
+            title=str(gate.get("title") or "").strip()
+            desc=str(gate.get("description") or "").strip()
+            gate_info=f"{title}: {desc}".strip(": ") if (title or desc) else "Post is gated/age-restricted"
+            raise RuntimeError(f"Instagram post not available without login | {gate_info}")
+
+        parsed=_parse_gql_media(prod)
+        if parsed.get("items") or parsed.get("caption") or parsed.get("username") or parsed.get("nickname"):
+            return parsed
+
+        raise RuntimeError("Instagram GraphQL metadata empty")
+
+    raise RuntimeError("Instagram GraphQL metadata failed")
 
 def _json_find_media(obj):
     if isinstance(obj,dict):
@@ -395,13 +530,29 @@ async def _fetch_embed_metadata(raw_url:str)->dict:
     
 async def _fetch_instagram_metadata(raw_url:str)->dict:
     errors=[]
-    for func in (_fetch_gql_metadata,_fetch_embed_metadata):
-        try:
-            meta=await func(raw_url)
-            if meta.get("caption") or meta.get("username") or meta.get("nickname") or meta.get("items"):
-                return meta
-        except Exception as e:
-            errors.append(f"{func.__name__}: {e}")
+    try:
+        meta=await _fetch_gql_metadata(raw_url)
+        if meta.get("caption") or meta.get("username") or meta.get("nickname") or meta.get("items"):
+            return meta
+    except Exception as e:
+        errors.append(f"_fetch_gql_metadata: {e}")
+
+    try:
+        from .mobile_session import fetch_media_via_session
+        shortcode=_extract_shortcode(raw_url)
+        mob=await fetch_media_via_session(shortcode)
+        if mob and (mob.get("items") or mob.get("caption")):
+            return mob
+    except Exception as e:
+        errors.append(f"mobile_session: {e}")
+
+    try:
+        meta=await _fetch_embed_metadata(raw_url)
+        if meta.get("caption") or meta.get("username") or meta.get("nickname") or meta.get("items"):
+            return meta
+    except Exception as e:
+        errors.append(f"_fetch_embed_metadata: {e}")
+
     raise RuntimeError(" ; ".join(errors) if errors else "Instagram metadata not found")
 
 def _normalize_caption_text(text: str) -> str:
@@ -422,38 +573,8 @@ def _build_title(meta:dict,media_type:str,count:int=1)->str:
         base="Instagram Media" if count>1 else ("Instagram Video" if media_type=="video" else "Instagram Post")
     full=f"{base} - {caption}".strip() if caption else base
     return full[:1024].rstrip()
-    
-def _safe_title(media_type:str,count:int)->str:
-    if count>1:
-        return "Instagram Media"
-    return "Instagram Video" if media_type=="video" else "Instagram Post"
 
 _STRIP_QUERY_HOSTS=("cdninstagram.com","fbcdn.net")
-
-def _rapidcdn_token_text(raw_url:str)->str:
-    try:
-        parsed=urlparse(raw_url or "")
-        token=(parse_qs(parsed.query).get("token") or [""])[0]
-        if not token or "." not in token:
-            return ""
-        payload=token.split(".")[1]
-        payload+="="*(-len(payload)%4)
-        return base64.urlsafe_b64decode(payload.encode()).decode("utf-8","replace")
-    except Exception as e:
-        log.debug("Failed to decode rapidcdn token | url=%s err=%r",raw_url,e)
-        return ""
-
-def _rapidcdn_identity(raw_url:str)->str:
-    text=_rapidcdn_token_text(raw_url)
-    if not text:
-        return ""
-    try:
-        data=json.loads(text)
-        if isinstance(data,dict):
-            return str(data.get("filename") or data.get("url") or "").strip()
-    except Exception:
-        pass
-    return text
 
 def _uniq_media_urls(items:list[str])->list[str]:
     out=[]
@@ -468,9 +589,6 @@ def _uniq_media_urls(items:list[str])->list[str]:
             path=parsed.path or ""
             if any(host==h or host.endswith("."+h) for h in _STRIP_QUERY_HOSTS):
                 normalized=f"{parsed.scheme}://{host}{path}"
-            elif "rapidcdn.app" in host:
-                identity=_rapidcdn_identity(raw)
-                normalized=f"rapidcdn:{identity}" if identity else raw
             else:
                 normalized=parsed._replace(fragment="").geturl()
         except Exception as e:
@@ -481,70 +599,6 @@ def _uniq_media_urls(items:list[str])->list[str]:
         seen.add(normalized)
         out.append(raw)
     return out
-
-def _decode_indown_fetch(link:str)->str:
-    try:
-        parsed=urlparse(link)
-        host=(parsed.hostname or "").lower()
-        if "indown.io" not in host:
-            return link
-        qs=parse_qs(parsed.query)
-        raw=(qs.get("url") or qs.get("rl") or [""])[0]
-        raw=unquote(raw or "").strip()
-        return raw or link
-    except Exception as e:
-        log.warning("Failed to decode Indown fetch URL | url=%s err=%s",link,e)
-        return link
-
-def _is_indown_real_download(link:str)->bool:
-    try:
-        parsed=urlparse(link)
-        host=(parsed.hostname or "").lower()
-        if "indown.io" not in host:
-            return True
-        qs=parse_qs(parsed.query)
-        is_download=(qs.get("is_download") or [""])[0]
-        if is_download=="0":
-            return False
-        raw=(qs.get("url") or qs.get("rl") or [""])[0]
-        raw=unquote(raw or "")
-        if not raw:
-            return False
-        return bool(re.search(r"\.(mp4|mov|m4v|webm|jpg|jpeg|png|webp)(?:\?|$)",raw,flags=re.I))
-    except Exception as e:
-        log.warning("Failed to validate Indown download URL | url=%s err=%s",link,e)
-        return False
-
-def _normalize_media_link(link:str)->str:
-    link=(link or "").strip().replace("&amp;","&")
-    if not link:
-        return ""
-    if "indown.io/fetch" in link and not _is_indown_real_download(link):
-        return ""
-    if "indown.io/fetch" in link:
-        link=_decode_indown_fetch(link)
-    return link.strip()
-
-def _media_url_allowed(link:str)->bool:
-    return bool(re.search(r"(cdninstagram\.com|fbcdn\.net|d\.rapidcdn\.app|indown\.io/fetch)",link or "",flags=re.I))
-
-def _collect_urls_from_html(text:str)->list[str]:
-    found=[]
-    for match in re.findall(r'''href=["']([^"']+)["']''',text or "",flags=re.I):
-        link=_normalize_media_link(match)
-        if link and _media_url_allowed(link):
-            found.append(link)
-    for match in re.findall(r'''https://d\.rapidcdn\.app/v2\?[^"'<> ]+''',text or "",flags=re.I):
-        link=_normalize_media_link(match)
-        if link and _media_url_allowed(link):
-            found.append(link)
-    for match in re.findall(r'''https://[^"'\s<>]+''',text or "",flags=re.I):
-        if "indown.io/fetch" not in match:
-            continue
-        link=_normalize_media_link(match)
-        if link and _media_url_allowed(link):
-            found.append(link)
-    return [re.sub(r"&dl=1$","",link) for link in _uniq_media_urls(found)]
 
 from utils.config import NEOXR_API_KEY
 
@@ -582,84 +636,6 @@ async def _fetch_neoxr_api(raw_url: str) -> dict:
         log.warning("Neoxr API failed | err=%r", e)
         return {"status": False, "message": str(e)}
 
-async def _indown(url:str)->dict:
-    async with AsyncSession(impersonate="chrome120") as session:
-        headers={"User-Agent":USER_AGENT,"Accept":"text/html,application/xhtml+xml"}
-        try:
-            resp = await session.get("https://indown.io/en1", headers=headers, timeout=25)
-            page_data = resp.text
-        except Exception as e:
-            return {"status":False, "message":f"Indown get token failed: {e}"}
-
-        token_match=re.search(r'''name=["']_token["'][^>]*value=["']([^"']+)["']''',page_data,flags=re.I)
-        token=token_match.group(1).strip() if token_match else ""
-        if not token:
-            return {"status":False,"message":"Token Indown not found (Blocked by Cloudflare)"}
-            
-        form={"referer":"https://indown.io/en1","locale":"en","_token":token,"link":url,"p":"i"}
-        try:
-            resp_post = await session.post(
-                "https://indown.io/download",
-                data=form,
-                headers={
-                    "Content-Type":"application/x-www-form-urlencoded",
-                    "User-Agent":USER_AGENT,
-                    "Referer":"https://indown.io/en1",
-                    "Origin":"https://indown.io",
-                },
-                timeout=30,
-            )
-            result_data = resp_post.text
-        except Exception as e:
-            return {"status":False, "message":f"Indown POST failed: {e}"}
-
-    urls=_collect_urls_from_html(result_data)
-    if not urls:
-        return {"status":False,"message":"No media found in Indown HTML"}
-    return {"status":True,"source":"Indown","urls":urls}
-
-async def _snapsave(url:str)->dict:
-    async with AsyncSession(impersonate="chrome120") as session:
-        try:
-            resp = await session.post(
-                "https://snapsave.app/id/action.php?lang=id",
-                data={"url":url},
-                headers={
-                    "Origin":"https://snapsave.app",
-                    "Referer":"https://snapsave.app/id/download-video-instagram",
-                    "User-Agent":USER_AGENT,
-                    "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
-                },
-                timeout=30,
-            )
-            data = resp.text
-        except Exception as e:
-            return {"status":False, "message":f"Snapsave POST failed: {e}"}
-            
-    urls=_collect_urls_from_html(data)
-    if not urls:
-        rapid=re.findall(r'''https://d\.rapidcdn\.app/v2\?[^"'<> ]+''',data,flags=re.I)
-        urls=_uniq_media_urls([x.replace("&amp;","&") for x in rapid])
-    if not urls:
-        return {"status":False,"message":"No media found in Snapsave HTML"}
-    return {"status":True,"source":"Snapsave","urls":urls}
-
-
-async def igdl_scrape(url:str)->dict:
-    indown = await _indown(url)
-    if indown.get("status") and indown.get("urls"):
-        log.info("Instagram scraper source selected | source=Indown urls=%s",len(indown.get("urls") or []))
-        return indown
-    log.warning("Instagram Indown failed, trying Snapsave | err=%s",indown.get("message"))
-    
-    snapsave = await _snapsave(url)
-    if snapsave.get("status") and snapsave.get("urls"):
-        log.info("Instagram scraper source selected | source=Snapsave urls=%s",len(snapsave.get("urls") or []))
-        return snapsave
-        
-    raise RuntimeError(snapsave.get("message") or indown.get("message") or "No media found")
-
-
 _VIDEO_EXTS=(".mp4",".mov",".m4v",".webm")
 _PHOTO_EXTS=(".jpg",".jpeg",".png",".webp")
 
@@ -681,23 +657,11 @@ def detect_media_signature(header:bytes)->tuple[str,str]:
 
 def _guess_media_type_from_url(url:str)->str:
     parsed=urlparse(url or "")
-    host=(parsed.hostname or "").lower()
     path=(parsed.path or "").lower()
     if path.endswith(_VIDEO_EXTS):
         return "video"
     if path.endswith(_PHOTO_EXTS):
         return "photo"
-    if "rapidcdn.app" in host:
-        identity=_rapidcdn_identity(url).lower()
-        if identity.endswith(_VIDEO_EXTS):
-            return "video"
-        if identity.endswith(_PHOTO_EXTS):
-            return "photo"
-        if any(ext in identity for ext in _VIDEO_EXTS):
-            return "video"
-        if any(ext in identity for ext in _PHOTO_EXTS):
-            return "photo"
-        return "video"
     return "photo"
 
 def _guess_ext(url:str,content_type:str,media_type:str="")->str:
@@ -781,7 +745,6 @@ def _is_retryable_download_exception(exc:Exception)->bool:
 
 def _download_headers_for_url(url:str,source:str="")->dict:
     lower_url=(url or "").lower()
-    source_lower=(source or "").lower()
     headers={
         "User-Agent":USER_AGENT,
         "Accept":"*/*",
@@ -789,24 +752,13 @@ def _download_headers_for_url(url:str,source:str="")->dict:
         "Accept-Encoding":"identity",
         "Connection":"keep-alive",
     }
-    if "rapidcdn.app" in lower_url or source_lower=="snapsave":
-        headers["Referer"]="https://snapsave.app/"
-    elif "cdninstagram.com" in lower_url or "fbcdn.net" in lower_url or source_lower=="indown":
+    if "cdninstagram.com" in lower_url or "fbcdn.net" in lower_url:
         headers["Referer"]="https://www.instagram.com/"
-    elif "indown.io" in lower_url:
-        headers["Referer"]="https://indown.io/en1"
     return headers
 
 def _download_candidates(url:str)->list[str]:
     raw=(url or "").strip()
-    if not raw:
-        return []
-    decoded=_decode_indown_fetch(raw) if "indown.io/fetch" in raw else raw
-    out=[]
-    for item in (decoded,raw):
-        if item and item not in out:
-            out.append(item)
-    return out
+    return [raw] if raw else []
 
 async def _safe_edit_status(bot,chat_id,message_id,text:str,min_interval:float=1.2):
     if not bot or not chat_id or not message_id:
@@ -1057,21 +1009,29 @@ def _trim_downloaded_items_by_meta(items:list[dict],meta:dict)->list[dict]:
     
 async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_msg_id,meta:dict|None=None)->dict:
     urls = []
-    source = "Instagram API"
+    source = "Instagram Scraper"
 
     if meta and meta.get("items"):
         urls = [item.get("url") for item in meta.get("items") if item.get("url")]
-        
+
     if not urls:
         try:
-            scraped = await igdl_scrape(url)
-            urls = scraped.get("urls") or []
-            source = scraped.get("source") or "Instagram Scraper"
+            from .mobile_session import fetch_media_via_session
+            shortcode=_extract_shortcode(url)
+            mob=await fetch_media_via_session(shortcode)
+            if mob and mob.get("items"):
+                urls=[it.get("url") for it in mob["items"] if it.get("url")]
+                source="Instagram Scraper"
+                if meta is not None:
+                    meta["caption"]=meta.get("caption") or mob.get("caption") or ""
+                    meta["username"]=meta.get("username") or mob.get("username") or ""
+                    meta["nickname"]=meta.get("nickname") or mob.get("nickname") or ""
+                    meta["items"]=mob.get("items") or []
         except Exception as e:
-            log.warning("Step 1 Failed: Internal scraper broken | err=%r", e)
-            
+            log.debug("Instagram mobile session fallback check failed | err=%r", e)
+
     if not urls:
-        log.info("Step 2: Internal scraper failed, trying Neoxr API...")
+        log.info("Instagram GraphQL found no media, trying Neoxr API...")
         neoxr_res = await _fetch_neoxr_api(url)
         if neoxr_res.get("status") and neoxr_res.get("urls"):
             urls = neoxr_res.get("urls")
@@ -1083,7 +1043,7 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
     if not urls:
         if fmt_key == "mp3":
             raise RuntimeError("Instagram post does not contain video/audio")
-        raise RuntimeError("No downloadable media found from Scraper or Neoxr API")
+        raise RuntimeError("No downloadable media found from Instagram Scraper or Neoxr API")
         
     downloaded = []
     failed_count = 0

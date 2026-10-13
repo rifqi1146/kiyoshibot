@@ -249,6 +249,11 @@ async def post_shutdown(app):
         await _asyncio.to_thread(scrapling_browser.close_browser)
     except Exception:
         log.exception("Failed to close Scrapling browser")
+    try:
+        from handlers.dl.instagram import close_instagram_session
+        await close_instagram_session()
+    except Exception:
+        log.exception("Failed to close Instagram session")
     await close_http_session()
     log.info("HTTP session closed")
 
