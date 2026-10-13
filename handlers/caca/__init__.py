@@ -10,5 +10,6 @@ __all__ = [
     "meta_query",
     "cacaa_cmd",
     "mode_cmd",
+    "init_background",
 ]
     
