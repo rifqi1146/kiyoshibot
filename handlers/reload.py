@@ -162,12 +162,15 @@ async def _refresh_runtime_caches(app):
     await _refresh_caca_cache()
     await _refresh_gemini_memory_cache()
     try:
-        from rag.loader import load_local_contexts
-        contexts=load_local_contexts()
-        for mod_name in ("handlers.gemini","handlers.groq"):
+        from rag.loader import load_chunked_docs
+        from rag.retriever import index_documents
+        chunks=load_chunked_docs()
+        index_documents(chunks)
+        for mod_name in ("handlers.gemini","handlers.groq","handlers.proxy.ask"):
             mod=sys.modules.get(mod_name)
             if mod and hasattr(mod,"LOCAL_CONTEXTS"):
-                setattr(mod,"LOCAL_CONTEXTS",contexts)
+                setattr(mod,"LOCAL_CONTEXTS",chunks)
+        log.info("Reload rag contexts refreshed | chunks=%s",len(chunks))
     except Exception as e:
         log.warning("Reload rag contexts failed | err=%r",e)
 

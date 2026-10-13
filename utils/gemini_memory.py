@@ -6,7 +6,7 @@ import asyncio
 
 AI_MEMORY_EXPIRE = int(os.getenv("AI_MEMORY_EXPIRE", str(60 * 60 * 24)))
 AI_DB_PATH = os.getenv("AI_MEMORY_DB_PATH", "data/ai_memory.sqlite3")
-AI_MAX_TURNS = int(os.getenv("AI_MAX_TURNS", "30"))
+AI_MAX_TURNS = int(os.getenv("AI_MAX_TURNS", "10"))
 
 def _db_init():
     os.makedirs(os.path.dirname(AI_DB_PATH) or ".", exist_ok=True)

@@ -5,14 +5,14 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from rag.retriever import retrieve_context
-from rag.loader import load_local_contexts
+from rag.loader import load_chunked_docs
 from utils import groq_memory
 from utils.text import split_message, sanitize_ai_output, sanitize_markdown, strip_tags_plain
 from utils.config import COOLDOWN, GROQ_TIMEOUT, GROQ_MODEL, GROQ_BASE, GROQ_KEY
 from utils.http import get_http_session
 
 log=logging.getLogger(__name__)
-LOCAL_CONTEXTS=load_local_contexts()
+LOCAL_CONTEXTS=load_chunked_docs()
 SYSTEM_PROMPT=(
     "Jawab selalu menggunakan Bahasa Indonesia yang santai.\n"
     "Kalo user bertanya dengan bahasa inggris, jawab juga dengan bahasa inggris\n"
@@ -149,13 +149,13 @@ async def _send_chunks(bot,msg,chunks:list[str])->Optional[int]:
 
 async def build_groq_rag_prompt(user_prompt:str)->str:
     try:
-        contexts=await retrieve_context(user_prompt,LOCAL_CONTEXTS,top_k=3)
+        contexts=await retrieve_context(user_prompt,LOCAL_CONTEXTS,top_k=2)
     except Exception as e:
         log.warning("Groq RAG retrieve failed | err=%r",e)
         contexts=[]
     if contexts:
         ctx="\n\n".join(contexts)
-        return f"{ctx}\n\n{user_prompt}"
+        return f"<bot_reference>\n{ctx}\n</bot_reference>\n\n{user_prompt}"
     return user_prompt
 
 async def _groq_payload(prompt:str,history:Optional[list],use_search:bool)->dict:

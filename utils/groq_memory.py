@@ -6,7 +6,7 @@ import asyncio
 
 GROQ_MEMORY_EXPIRE=int(os.getenv("GROQ_MEMORY_EXPIRE",str(60*60*24)))
 GROQ_DB_PATH=os.getenv("GROQ_MEMORY_DB_PATH","data/groq_memory.sqlite3")
-GROQ_MAX_MESSAGES=int(os.getenv("GROQ_MAX_MESSAGES","60"))
+GROQ_MAX_MESSAGES=int(os.getenv("GROQ_MAX_MESSAGES","20"))
 
 def _db_init():
     os.makedirs(os.path.dirname(GROQ_DB_PATH) or ".",exist_ok=True)

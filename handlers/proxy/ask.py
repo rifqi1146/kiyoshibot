@@ -36,7 +36,7 @@ from handlers.proxy.client import (
     set_search_engine,
     set_thinking,
 )
-from rag.loader import load_local_contexts
+from rag.loader import load_chunked_docs
 from rag.retriever import retrieve_context
 from utils import config as app_config
 from utils import gemini_memory
@@ -51,7 +51,7 @@ from utils.text import (
 
 log = logging.getLogger(__name__)
 
-LOCAL_CONTEXTS = load_local_contexts()
+LOCAL_CONTEXTS = load_chunked_docs()
 
 WEEKDAYS_ID = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
 MONTHS_ID = (
@@ -314,12 +314,12 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
     """
     sys_text = _system_instruction()
     try:
-        contexts = await retrieve_context(prompt, LOCAL_CONTEXTS, top_k=3)
+        contexts = await retrieve_context(prompt, LOCAL_CONTEXTS, top_k=2)
     except Exception as e:
         log.warning("RAG retrieve failed | err=%r", e)
         contexts = []
     if contexts:
-        sys_text += "\n\n=== KONTEKS LOKAL ===\n" + "\n".join(contexts) + "\n=== END KONTEKS ==="
+        sys_text += "\n\n<bot_reference>\n" + "\n\n".join(contexts) + "\n</bot_reference>"
 
     # Read at runtime (not import-by-value) so adding a key in .env + /reload
     # takes effect without a full restart.

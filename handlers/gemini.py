@@ -8,12 +8,12 @@ from utils.text import split_message,sanitize_ai_output,sanitize_markdown,strip_
 from utils.config import GEMINI_API_KEY
 from utils.http import get_http_session
 from rag.retriever import retrieve_context
-from rag.loader import load_local_contexts
+from rag.loader import load_chunked_docs
 from .groq import ask_groq_text
 from utils import gemini_memory
 
 log=logging.getLogger(__name__)
-LOCAL_CONTEXTS=load_local_contexts()
+LOCAL_CONTEXTS=load_chunked_docs()
 
 async def _typing_loop(bot, chat_id, stop_event: asyncio.Event, message_thread_id=None):
     try:
@@ -104,14 +104,14 @@ async def _build_ai_prompt_from_history(history:list,user_prompt:str)->str:
         lines.append(f"User: {h.get('user') or ''}")
         lines.append(f"AI: {h.get('ai') or ''}")
     try:
-        contexts=await retrieve_context(user_prompt,LOCAL_CONTEXTS,top_k=3)
+        contexts=await retrieve_context(user_prompt,LOCAL_CONTEXTS,top_k=2)
     except Exception as e:
         log.warning("Gemini RAG retrieve failed | err=%r",e)
         contexts=[]
     if contexts:
-        lines.append("=== KONTEKS LOKAL ===")
+        lines.append("<bot_reference>")
         lines.extend(contexts)
-        lines.append("=== END KONTEKS ===")
+        lines.append("</bot_reference>")
     lines.append(f"User: {user_prompt}")
     return "\n".join(lines)
 
