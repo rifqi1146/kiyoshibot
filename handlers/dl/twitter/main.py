@@ -6,9 +6,11 @@ try:
     from handlers.dl.constants import BASE_DIR
 except Exception:
     BASE_DIR=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from handlers.dl.utils import sanitize_filename,progress_bar,check_media_size_limit,FileSizeLimitExceeded
+from handlers.dl.utils import sanitize_filename,progress_bar,check_media_size_limit,FileSizeLimitExceeded,AdultContentNotAllowed
 from handlers.dl.progress import render_progress_text,edit_status,TransferStats,log_progress,log_done
 from handlers.dl.ytdlp import ytdlp_download
+from handlers.dl.proc import spawn_process, DEVNULL, PIPE, resolve_aria2
+from handlers.dl.adult_gate import check_adult_access, is_adult_media
 
 log=logging.getLogger(__name__)
 
@@ -238,6 +240,23 @@ def _best_video_variant(media:dict)->dict|None:
     mp4.sort(key=lambda v:int(v.get("bitrate") or 0),reverse=True)
     return mp4[0]
 
+def _tweet_is_sensitive(tweet:dict)->bool:
+    """Deteksi konten dewasa dari flag resmi X.
+
+    Sumber (masing-masing bisa absen, jadi dicek berlapis):
+    1. `legacy.possibly_sensitive` — author menandai media sensitif.
+    2. `legacy.extended_entities.media[].ext_sensitive_media_warning` — warning
+       per media (mis. `{"adult_content": true, ...}`).
+    3. `legacy.extended_entities.media[].features.sensitive_media_warning`.
+    """
+    flags=[tweet.get("possibly_sensitive"), tweet.get("possibly_sensitive_editable")]
+    for media in _pick_media_entities(tweet):
+        features=media.get("features") or {}
+        flags.append(media.get("ext_sensitive_media_warning"))
+        if isinstance(features,dict):
+            flags.append(features.get("sensitive_media_warning"))
+    return is_adult_media(*flags)
+
 def _parse_tweet_media(tweet:dict)->dict:
     entities=_pick_media_entities(tweet)
     if not entities: raise RuntimeError("tweet has no media")
@@ -257,8 +276,9 @@ def _parse_tweet_media(tweet:dict)->dict:
     caption=_clean_tweet_caption(tweet.get("full_text") or "")
     fallback=_fallback_title(items)
     title=caption or fallback
-    _dbg("tweet media parsed | count=%s types=%s caption=%s title=%s",len(items),[x.get("type") for x in items],bool(caption),title)
-    return {"items":items,"caption":caption,"title":title}
+    sensitive=_tweet_is_sensitive(tweet)
+    _dbg("tweet media parsed | count=%s types=%s caption=%s title=%s sensitive=%s",len(items),[x.get("type") for x in items],bool(caption),title,sensitive)
+    return {"items":items,"caption":caption,"title":title,"sensitive":sensitive}
 
 async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int,total:int=0,speed_bps:float=0.0,eta_seconds:float|None=None):
     if not status_msg_id:
@@ -284,7 +304,7 @@ async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     return 0
 
 async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
-    aria2=shutil.which("aria2c")
+    aria2=resolve_aria2()
     if not aria2: raise RuntimeError("aria2c not found in PATH")
     total=await _probe_total_bytes(session,media_url,headers=headers)
     if total: check_media_size_limit(total,"X media")
@@ -296,7 +316,7 @@ async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,
     cmd.append(media_url)
     log.info("X aria2c start | url=%s out=%s",media_url,out_path)
     log.debug("X aria2c cmd | %s"," ".join(cmd))
-    proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.PIPE)
+    proc=await spawn_process(*cmd,stdout=DEVNULL,stderr=PIPE)
     stats=TransferStats(total)
     while proc.returncode is None:
         await asyncio.sleep(0.7)
@@ -366,7 +386,7 @@ async def _download_x_items(parsed:dict,bot,chat_id,status_msg_id)->dict:
         return {"path":downloaded_items[0]["path"],"title":title}
     return {"items":downloaded_items,"title":title}
 
-async def twitter_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
+async def twitter_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
     del fmt_key,format_id,has_audio
     if not metadata_ready:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping X media...</b>")
@@ -379,11 +399,22 @@ async def twitter_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg
         raise RuntimeError("failed to extract x status id")
     tweet=await _get_tweet_api(tweet_id)
     parsed=_parse_tweet_media(tweet)
+    if parsed.get("sensitive"):
+        if strict_adult:
+            allowed,reason=check_adult_access(int(user_id or 0),int(chat_id),chat_type or "private")
+            if not allowed:
+                log.info(
+                    "X adult content blocked | url=%s user_id=%s chat_id=%s reason=%s",
+                    text,user_id,chat_id,reason,
+                )
+                raise AdultContentNotAllowed("X post contains sensitive media",reason)
+        else:
+            _dbg("sensitive tweet but no owner context, skipping adult gate | tweet_id=%s",tweet_id)
     result=await _download_x_items(parsed,bot,chat_id,status_msg_id)
     _dbg("scrape success | result_type=%s","album" if isinstance(result,dict) and result.get("items") else "single")
     return result
 
-async def twitter_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
+async def twitter_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
     try:
         return await twitter_scrape_download(
             raw_url=raw_url,
@@ -394,9 +425,12 @@ async def twitter_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,for
             format_id=format_id,
             has_audio=has_audio,
             metadata_ready=metadata_ready,
+            user_id=user_id,
+            chat_type=chat_type,
+            strict_adult=strict_adult,
         )
     except Exception as e:
-        if isinstance(e, FileSizeLimitExceeded):
+        if isinstance(e, (FileSizeLimitExceeded, AdultContentNotAllowed)):
             raise
         log.exception("X scraping failed, fallback to yt-dlp | url=%s err=%r",raw_url,e)
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>X scraping failed</b>\n\n<i>Fallback to yt-dlp...</i>")

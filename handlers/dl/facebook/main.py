@@ -20,6 +20,7 @@ try:
 except Exception:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from handlers.dl.ytdlp import ytdlp_download
+from handlers.dl.proc import spawn_process, DEVNULL, PIPE, resolve_aria2
 
 log = logging.getLogger(__name__)
 
@@ -670,7 +671,7 @@ async def _probe_total_bytes(session, url: str, headers: dict | None = None) -> 
     return 0
 
 async def _aria2c_download_with_progress(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
-    aria2 = shutil.which("aria2c")
+    aria2 = resolve_aria2()
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
     total = await _probe_total_bytes(session, media_url, headers=headers)
@@ -683,7 +684,9 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
             cmd.extend(["--header", f"{k}: {v}"])
     cmd.append(media_url)
     _dbg("aria2c start | out=%s url=%s", out_path, _clip(media_url, 200))
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    # uvloop create_subprocess_exec -> libuv fork() -> SIGSEGV(-11). Pakai
+    # spawn_process (subprocess.Popen via thread / posix_spawn) yang aman.
+    proc = await spawn_process(*cmd, stdout=DEVNULL, stderr=PIPE)
     stats = TransferStats(total)
     while proc.returncode is None:
         await asyncio.sleep(0.7)

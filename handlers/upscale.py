@@ -3,6 +3,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
 from utils.http import get_http_session
+from handlers.dl.proc import spawn_process, PIPE, resolve_aria2
 
 log=logging.getLogger(__name__)
 
@@ -188,7 +189,7 @@ def _pick_result_url(result:dict)->str:
     raise RuntimeError("API result has no download URL.")
 
 async def _download_with_aria2c(url:str,out_path:str):
-    aria2c=shutil.which("aria2c")
+    aria2c=resolve_aria2()
     if not aria2c:
         raise RuntimeError("aria2c is not installed or not found in PATH.")
     cmd=[
@@ -197,7 +198,7 @@ async def _download_with_aria2c(url:str,out_path:str):
         "-o",os.path.basename(out_path),"-d",os.path.dirname(out_path),url
     ]
     log.info("Upscale aria2c download start | out=%s",out_path)
-    proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+    proc=await spawn_process(*cmd,stdout=PIPE,stderr=PIPE)
     try:
         stdout,stderr=await asyncio.wait_for(proc.communicate(),timeout=UPSCALE_TIMEOUT)
     except asyncio.TimeoutError:

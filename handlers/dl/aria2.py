@@ -23,34 +23,20 @@ _ARIA2_PATH: str | None = None
 
 
 def _resolve_aria2() -> str | None:
-    """Cari `aria2c`. PATH bot sering tidak memuat `venv/bin`, jadi cek
-    direktori bin milik interpreter yang sedang jalan sebagai fallback."""
+    """Cari `aria2c` (delegasi ke `handlers.dl.proc.resolve_aria2`).
+
+    PATH bot sering tidak memuat `venv/bin`, jadi helper terpusat itu juga
+    memeriksa direktori bin interpreter dan site-packages."""
+    from .proc import resolve_aria2
+    found = resolve_aria2()
     global _ARIA2_PATH
-    if _ARIA2_PATH is not None:
-        return _ARIA2_PATH or None
-    found = shutil.which("aria2c")
-    if not found:
-        # venv/bin/aria2c relatif ke interpreter (…/venv/bin/python).
-        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        cand = os.path.join(exe_dir, "aria2c")
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            found = cand
-    if not found:
-        # site-packages/aria2c/bin/aria2c (paket pip `aria2`).
-        lib_dir = os.path.normpath(os.path.join(exe_dir, "..", "lib"))
-        if os.path.isdir(lib_dir):
-            for root, _dirs, files in os.walk(lib_dir):
-                if "aria2c" in files and os.path.basename(os.path.dirname(root)) == "aria2c":
-                    c = os.path.join(root, "aria2c")
-                    if os.path.isfile(c) and os.access(c, os.X_OK):
-                        found = c
-                        break
-    _ARIA2_PATH = found or ""
-    if found:
-        log.info("aria2c resolved | path=%s", found)
-    else:
-        log.warning("aria2c not found; download will use streaming")
-    return found or None
+    if _ARIA2_PATH is None:
+        _ARIA2_PATH = found or ""
+        if found:
+            log.info("aria2c resolved | path=%s", found)
+        else:
+            log.warning("aria2c not found; download will use streaming")
+    return found
 
 
 def aria2_available() -> bool:

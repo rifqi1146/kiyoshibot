@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from handlers.dl.constants import TMP_DIR
 from handlers.dl.utils import sanitize_filename
+from handlers.dl.proc import spawn_process, DEVNULL
 
 log = logging.getLogger(__name__)
 
@@ -132,10 +133,10 @@ async def femdomvc_download(
                 "-vn", "-c:a", "libmp3lame", "-q:a", "2",
                 mp3_path,
             ]
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_process(
                 *ffmpeg_cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
             )
             await proc.wait()
             if proc.returncode != 0 or not os.path.exists(mp3_path):

@@ -17,7 +17,8 @@ from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
 from database.spoiler_db import is_spoiler_enabled
 from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
-from .utils import normalize_url,is_invalid_video,extract_all_urls
+from .utils import normalize_url,is_invalid_video,extract_all_urls,AdultContentNotAllowed
+from .adult_gate import ADULT_BLOCK_NOT_PREMIUM,ADULT_BLOCK_NOT_NSFW
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
 from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution,supports_anichin_resolution,supports_moviebox_resolution
 from .nekopoi.main import is_nekopoi_url
@@ -178,6 +179,19 @@ def _premium_link_block_text(kind:str, reason:str, url:str="")->str:
         head
         + "<b>NSFW is disabled in this group!</b>\n\n"
         + "Even as a premium user, you can only download from this site if:\n"
+        + "• You use the bot in a <b>private chat</b>, or\n"
+        + "• <b>NSFW</b> is enabled in this group (<code>/nsfw enable</code>)."
+    )
+
+def _adult_block_text(reason:str)->str:
+    """Pesan untuk konten dewasa yang terdeteksi di media sosial (X/Reddit)."""
+    head="🔞 <b>Adult content detected</b>\n\n"
+    if reason==ADULT_BLOCK_NOT_PREMIUM:
+        return head + "This post is marked as <b>sensitive / adult</b> by the platform.\n\nDownloading it is restricted to <b>Premium Users</b> only."
+    return (
+        head
+        + "<b>NSFW is disabled in this group!</b>\n\n"
+        + "Even as a premium user, you can only download sensitive content if:\n"
         + "• You use the bot in a <b>private chat</b>, or\n"
         + "• <b>NSFW</b> is enabled in this group (<code>/nsfw enable</code>)."
     )
@@ -878,6 +892,9 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                     engine=engine,
                     metadata_ready=metadata_ready,
                     known_size=known_size,
+                    user_id=user_id,
+                    chat_type=chat_type,
+                    strict_adult=user_id is not None,
                 )
                 stage("download",t_dl,job=raw_url)
         if isinstance(path,dict) and path.get("handled"):
@@ -886,13 +903,19 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                 await _safe_delete_message(bot,chat_id,status_msg_id,"download status")
             return
         prepare_started=time.monotonic()
+        # Konten dewasa dari platform media sosial (X/Reddit) dispoiler di grup
+        # bila spoiler aktif — flag `sensitive` dititipkan hasil parser.
+        adult_social = bool(isinstance(path,dict) and path.get("sensitive"))
         path=await prepare_download_result_for_send(path,fmt_key=fmt_key)
         stage("processing",prepare_started,job=raw_url)
         log.info("Prepare media done | url=%s elapsed=%.2fs",raw_url,time.monotonic()-prepare_started)
         upload_started=time.monotonic()
         has_spoiler = False
         if chat_type != "private" and is_spoiler_enabled(chat_id, chat_type):
-            if is_premium_required(raw_url, PREMIUM_ONLY_DOMAINS):
+            if adult_social:
+                has_spoiler = True
+                log.info("Spoiler applied | chat_id=%s url=%s scope=adult_social", chat_id, raw_url)
+            elif is_premium_required(raw_url, PREMIUM_ONLY_DOMAINS):
                 has_spoiler = True
                 log.info(
                     "Spoiler applied | chat_id=%s url=%s domain=%s",
@@ -914,6 +937,17 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
             await _safe_delete_message(bot,chat_id,status_msg_id,"download status")
     except Exception as e:
         err=str(e) or repr(e)
+        if isinstance(e, AdultContentNotAllowed):
+            reason=getattr(e,"reason","") or ""
+            log.info(
+                "Download worker blocked adult social media | url=%s user=%s chat=%s reason=%s",
+                raw_url,user_id,chat_id,reason,
+            )
+            await _cleanup_download_result(path)
+            return await _safe_edit_error(
+                bot, chat_id, status_msg_id,
+                _adult_block_text(reason),
+            )
         if "Flood control exceeded" in err and "Retry in" in err and _flood_retry<_MAX_FLOOD_RETRY:
             m=re.search(r"Retry in (\d+)",err)
             wait_time=int(m.group(1)) if m else 5
@@ -943,7 +977,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
         await _safe_edit_error(bot, chat_id, status_msg_id, f"<b>Download failed</b>\n\n<code>{public_err}</code>")
 
 
-async def _download_one_for_batch(url:str,fmt_key:str,bot,chat_id,status_msg_id,message_thread_id=None):
+async def _download_one_for_batch(url:str,fmt_key:str,bot,chat_id,status_msg_id,message_thread_id=None,user_id:int|None=None,chat_type:str="private"):
     """Unduh satu URL untuk keperluan batch. Return hasil siap kirim."""
     if is_tiktok(url):
         async with TIKTOK_LOCK:
@@ -968,6 +1002,9 @@ async def _download_one_for_batch(url:str,fmt_key:str,bot,chat_id,status_msg_id,
             engine=None,
             metadata_ready=True,
             known_size=0,
+            user_id=user_id,
+            chat_type=chat_type,
+            strict_adult=user_id is not None,
         )
 
 
@@ -994,13 +1031,13 @@ async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:
     async def _task(idx:int,u:str):
         async with sem:
             try:
-                res=await _download_one_for_batch(u,fmt_key,bot,chat_id,None,message_thread_id)
+                res=await _download_one_for_batch(u,fmt_key,bot,chat_id,None,message_thread_id,user_id=user_id,chat_type=chat_type)
                 if res:
                     res=await prepare_download_result_for_send(res,fmt_key=fmt_key)
                 if res:
                     res = res if isinstance(res, dict) else {"path": res}
                     res["has_spoiler"] = bool(
-                        is_premium_required(u, PREMIUM_ONLY_DOMAINS)
+                        (is_premium_required(u, PREMIUM_ONLY_DOMAINS) or bool(res.get("sensitive")))
                         and is_spoiler_enabled(chat_id, chat_type)
                     )
                     if res["has_spoiler"]:
@@ -1025,7 +1062,7 @@ async def _batch_dl_worker(app,chat_id,reply_to,urls:list,status_msg_id,fmt_key:
     await _render(f"📤 <b>Uploading {len(ok)} item...</b>")
     has_spoiler = False
     if chat_type != "private" and is_spoiler_enabled(chat_id, chat_type):
-        if any(is_premium_required(u, PREMIUM_ONLY_DOMAINS) for u in urls):
+        if any(is_premium_required(u, PREMIUM_ONLY_DOMAINS) or (isinstance(r, dict) and r.get("sensitive")) for u, r in zip(urls, results)):
             has_spoiler = True
             log.info("Spoiler applied | chat_id=%s scope=batch", chat_id)
     try:

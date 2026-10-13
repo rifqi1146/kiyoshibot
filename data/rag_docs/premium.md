@@ -5,6 +5,7 @@ Layanan akun Premium dan metode pembayaran otomatis:
 ## Keuntungan Premium (/premiumbenefit)
 - Bebas batas kuota download (Unlimited rate-limit).
 - Akses penuh ke seluruh explorer konten 18+ (/nekopoi, /simontok, /punish, /becekku, /lendirqu, /cosxplay).
+- Akses download media yang ditandai sensitif/dewasa (NSFW) oleh platform di Twitter/X dan Reddit. Konten normal tetap gratis untuk semua.
 - Akses mengubah 7 persona AI Caca via `/mode` (default, toxic, sarkas, yandere, cabul, bokep, loli).
 - Prioritas download dan pemrosesan media.
 

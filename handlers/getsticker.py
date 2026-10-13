@@ -2,6 +2,7 @@ import os,re,uuid,html,shutil,asyncio,logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
+from handlers.dl.proc import spawn_process, PIPE
 
 log=logging.getLogger(__name__)
 TMP_DIR=os.getenv("TMP_DIR","downloads")
@@ -16,7 +17,7 @@ def _help_text()->str:
     return "<b>Get Sticker</b>\n\n<code>/getsticker</code> reply to a sticker"
 
 async def _run_cmd(cmd:list[str],timeout:int=GETSTICKER_TIMEOUT):
-    proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+    proc=await spawn_process(*cmd,stdout=PIPE,stderr=PIPE)
     try:
         stdout,stderr=await asyncio.wait_for(proc.communicate(),timeout=timeout)
     except asyncio.TimeoutError:

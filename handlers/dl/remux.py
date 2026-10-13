@@ -7,6 +7,7 @@ import logging
 import subprocess
 import asyncio
 from .constants import TMP_DIR
+from .proc import spawn_process, PIPE
 from .utils import detect_media_type
 
 log=logging.getLogger(__name__)
@@ -272,10 +273,12 @@ async def download_hls_aes_ffmpeg(
         cmd += ["-c", "copy", "-movflags", "+faststart", out_path]
 
     log.info("HLS AES-128 ffmpeg start | audio=%s url=%s", audio_only, playlist_url[:80])
-    proc = await asyncio.create_subprocess_exec(
+    # uvloop create_subprocess_exec -> libuv fork() -> SIGSEGV(-11). Pakai
+    # spawn_process (subprocess.Popen via thread / posix_spawn) yang aman.
+    proc = await spawn_process(
         *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=PIPE,
+        stderr=PIPE,
     )
     try:
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)

@@ -2,6 +2,7 @@ import os,json,html,uuid,shutil,asyncio,logging,subprocess
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.config import OWNER_ID
+from handlers.dl.proc import spawn_process, PIPE, resolve_aria2
 
 log=logging.getLogger(__name__)
 TMP_DIR=os.getenv("TMP_DIR","downloads")
@@ -38,7 +39,7 @@ def run_speedtest()->dict:
         raise RuntimeError(f"Speedtest JSON parse error: {e}")
 
 async def _download_with_aria2c(url:str,out_path:str):
-    aria2c=shutil.which("aria2c")
+    aria2c=resolve_aria2()
     if not aria2c:
         raise RuntimeError("aria2c is not installed.")
     os.makedirs(os.path.dirname(out_path) or ".",exist_ok=True)
@@ -55,7 +56,7 @@ async def _download_with_aria2c(url:str,out_path:str):
         "-d",os.path.dirname(out_path),
         url,
     ]
-    proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+    proc=await spawn_process(*cmd,stdout=PIPE,stderr=PIPE)
     try:
         stdout,stderr=await asyncio.wait_for(proc.communicate(),timeout=SPEEDTEST_IMAGE_TIMEOUT)
     except asyncio.TimeoutError:

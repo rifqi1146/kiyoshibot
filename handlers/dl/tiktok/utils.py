@@ -100,13 +100,15 @@ def _safe_remove_file(path: str | None, label: str):
 
 
 async def _kill_process(proc, label: str):
-    if not proc or proc.returncode is not None:
+    if not proc:
+        return
+    if getattr(proc, "returncode", None) is not None:
         return
     try:
         proc.kill()
         await proc.wait()
         log.warning("%s process killed", label)
-    except ProcessLookupError:
+    except (ProcessLookupError, RuntimeError):
         return
     except Exception as e:
         log.warning("Failed to kill %s process | err=%r", label, e)

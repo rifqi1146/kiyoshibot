@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from handlers.dl.utils import FileSizeLimitExceeded, sanitize_filename
+from handlers.dl.proc import spawn_process, DEVNULL
 
 from .constants import HEAVYR_PROGRESS_INTERVAL
 from . import extractor
@@ -136,10 +137,10 @@ async def heavyr_download(
                 "-vn", "-c:a", "libmp3lame", "-q:a", "2",
                 mp3_path,
             ]
-            proc = await asyncio.create_subprocess_exec(
+            proc = await spawn_process(
                 *ffmpeg_cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
             )
             await proc.wait()
             if proc.returncode != 0 or not os.path.exists(mp3_path):

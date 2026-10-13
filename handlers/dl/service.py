@@ -939,7 +939,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             await _delete_file(fixed_audio,"temp audio")
         await _cleanup_single_file(file_path)
 
-async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id:str|None,has_audio:bool,engine:str|None=None,metadata_ready:bool=False,known_size:int=0):
+async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id:str|None,has_audio:bool,engine:str|None=None,metadata_ready:bool=False,known_size:int=0,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
     if is_instagram_url(raw_url):
         try:
             t0=time.monotonic()
@@ -962,12 +962,12 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
         return result
     if is_reddit_url(raw_url):
         t0=time.monotonic()
-        result=await reddit_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        result=await reddit_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready,user_id=user_id,chat_type=chat_type,strict_adult=strict_adult)
         stage("scrape+download:reddit",t0,job=raw_url)
         return result
     if is_x_url(raw_url):
         t0=time.monotonic()
-        result=await twitter_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
+        result=await twitter_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready,user_id=user_id,chat_type=chat_type,strict_adult=strict_adult)
         stage("scrape+download:twitter",t0,job=raw_url)
         return result
     if is_threads_url(raw_url):

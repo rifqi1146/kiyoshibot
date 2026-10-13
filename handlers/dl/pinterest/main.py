@@ -14,6 +14,7 @@ from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR,MAX_TG_SIZE
 from handlers.dl.utils import sanitize_filename, is_invalid_video, check_media_size_limit, FileSizeLimitExceeded
 from handlers.dl.ytdlp import ytdlp_download
+from handlers.dl.proc import spawn_process, DEVNULL, PIPE, resolve_aria2
 from handlers.dl.progress import edit_status, TransferStats
 
 try:
@@ -297,7 +298,7 @@ async def _probe_total_bytes(session, url: str, headers: dict | None = None) -> 
     return 0
 
 async def _aria2c_download_with_progress(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
-    aria2 = shutil.which("aria2c")
+    aria2 = resolve_aria2()
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
     total = await _probe_total_bytes(session, media_url, headers=headers)
@@ -315,7 +316,7 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
             cmd.extend(["--header", f"{k}: {v}"])
     cmd.append(media_url)
     _dbg("aria2c start | out=%s url=%s", out_path, _clip(media_url))
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    proc = await spawn_process(*cmd, stdout=DEVNULL, stderr=PIPE)
     stats = TransferStats(total)
     while proc.returncode is None:
         await asyncio.sleep(0.7)
@@ -390,7 +391,7 @@ async def _ffmpeg_hls_download(media_url: str, out_path: str, bot, chat_id, stat
     if header_text:
         cmd += ["-headers", header_text]
     cmd += ["-i", media_url, "-c", "copy", "-bsf:a", "aac_adtstoasc", out_path]
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    proc = await spawn_process(*cmd, stdout=DEVNULL, stderr=PIPE)
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = stderr.decode(errors="ignore").strip() if stderr else ""

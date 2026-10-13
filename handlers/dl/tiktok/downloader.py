@@ -27,6 +27,7 @@ import subprocess
 from utils.http import get_http_session
 
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
+from handlers.dl.proc import spawn_process, DEVNULL, PIPE, resolve_aria2
 from handlers.dl.utils import sanitize_filename, is_invalid_video, check_media_size_limit, is_media_content_type, FileSizeLimitExceeded
 from handlers.dl.progress import TransferStats
 
@@ -93,7 +94,7 @@ async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     return 0
 
 async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
-    aria2=shutil.which("aria2c")
+    aria2=resolve_aria2()
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
     total=await _probe_total_bytes(session,media_url,headers=headers) if (TIKTOK_PROGRESS and status_msg_id) else 0
@@ -112,7 +113,7 @@ async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_
         if v:
             cmd.extend(["--header",f"{k}: {v}"])
     cmd.append(media_url)
-    proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.PIPE)
+    proc=await spawn_process(*cmd,stdout=DEVNULL,stderr=PIPE)
     if not TIKTOK_PROGRESS:
         try:
             _,stderr=await asyncio.wait_for(proc.communicate(),timeout=ARIA2C_TIMEOUT)

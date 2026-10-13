@@ -6,9 +6,11 @@ try:
     from handlers.dl.constants import BASE_DIR
 except Exception:
     BASE_DIR=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from handlers.dl.utils import sanitize_filename,check_media_size_limit,FileSizeLimitExceeded
+from handlers.dl.utils import sanitize_filename,check_media_size_limit,FileSizeLimitExceeded,AdultContentNotAllowed
 from handlers.dl.progress import edit_status, TransferStats
 from handlers.dl.ytdlp import ytdlp_download
+from handlers.dl.proc import spawn_process, DEVNULL, PIPE, resolve_aria2
+from handlers.dl.adult_gate import check_adult_access
 from PIL import Image
 import subprocess
 
@@ -285,8 +287,9 @@ def _parse_reddit_post(post:dict)->dict:
         if preview_image: items=preview_image
     if not items: raise RuntimeError("reddit post has no downloadable media")
     title=_safe_title(post,items)
-    _dbg("reddit parsed | title=%s count=%s types=%s",_clip(title,120),len(items),[x.get("type") for x in items])
-    return {"items":items,"title":title}
+    sensitive=bool(post.get("over_18"))
+    _dbg("reddit parsed | title=%s count=%s types=%s sensitive=%s",_clip(title,120),len(items),[x.get("type") for x in items],sensitive)
+    return {"items":items,"title":title,"sensitive":sensitive}
 
 async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     total=0
@@ -306,7 +309,7 @@ async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     return 0
 
 async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
-    aria2=shutil.which("aria2c")
+    aria2=resolve_aria2()
     if not aria2: raise RuntimeError("aria2c not found in PATH")
     total=await _probe_total_bytes(session,media_url,headers=headers)
     if total: check_media_size_limit(total,"Reddit media")
@@ -318,7 +321,7 @@ async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,
     cmd.append(media_url)
     log.info("Reddit aria2c start | url=%s out=%s",media_url,out_path)
     log.debug("Reddit aria2c cmd | %s"," ".join(cmd))
-    proc=await asyncio.create_subprocess_exec(*cmd,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.PIPE)
+    proc=await spawn_process(*cmd,stdout=DEVNULL,stderr=PIPE)
     stats=TransferStats(total)
     while proc.returncode is None:
         await asyncio.sleep(0.7)
@@ -424,7 +427,7 @@ async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:in
     if media_type == "video_hls":
         ua = headers.get("User-Agent", "Mozilla/5.0")
         cmd = ["ffmpeg", "-y", "-user_agent", ua, "-i", media_url, "-c", "copy", "-bsf:a", "aac_adtstoasc", out_path]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        proc = await spawn_process(*cmd, stdout=DEVNULL, stderr=PIPE)
         
         while proc.returncode is None:
             await asyncio.sleep(1.5)
@@ -479,7 +482,7 @@ async def _download_reddit_items(parsed:dict,bot,chat_id,status_msg_id)->dict:
         return {"path":downloaded_items[0]["path"],"title":title}
     return {"items":downloaded_items,"title":title}
 
-async def reddit_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
+async def reddit_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
     del fmt_key,format_id,has_audio
     if not metadata_ready:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Reddit media...</b>")
@@ -500,11 +503,22 @@ async def reddit_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_
     payload=await _fetch_json_from_candidates(urls)
     post=_pick_post_data(payload)
     parsed=_parse_reddit_post(post)
+    if parsed.get("sensitive"):
+        if strict_adult:
+            allowed,reason=check_adult_access(int(user_id or 0),int(chat_id),chat_type or "private")
+            if not allowed:
+                log.info(
+                    "Reddit adult content blocked | url=%s user_id=%s chat_id=%s reason=%s",
+                    text,user_id,chat_id,reason,
+                )
+                raise AdultContentNotAllowed("Reddit post is marked NSFW (over_18)",reason)
+        else:
+            _dbg("reddit NSFW post but no owner context, skipping adult gate")
     result=await _download_reddit_items(parsed,bot,chat_id,status_msg_id)
     _dbg("reddit scrape success | result_type=%s","album" if isinstance(result,dict) and result.get("items") else "single")
     return result
 
-async def reddit_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
+async def reddit_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
     try:
         return await reddit_scrape_download(
             raw_url=raw_url,
@@ -515,9 +529,12 @@ async def reddit_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,form
             format_id=format_id,
             has_audio=has_audio,
             metadata_ready=metadata_ready,
+            user_id=user_id,
+            chat_type=chat_type,
+            strict_adult=strict_adult,
         )
     except Exception as e:
-        if isinstance(e, FileSizeLimitExceeded):
+        if isinstance(e, (FileSizeLimitExceeded, AdultContentNotAllowed)):
             raise
         log.exception("Reddit scraping failed, fallback to yt-dlp | url=%s err=%r",raw_url,e)
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Reddit scraping failed</b>\n\n<i>Fallback to yt-dlp...</i>")

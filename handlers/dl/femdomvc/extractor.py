@@ -33,6 +33,7 @@ from curl_cffi import requests as curl_requests
 from handlers.dl.constants import MAX_TG_SIZE
 from handlers.dl.utils import sanitize_filename, FileSizeLimitExceeded
 from handlers.dl.progress import TransferStats
+from handlers.dl.proc import spawn_process, DEVNULL, PIPE
 
 from .constants import UA, HTTP_TIMEOUT, FEMDOMVC_PROGRESS_INTERVAL, FEMDOMVC_ARIA2_CONNS
 
@@ -198,10 +199,12 @@ async def _download_aria2c(
         dl_url,
     ]
 
-    proc = await asyncio.create_subprocess_exec(
+    # uvloop create_subprocess_exec -> libuv fork() -> SIGSEGV(-11). Pakai
+    # spawn_process (subprocess.Popen via thread / posix_spawn) yang aman.
+    proc = await spawn_process(
         *cmd,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=DEVNULL,
+        stderr=PIPE,
     )
 
     stats = TransferStats(total_size)

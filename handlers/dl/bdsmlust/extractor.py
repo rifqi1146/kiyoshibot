@@ -47,6 +47,7 @@ from curl_cffi import requests as curl_requests
 from handlers.dl.constants import MAX_TG_SIZE
 from handlers.dl.utils import FileSizeLimitExceeded, sanitize_filename
 from handlers.dl.progress import TransferStats
+from handlers.dl.proc import spawn_process, DEVNULL, PIPE
 
 from .constants import (
     UA,
@@ -356,10 +357,10 @@ async def _download_aria2c(
         dl_url,
     ]
 
-    proc = await asyncio.create_subprocess_exec(
+    proc = await spawn_process(
         *cmd,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=DEVNULL,
+        stderr=PIPE,
     )
 
     stats = TransferStats(total_size)
