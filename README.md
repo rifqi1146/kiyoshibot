@@ -9,7 +9,7 @@ A multi-function Telegram bot built with Python and `python-telegram-bot`, provi
 ## Features
 
 - AI chat and assistant commands
-- Media downloader for multiple platforms
+- Media downloader for multiple platforms (TikTok, Instagram, YouTube, Twitter/X, Bunkr, Nekopoi, etc.)
 - QRIS payment gateway integration (`/buypremium` via Axiom Payment)
 - Google search integration
 - Networking and utility tools
@@ -61,7 +61,7 @@ kiyoshibot/
 │   │   ├── drakorid/           # Drakor.id multi-resolution CDN scraper & auth session
 │   │   ├── tiktok/             # Watermark stripper, slideshow renderer & direct scraper
 │   │   ├── bunkr/              # Multi-tier Bunkr album scraper & parallel CDN downloader
-│   │   ├── instagram/          # Instagram carousel, reels & story parallel downloader
+│   │   ├── instagram/          # Cookie-less Polaris GraphQL scraper + optional Android mobile-session tier
 │   │   ├── retrotube/          # VOE.sx DDoS-Guard resolver & WP-Script stream extractor
 │   │   ├── simontok/           # AES-256-GCM player decryptor & HLS segment downloader
 │   │   ├── cosxplay/           # CosXplay direct MP4 scraper
@@ -156,29 +156,34 @@ kiyoshibot/
 │   ├── retriever.py            # Local vector retrieval & relevance ranker
 │   └── prompt.py               # Grounded prompt synthesis
 │
-└── utils/                      # Cross-cutting utility modules & shared infrastructure
-    ├── menu_lock.py            # Fail-closed 4-tier inline button ownership guard
-    ├── rich_common.py          # Shared rich-message helpers (not-modified guard)
-    ├── rich_msg.py             # Bot API 10.3 Rich Message (HTML blocks) builder & fallback
-    ├── rich_search.py          # Unified compact search table layout with pagination
-    ├── rich_stream.py          # Streaming rich-message updater for AI drafts
-    ├── scrapling_browser.py    # Singleton stealth Playwright session for Cloudflare bypass
-    ├── axiom.py                # Axiom Payment QRIS gateway client (curl_cffi Chrome JA3)
-    ├── http.py                 # Shared aiohttp session with tuned timeouts & pool
-    ├── firecrawl.py            # Firecrawl web search + page scrape (grounding backend)
-    ├── jina.py                 # Jina AI reader & SERP fallback (grounding backend)
-    ├── recent_messages.py      # In-memory rolling message buffer for grand-reply context
-    ├── caca_memory.py          # Persona conversation memory store & cleanup
-    ├── gemini_memory.py        # Gemini chat memory store
-    ├── groq_memory.py          # Groq chat memory store
-    ├── nsfw.py                 # NSFW state helper
-    ├── config.py               # Central env/config accessor
-    ├── fonts.py                # Font asset loader for quote/image rendering
-    ├── text.py                 # Text sanitizing & formatting helpers
-    ├── logger.py               # Message/event logger (forwards to LOG_CHAT_ID)
-    ├── startup.py              # Startup warmup (browser, caches, PTB warnings)
-    ├── stop_draft.py           # Real-time message streaming draft cancellation listener
-    └── user_collector.py       # User metadata collector
+├── utils/                      # Cross-cutting utility modules & shared infrastructure
+│   ├── menu_lock.py            # Fail-closed 4-tier inline button ownership guard
+│   ├── rich_common.py          # Shared rich-message helpers (not-modified guard)
+│   ├── rich_msg.py             # Bot API 10.3 Rich Message (HTML blocks) builder & fallback
+│   ├── rich_search.py          # Unified compact search table layout with pagination
+│   ├── rich_stream.py          # Streaming rich-message updater for AI drafts
+│   ├── scrapling_browser.py    # Singleton stealth Playwright session for Cloudflare bypass
+│   ├── axiom.py                # Axiom Payment QRIS gateway client (curl_cffi Chrome JA3)
+│   ├── http.py                 # Shared aiohttp session with tuned timeouts & pool
+│   ├── firecrawl.py            # Firecrawl web search + page scrape (grounding backend)
+│   ├── jina.py                 # Jina AI reader & SERP fallback (grounding backend)
+│   ├── recent_messages.py      # In-memory rolling message buffer for grand-reply context
+│   ├── caca_memory.py          # Persona conversation memory store & cleanup
+│   ├── gemini_memory.py        # Gemini chat memory store
+│   ├── groq_memory.py          # Groq chat memory store
+│   ├── nsfw.py                 # NSFW state helper
+│   ├── config.py               # Central env/config accessor
+│   ├── fonts.py                # Font asset loader for quote/image rendering
+│   ├── text.py                 # Text sanitizing & formatting helpers
+│   ├── logger.py               # Message/event logger (forwards to LOG_CHAT_ID)
+│   ├── startup.py              # Startup warmup (browser, caches, PTB warnings)
+│   ├── stop_draft.py           # Real-time message streaming draft cancellation listener
+│   └── user_collector.py       # User metadata collector
+│
+└── scripts/                    # Maintenance & administrative helper utilities
+    ├── ig_login.py             # One-shot Android mobile-session login for Instagram
+    ├── ig_status.py            # Check health & validity of saved Instagram mobile session
+    └── ig_resolve.py           # CLI test resolver to unlock age-restricted posts
 ```
 
 ### Architectural Highlights
@@ -187,6 +192,7 @@ kiyoshibot/
 - **Fail-Closed Ownership Guard:** All interactive menus and inline pickers are bound to the command caller via `utils/menu_lock.py`, preventing unauthorized group members from hijacking search sessions.
 - **UVLoop & Subprocess Safety:** Heavy CLI subprocesses (`yt-dlp`, `aria2c`, `ffmpeg`) use `subprocess.Popen` via `asyncio.to_thread` (`posix_spawn`) to guarantee immunity against `fork()` SIGSEGV (-11) crashes under `uvloop`.
 - **Bot API 10.3 Rich Messages:** Structured explorer menus leverage Telegram Bot API 10.3 rich formatting (`<h1>`, `<table compact>`, `<aside>`, collapsible sections) with automatic fallback to standard HTML.
+- **Cookie-less Instagram Extraction:** Public posts resolve through Instagram's logged-out Polaris GraphQL (`/api/graphql`) with dynamically bootstrapped LSD/CSRF tokens — no browser cookies required. Age-restricted posts fall back to an optional saved Android mobile-device session, then to the NeoXR API.
 
 ## Quick Installation (Recommended)
 
@@ -348,9 +354,16 @@ QUOTE_API_URI="http://127.0.0.1:3000"
 
 
 # Optional - NeoXR API
-# Required only if you use features that depend on NeoXR API.
+# Required only if you use features that depend on NeoXR API (final fallback).
 # Get it from your NeoXR API provider/dashboard.
 NEOXR_API_KEY=
+
+
+# Optional - Instagram Mobile Session
+# Public posts are extracted anonymously via Polaris GraphQL without login.
+# For age-restricted posts, run: venv/bin/python scripts/ig_login.py
+# The session is stored in data/ig_session.json and reused automatically.
+IG_SESSION_ENABLED=1
 
 
 # Optional - NH API / nhentai API Key
@@ -418,6 +431,10 @@ This project uses and depends on the following tools and services:
 - [omkarcloud/tiktok-scraper](https://github.com/omkarcloud/tiktok-scraper) — MIT License,
   Copyright (c) 2026 Chetan Jain. Vendored TikTok web-API client under
   `handlers/asupan/tiktokapi/` (used by the Asupan feature for keyword search).
+- [instagrapi](https://github.com/subzeroid/instagrapi) — MIT License. Emulates the
+  Android private mobile API for the optional Instagram mobile-session tier
+  (`scripts/ig_login.py`, `handlers/dl/instagram/mobile_session.py`) used to unlock
+  age-restricted posts.
 - [Evil0ctal/Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)
   — Apache-2.0. The pure-Python `webmssdk` signer (`X-Dynosaur` / `X-Gnarly`)
   in `handlers/asupan/tiktokapi/signer.py` is ported/vendored from here.
