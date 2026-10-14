@@ -19,7 +19,7 @@ KiyoshiBot dilengkapi beberapa model AI canggih yang bisa diajak ngobrol, tanya 
 - Pembayaran via QRIS otomatis. Setiap top-up memiliki masa berlaku (7-30 hari) per transaksi (multi-lot FEFO).
 
 ## Ganti Persona Caca (/mode)
-Fitur ini terbuka untuk pengguna yang memiliki saldo credit Caca aktif (atau saat /freecaca aktif). Mengubah kepribadian Caca:
+Fitur ini terbuka untuk pengguna yang memiliki saldo credit Caca aktif (atau saat akses Caca gratis sedang aktif). Mengubah kepribadian Caca:
 - `/mode` (tanpa argumen): lihat persona yang sedang aktif.
 - `/mode default`: santai, ramah, dan playful.
 - `/mode toxic`: kasar dan suka menghina.
@@ -31,12 +31,3 @@ Fitur ini terbuka untuk pengguna yang memiliki saldo credit Caca aktif (atau saa
 - `/mode loli`: lucu, imut, bergaya anime.
 
 Catatan: mengganti mode akan mereset riwayat memori percakapan Caca user tersebut.
-
-## Kontrol AI oleh Owner (Command Khusus Owner)
-- `/getmodel`: Lihat daftar model AI gratis yang tersedia di OpenCode proxy.
-- `/setmodel <nama>`: Ganti model AI aktif untuk `/ask`.
-- `/setsearch <engine> [depth]`: Atur mesin pencarian web untuk `/ask` (firecrawl / jina / fast / content).
-- `/thinking on|off|status`: Aktifkan atau matikan mode reasoning/thinking untuk `/ask`.
-- `/freecaca enable|disable`: Aktifkan/matikan akses Caca gratis untuk semua orang.
-- `/cacaadmin`: Lihat ringkasan billing Caca (invoice, credit, token) dan beri credit manual.
-- `/cacaadmin grant <user_id> <credits> <hari> <alasan>`: Beri lot credit manual ke user.

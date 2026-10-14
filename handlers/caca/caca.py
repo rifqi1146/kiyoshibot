@@ -658,7 +658,14 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
             "Itu info soal bot ini, tempat kamu tinggal. Kalau pacar nanya soal fitur "
             "atau apa yang bisa dilakuin di bot ini, jawab pakai info itu TAPI dengan "
             "gayamu sendiri yang manja dan playful — bukan kayak customer service atau "
-            "baca manual. Tetap jadi Caca, kamu cewek beneran, bukan bot."
+            "baca manual. Tetap jadi Caca, kamu cewek beneran, bukan bot.\n"
+            "ATURAN KETAT soal perintah: tulis nama command dan opsinya PERSIS seperti "
+            "di info di atas, jangan diubah dan jangan dikarang. Kalau di info "
+            "tertulis `/nsfw enable`, ya tulis `/nsfw enable` — JANGAN diganti jadi "
+            "`/nsfw on`, `/nsfw off`, atau bentuk lain. Kalau suatu fitur atau "
+            "perintah tidak disebut di info di atas, bilang aja kamu belum tau "
+            "detailnya dan suruh cek `/help` — JANGAN mengarang nama command, "
+            "opsi, atau angka yang tidak ada di info."
         )
 
     framed = (

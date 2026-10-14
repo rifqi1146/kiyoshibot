@@ -7,9 +7,21 @@ Perintah pengaturan grup dan moderasi. Hanya dapat digunakan oleh Admin grup ata
 - `/autodel enable|disable|status`: Hapus otomatis pesan asupan setelah dikirim (agar grup tidak kotor).
 - `/autodl enable|disable|status`: Deteksi dan auto-download setiap link yang dikirim anggota.
 - `/cacaa enable|disable|status`: Aktifkan/matikan chatbot Caca untuk merespon semua obrolan di grup.
-- `/nsfw enable|disable|status`: Aktifkan/matikan izin konten dewasa dan downloader 18+ di grup.
-- `/spoiler enable|disable|status`: Kirim media premium/NSFW dengan efek blur (spoiler) Telegram.
+- `/autodl enable|disable|status`: Deteksi dan auto-download setiap link yang dikirim anggota.
+- `/cacaa enable|disable|status`: Aktifkan/matikan chatbot Caca untuk merespon semua obrolan di grup.
 - `/wlc enable|disable|status`: Aktifkan/matikan pesan sambutan (welcome message) untuk member baru.
+
+## Pengaturan NSFW (/nsfw)
+- `/nsfw enable`: Aktifkan izin konten dewasa dan downloader 18+ di grup ini.
+- `/nsfw disable`: Matikan izin konten dewasa di grup.
+- `/nsfw status`: Cek status aktif/tidaknya NSFW di grup.
+- `/nsfw list`: Tampilkan daftar grup yang mengaktifkan NSFW (khusus admin/owner).
+- Catatan: NSFW hanya berlaku untuk pengguna Premium dan wajib diaktifkan di grup. Di chat privat tidak perlu. Perintahnya `enable` / `disable` — BUKAN `on` / `off`.
+
+## Pengaturan Spoiler (/spoiler)
+- `/spoiler enable`: Kirim media premium/NSFW dengan efek blur (spoiler) Telegram.
+- `/spoiler disable`: Kirim media premium/NSFW secara normal (tanpa blur).
+- `/spoiler status`: Cek status spoiler di grup.
 
 ## Moderasi Anggota
 - `/ban [durasi] <user_id|@username|reply> [alasan]`: Ban anggota. Tanpa durasi = permanen. Durasi didukung seperti `7d` (hari), `1h` (jam), `10m` (menit). Contoh: `/ban 7d @user toxic`, atau reply pesan lalu ketik `/ban 7d toxic`.
@@ -27,17 +39,6 @@ Perintah pengaturan grup dan moderasi. Hanya dapat digunakan oleh Admin grup ata
 - `/moderation enable|disable|status`: Aktifkan/matikan moderasi otomatis di grup — bot menindak spam, link, dan pelanggaran lain secara otomatis.
 - Hanya admin grup atau owner bot yang dapat mengubahnya.
 
-## Blacklist Bot (/blacklist)
-Khusus owner bot. Memblokir user atau grup dari penggunaan bot.
-- `/blacklist add <user_id|@username> [alasan]`: Masukkan user ke daftar hitam.
-- `/blacklist remove <user_id|@username>`: Hapus user dari daftar hitam.
-- `/blacklist status <user_id|@username>`: Cek status blacklist user.
-- `/blacklist list`: Tampilkan seluruh user yang di-blacklist.
-- `/blacklist group add [group_id|@username] [alasan]`: Blacklist sebuah grup sehingga bot berhenti melayaninya. Di dalam grup, `group_id` boleh dikosongkan untuk menargetkan grup saat ini.
-- `/blacklist group remove [group_id|@username]`: Hapus grup dari daftar hitam.
-- `/blacklist group status [group_id|@username]`: Cek status blacklist grup.
-- `/blacklist group list`: Tampilkan seluruh grup yang di-blacklist.
-
 ## Pengaturan Pengguna (User Settings)
 - `/settings`: Menu pengaturan pribadi per akun (berlaku di semua chat/grup). Berisi 6 opsi:
   - **AutoDL All Groups**: auto-download link di semua grup.
@@ -48,18 +49,3 @@ Khusus owner bot. Memblokir user atau grup dari penggunaan bot.
   - **Silent Download**: unduh tanpa pesan progres berkala.
 - `/uploadengine`: Pilih mesin upload file (MTProto / Pyrofork) untuk downloader.
 - `/fasttelethon`: Aktifkan/matikan engine upload cepat FastTelethon.
-
-## Command Khusus Owner Bot
-Perintah berikut hanya dapat digunakan oleh owner bot (@HirohitoKiyoshi):
-- `/broadcast`: Kirim pesan massal ke semua pengguna bot.
-- `/backup` dan `/restore`: Buat atau pulihkan backup database bot.
-- `/autobackup`: Atur backup otomatis berkala (setiap 6 jam).
-- `/reload`: Muat ulang (hot reload) seluruh handler, modul, dan RAG tanpa restart.
-- `/restart`: Restart penuh proses bot.
-- `/update`: Tarik pembaruan terbaru dari repository Git secara otomatis.
-- `/premium`: Kelola status premium user secara manual.
-- `/addsudo` dan `/rmsudo`: Tambah atau hapus user dari daftar sudo.
-- `/sudolist`: Lihat daftar user sudo aktif.
-- `/cookies`: Unggah file cookies (format Netscape) untuk kebutuhan downloader.
-- `/groups`: Lihat daftar semua grup tempat bot berada.
-- `/helpowner`: Buka menu khusus perintah owner.

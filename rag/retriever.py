@@ -42,8 +42,8 @@ BOT_INTENT_KEYWORDS = {
     "downloader", "download", "unduh", "premium", "buypremium", "qris", "bayar",
     "harga", "vip", "benefit", "premiumbenefit", "iklan", "ads", "sponsor",
     "grup", "admin", "moderasi", "moderation", "ban", "unban", "kick", "mute", "unmute",
-    "wlc", "welcome", "verifikasi", "verify", "captcha", "blacklist", "promote",
-    "demote", "untag", "sudolist", "unverified",
+    "wlc", "welcome", "verifikasi", "verify", "captcha", "promote",
+    "demote", "untag", "unverified",
     "nsfw", "spoiler", "autodl", "autodel", "asupann", "cacaa", "silent",
     "caca", "mode", "persona", "ask", "groq", "gemini", "ai",
     "quotly", "quote", "sticker", "stiker", "kang", "getsticker",
@@ -57,9 +57,9 @@ BOT_INTENT_KEYWORDS = {
     "ip", "domain", "whois", "speedtest", "ping", "stats",
     "kurs", "cuaca", "weather", "resi", "lacak", "translate", "trlist", "gsearch",
     "upscale", "nobg", "aidetect", "aitext", "waifu", "ship", "reminder", "share",
-    "donate", "settings", "uploadengine", "fasttelethon", "asahotak", "susunkata",
-    "quiz", "quoteanime", "sidang", "owner", "cookies", "backup", "broadcast",
-    "sudo", "restore", "autobackup", "groups", "helpowner", "game", "permainan",
+    "donate", "settings", "uploadengine", "upload", "engine", "telethon", "pyrofork", "mtproto",
+    "fasttelethon", "asahotak", "susunkata",
+    "quiz", "quoteanime", "game", "permainan",
 }
 
 # Multi-word intent phrases: matched as substrings of the raw lowercased query.

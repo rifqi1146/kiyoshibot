@@ -21,9 +21,8 @@ Cek daftar lengkap lewat `/premiumbenefit`:
 - Harga paket Premium tertera langsung di sisi gateway pembayaran.
 - Invoice QRIS berlaku selama 5 menit dengan auto-polling. Status premium langsung aktif secara otomatis begitu pembayaran terdeteksi.
 
-## Donasi Manual (/donate) dan Kelola Premium
+## Donasi & Daftar Benefit
 - `/donate`: Tampilkan tautan donasi untuk mendukung operasional bot.
-- `/premium`: Manajemen premium manual (khusus owner bot, bisa tambah/hapus/lacak status premium user).
 - `/premiumbenefit`: Tampilkan daftar lengkap fitur Premium beserta daftar domain yang memerlukannya.
 
 Pembayaran 100% aman, terenkripsi, dan diproses langsung lewat gateway resmi tanpa iklan maupun perantara.
