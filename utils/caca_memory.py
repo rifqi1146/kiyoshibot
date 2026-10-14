@@ -6,7 +6,11 @@ import asyncio
 
 MEMORY_EXPIRE = 60 * 60 * 24
 META_DB_PATH = "data/meta_memory.sqlite3"
-META_MAX_TURNS = 50
+# Riwayat yang dikirim ulang tiap request = META_MAX_TURNS * 2 pesan.
+# Diukur: persona + framing Caca = ~840 token KONSTAN tiap pesan, jadi riwayat
+# yang menumpuk adalah biaya variabel utama. 8 turn (16 pesan) -> ~160 token
+# riwayat -> total ~1.000 token/chat -> pas dengan target "300 chat per Rp3.000".
+META_MAX_TURNS = int(os.getenv("CACA_MAX_TURNS", "8"))
 
 
 def _meta_db_init():

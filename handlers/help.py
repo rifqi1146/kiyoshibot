@@ -58,7 +58,10 @@ def help_main_keyboard(user_id: int):
             InlineKeyboardButton("AI Chat", callback_data=_help_cb(user_id, "ai")),
         ],
         [
+            InlineKeyboardButton("Caca", callback_data=_help_cb(user_id, "caca")),
             InlineKeyboardButton("Utilities", callback_data=_help_cb(user_id, "utils")),
+        ],
+        [
             InlineKeyboardButton("Privacy", callback_data=_help_cb(user_id, "privacy")),
         ],
         [
@@ -174,6 +177,38 @@ HELP_TEXT = {
         "> Reply to the bot's message to continue the conversation."
     ),
 
+    "caca": (
+        "### 💬 Caca Menu\n"
+        "\n"
+        "Chat with **Caca**, a playful roleplay companion.\n"
+        "\n"
+        "**Chat**\n"
+        "- `/caca <text>` — Start chatting with Caca\n"
+        "- `/caca search <text>` — Chat with live web search enabled\n"
+        "- Reply to Caca's message to keep talking (no need to retype the command)\n"
+        "- Caca can also fetch fresh info on her own when you ask about news, prices, or specs\n"
+        "\n"
+        "**Persona**\n"
+        "- `/mode` — Show your current persona\n"
+        "- `/mode <name>` — Change persona\n"
+        "- Available: `default`, `bokep`, `sarkas`, `toxic`, `yandere`, `cabul`, `masokis`, `loli`\n"
+        "- Changing persona resets your Caca chat memory\n"
+        "\n"
+        "**Credit & Top-up**\n"
+        "- Caca uses a **credit** system priced by actual AI tokens\n"
+        "- `/cacatopup` — Top up credit (preset packages or custom amount)\n"
+        "- `/buycaca` — Same as `/cacatopup`\n"
+        "- `/cacasaldo` — Check balance and each credit lot's expiry\n"
+        "\n"
+        "> You must have active credit to use Caca. Each top-up creates its own\n"
+        "> credit lot with its own expiry date (7–30 days).\n"
+        "\n"
+        "**In Groups**\n"
+        "- `/cacaa enable` — Enable Caca in the group\n"
+        "- `/cacaa disable` — Disable Caca in the group\n"
+        "- `/cacaa status` — Check Caca status"
+    ),
+
     "utils": (
         "### 🧰 Utilities\n"
         "\n"
@@ -270,12 +305,14 @@ HELP_TEXT = {
     ),
 
     "cacaa": (
-        "### 💬 Caca Settings\n"
+        "### 💬 Caca Group Settings\n"
         "\n"
-        "- `/mode` — Change Caca persona (Premium Only)\n"
         "- `/cacaa enable` — Enable Caca in the group\n"
         "- `/cacaa disable` — Disable Caca in the group\n"
-        "- `/cacaa status` — Check Caca status"
+        "- `/cacaa status` — Check Caca status\n"
+        "- `/cacaa list` — List active groups (owner only)\n"
+        "\n"
+        "> Use `/help` → **Caca** for personas, chat and credit top-up."
     ),
 
     "nsfw": (

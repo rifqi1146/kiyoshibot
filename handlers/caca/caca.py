@@ -18,6 +18,8 @@ from .caca_prompt import PERSONAS
 from utils.http import get_http_session
 from utils.timectx import time_context
 from database import caca_db
+from database import caca_billing_db
+from utils.config import OWNER_ID
 from utils import caca_memory
 
 logger = logging.getLogger(__name__)
@@ -184,7 +186,7 @@ async def _stop_typing_task(stop, typing):
             logger.warning("Caca typing task stop failed | err=%r", e)
 
 
-async def _reply_thread(bot, msg, text, parse_mode=None):
+async def _reply_thread(bot, msg, text, parse_mode=None, reply_markup=None):
     thread_id = _get_thread_id(msg)
     kwargs = {
         "chat_id": msg.chat_id,
@@ -192,6 +194,8 @@ async def _reply_thread(bot, msg, text, parse_mode=None):
         "parse_mode": parse_mode,
         "reply_to_message_id": msg.message_id,
     }
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
     if thread_id:
         kwargs["message_thread_id"] = thread_id
     try:
@@ -314,7 +318,52 @@ async def _shared_http_session():
     return session
 
 
-async def _groq_chat(messages: list[dict]) -> str:
+def _usage_from(data: dict) -> dict:
+    """Ekstrak `usage` provider jadi dict ternormalisasi.
+
+    Shiteru membalas objek `usage` OpenAI standar (`prompt_tokens`,
+    `completion_tokens`, `total_tokens`) pada respons non-streaming maupun di
+    chunk SSE terakhir. Nilai dibiarkan 0 kalau provider tidak menyertakannya,
+    supaya pemanggil bisa menerapkan kebijakan fallback sendiri.
+    """
+    usage = (data or {}).get("usage") or {}
+    if not isinstance(usage, dict):
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    try:
+        prompt = int(usage.get("prompt_tokens") or 0)
+    except (TypeError, ValueError):
+        prompt = 0
+    try:
+        completion = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        completion = 0
+    try:
+        total = int(usage.get("total_tokens") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    if total <= 0:
+        total = prompt + completion
+    return {"prompt_tokens": max(0, prompt), "completion_tokens": max(0, completion), "total_tokens": max(0, total)}
+
+
+def _estimate_tokens(messages: list[dict]) -> int:
+    """Fallback estimasi token input kalau provider tidak mengirim `usage`.
+
+    Aturan kasar ~4 karakter per token, minimum 1. Dipakai HANYA saat `usage`
+    benar-benar kosong — bukan pengganti pengukuran aktual.
+    """
+    chars = 0
+    for item in messages or []:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+    return max(1, chars // 4)
+
+
+async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
+    """Panggilan chat non-streaming. Mengembalikan `(content, usage)`."""
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
@@ -356,18 +405,31 @@ async def _groq_chat(messages: list[dict]) -> str:
             if not content:
                 raise RuntimeError("Konten balasan Caca kosong.")
 
-            logger.info("Caca chat success | model=%s tokens_max=%s", CACA_MODEL, CACA_MAX_TOKENS)
-            return content
+            usage = _usage_from(data)
+            logger.info("Caca chat success | model=%s tokens_max=%s prompt=%s completion=%s",
+                        CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"])
+            return content, usage
     except Exception as e:
         logger.warning("Caca request failed | err=%s", e)
         raise
 
 
-async def _groq_chat_stream(messages: list[dict]):
+async def _groq_chat(messages: list[dict]) -> str:
+    """Wrapper non-streaming yang hanya mengembalikan teks (kompatibilitas lama)."""
+    content, _ = await _chat_completion(messages)
+    return content
+
+
+async def _groq_chat_stream(messages: list[dict], usage_out: dict | None = None):
     """Async generator delta streaming Caca via Shiteru (SSE OpenAI format).
 
-    Catatan model kimi-k3: delta memuat `reasoning_content` (thinking) sebelum
-    `content`. Kita HANYA me-yield `content` (jawaban akhir Caca), mengabaikan
+    `usage_out` (opsional) akan diisi dengan `usage` provider saat stream selesai.
+    Shiteru mengirim objek `usage` di chunk SSE, jadi kita tangkap dan simpan ke
+    dict itu. Kalau provider tidak mengirimkannya, dict dibiarkan kosong dan
+    pemanggil memakai kebijakan fallback.
+
+    Catatan model thinking: delta memuat `reasoning_content` sebelum `content`.
+    Kita HANYA me-yield `content` (jawaban akhir Caca), mengabaikan
     `reasoning_content` agar draft PM tidak kotor dengan monolog internal.
     """
     key = _caca_api_key()
@@ -421,17 +483,24 @@ async def _groq_chat_stream(messages: list[dict]):
                         obj = json.loads(data.decode("utf-8"))
                     except Exception:
                         continue
+                    # Tangkap usage di chunk mana pun (Shiteru mengirim di akhir).
+                    if usage_out is not None and obj.get("usage"):
+                        parsed = _usage_from(obj)
+                        if parsed["total_tokens"] > 0:
+                            usage_out.update(parsed)
                     choices = obj.get("choices") or []
                     if not choices:
                         continue
                     delta = choices[0].get("delta") or {}
-                    # Abaikan delta.get("reasoning_content") — kimi-k3 thinking
+                    # Abaikan delta.get("reasoning_content") — model thinking
                     content = delta.get("content")
                     if content:
                         got_any = True
                         yield content
             if got_any:
-                logger.info("Caca stream success | model=%s tokens_max=%s", CACA_MODEL, CACA_MAX_TOKENS)
+                logger.info("Caca stream success | model=%s tokens_max=%s usage=%s",
+                            CACA_MODEL, CACA_MAX_TOKENS, usage_out or {})
+
                 return
             raise RuntimeError("Response stream kosong dari provider Caca.")
     except Exception as e:
@@ -439,8 +508,13 @@ async def _groq_chat_stream(messages: list[dict]):
         raise
 
 
-async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages):
-    """Streaming Rich Message draft for Caca DMs; groups use the non-streaming path."""
+async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing: dict | None = None):
+    """Streaming Rich Message draft for Caca DMs; groups use the non-streaming path.
+
+    `billing` (opsional) menerima `usage` provider + `stream_completed` supaya
+    `meta_query` bisa men-settle pemakaian credit tepat sekali setelah stream
+    selesai (bukan per chunk).
+    """
     from utils.rich_stream import stream_to_draft
     bot = context.bot
     draft_id = msg.message_id
@@ -449,10 +523,15 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
     stop_key = f"ask_draft_stop:{msg.chat_id}:{draft_id}"
     if app:
         app.bot_data[stop_key] = gen_stop
+    if billing is None:
+        billing = {}
+    billing.setdefault("usage", {})
+    billing["streamed"] = False
+    billing["stream_completed"] = False
 
     async def gen():
         got = False
-        async for chunk in _groq_chat_stream(messages):
+        async for chunk in _groq_chat_stream(messages, usage_out=billing["usage"]):
             got = True
             yield chunk
         if not got:
@@ -473,15 +552,20 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             message_thread_id=_get_thread_id(msg),
             stop_event=gen_stop,
         )
+        billing["streamed"] = True
         if gen_stop.is_set():
             clean_md = _clean_caca_output(raw) or "⏹ Jawaban dibatalkan."
             last_id = await _send_chunks(bot, msg, [clean_md])
             await save(clean_md, last_id)
+            # User memotong jawaban; tetap ditagih karena provider sudah
+            # menghasilkan token sampai titik stop.
+            billing["stream_completed"] = True
             return
         clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         last_id = await _send_chunks(bot, msg, chunks)
         await save(clean_md, last_id)
+        billing["stream_completed"] = True
     except RuntimeError as e:
         if "not supported in this chat" not in str(e):
             raise
@@ -490,12 +574,14 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, message_thread_id=thread_id))
         try:
-            raw2 = await _groq_chat(messages)
+            raw2, usage2 = await _chat_completion(messages)
+            billing["usage"].update(usage2)
             clean_md = _clean_caca_output(raw2) or "Model did not provide an answer."
             chunks = split_message(clean_md, 4000)
             await _stop_typing_task(stop, typing)
             last_id = await _send_chunks(bot, msg, chunks)
             await save(clean_md, last_id)
+            billing["stream_completed"] = True
         finally:
             await _stop_typing_task(stop, typing)
     finally:
@@ -572,6 +658,92 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
     return messages
 
 
+def _billing_access_allowed(user_id: int) -> bool:
+    """True kalau request user TIDAK perlu ditagih.
+
+    Dua jalur bypass:
+      1. `OWNER_ID` — owner selalu bisa pakai Caca, tanpa potong credit.
+      2. `/freecaca enable` — saklar global yang memberi akses gratis ke semua.
+
+    Pemakaian tetap dicatat di `caca_usage_logs` (dengan `is_billed=0`) supaya
+    konsumsi token provider masih bisa diaudit.
+    """
+    if int(user_id) in OWNER_ID:
+        return True
+    try:
+        return caca_billing_db.is_freecaca_enabled()
+    except Exception as e:
+        logger.warning("freecaca check failed | err=%r", e)
+        return False
+
+
+async def _reply_no_credit(context, msg):
+    """Pesan saat saldo credit habis / semua lot kedaluwarsa."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    total_expired = 0
+    try:
+        bal = await asyncio.to_thread(caca_billing_db.get_user_balance, msg.from_user.id)
+        total_expired = bal.get("expired_credits", 0)
+    except Exception as e:
+        logger.warning("Balance read for no-credit notice failed | err=%r", e)
+
+    lines = [
+        "Hai sayang... credit Caca kamu sudah habis atau masa aktifnya berakhir nih.",
+        "",
+    ]
+    if total_expired:
+        lines.append(f"<b>Credit kedaluwarsa:</b> <code>{total_expired:,}</code>".replace(",", "."))
+    lines.extend([
+        "Top up dulu yuk biar kita bisa ngobrol lagi.",
+        "",
+        "Pakai <code>/cacatopup</code> atau tekan tombol di bawah.",
+    ])
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Beli Credit Caca", callback_data="cacabill:new")],
+        [InlineKeyboardButton("Cek Saldo", callback_data="cacabill:bal")],
+    ])
+    return await _reply_thread(context.bot, msg, "\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+async def _settle_billing(user_id: int, chat_id: int, reservation_id: str | None, billing: dict, messages: list[dict], billed: bool):
+    """Potong credit sesuai pemakaian token AKTUAL, tepat sekali per respons.
+
+    Kebijakan fallback kalau provider tidak mengirim `usage`: estimasi token
+    input dari panjang pesan (~4 char/token) dan nol untuk output — TIDAK
+    diam-diam menagih 0 dan tidak mengarang angka besar.
+    """
+    usage = (billing or {}).get("usage") or {}
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        prompt_tokens = _estimate_tokens(messages)
+        logger.warning("Caca usage missing, using estimate | user_id=%s est_input=%s", user_id, prompt_tokens)
+
+    try:
+        cost = await asyncio.to_thread(
+            caca_billing_db.settle_usage,
+            user_id=user_id,
+            chat_id=chat_id,
+            reservation_id=reservation_id,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model=CACA_MODEL,
+            is_billed=billed,
+        )
+        logger.info(
+            "Caca settled | user_id=%s billed=%s prompt=%s completion=%s cost=%s credits",
+            user_id, billed, prompt_tokens, completion_tokens, cost,
+        )
+    except Exception as e:
+        # Settlement gagal: lepas reservasi supaya credit tidak tertahan selamanya.
+        logger.error("Caca settle failed | user_id=%s err=%r", user_id, e, exc_info=True)
+        if reservation_id:
+            try:
+                await asyncio.to_thread(caca_billing_db.release_reservation, reservation_id)
+            except Exception as re:
+                logger.warning("Reservation release after settle failure failed | err=%r", re)
+
+
 async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update, context):
         return
@@ -594,6 +766,8 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fresh_session = False
     stop = None
     typing = None
+    reservation_id = None
+    billed = False
 
     try:
         if msg.text and msg.text.startswith("/caca"):
@@ -619,6 +793,22 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not prompt:
             return
 
+        # ── Credit gate ──────────────────────────────────────────────────────
+        # Owner selalu lolos (billed=False). `/freecaca enable` memberi akses
+        # gratis ke semua orang. Selain itu user wajib punya lot credit aktif.
+        free_pass = _billing_access_allowed(user_id)
+        if not free_pass:
+            if not caca_billing_db.has_active_credit(user_id, min_credits=caca_billing_db.MIN_CREDITS_TO_CHAT):
+                return await _reply_no_credit(context, msg)
+            reservation_id = await asyncio.to_thread(
+                caca_billing_db.reserve_credits,
+                user_id,
+                caca_billing_db.RESERVE_AMOUNT,
+            )
+            if reservation_id is None:
+                return await _reply_no_credit(context, msg)
+            billed = True
+
         # Auto-search: jalan kalau user mengetik `/caca search` ATAU pesannya
         # mengandung kata pemicu (cariin, spek, harga, berita, kapan rilis, dll).
         # Hasilnya diselipkan ke framing, bukan ke `caca_prompt.py`.
@@ -642,16 +832,19 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         messages = _build_persona_messages(system_prompt, history, user_prompt, search_result=search_result)
 
+        billing = {"usage": {}}
         is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
         if is_dm:
-            await _caca_stream_dm(update, context, msg, user_id, history, prompt, messages)
+            await _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing=billing)
+            await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed)
             return
 
         # Jalur grup: non-streaming Rich Message
         stop = asyncio.Event()
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, message_thread_id=thread_id))
-        raw = await _groq_chat(messages)
+        raw, usage = await _chat_completion(messages)
+        billing["usage"].update(usage)
         clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         await _stop_typing_task(stop, typing)
@@ -663,8 +856,16 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await caca_memory.set_history(user_id, history)
         if last_id:
             await caca_memory.set_last_message_id(user_id, last_id)
+        await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed)
 
     except Exception as e:
+        # Kegagalan sebelum settlement: lepas reservasi supaya credit tidak
+        # tertahan, dan JANGAN memotong credit sama sekali.
+        if reservation_id:
+            try:
+                await asyncio.to_thread(caca_billing_db.release_reservation, reservation_id)
+            except Exception as re:
+                logger.warning("Release reservation failed | res=%s err=%r", reservation_id, re)
         await _stop_typing_task(stop, typing)
         await _reply_thread(context.bot, msg, f"{em} Error: {html.escape(str(e))}", parse_mode="HTML")
 

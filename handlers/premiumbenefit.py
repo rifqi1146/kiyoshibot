@@ -32,7 +32,6 @@ BENEFITS = (
     ),
     ("Manga", (("/manga nh", "Read NH / nhentai manga."),)),
     ("Settings", (("/settings", "YouTube resolution up to 1080p."),)),
-    ("Other", (("/mode", "Change Caca persona."),)),
 )
 
 NOTE_NSFW = (

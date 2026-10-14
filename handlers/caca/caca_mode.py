@@ -3,11 +3,28 @@ from telegram.ext import ContextTypes
 import logging
 
 from .caca_prompt import PERSONAS
-from database import premium
 from database import caca_db
+from database import caca_billing_db
+from utils.config import OWNER_ID
 from utils import caca_memory
 
 logger = logging.getLogger(__name__)
+
+
+def _mode_allowed(user_id: int) -> bool:
+    """`/mode` butuh akses Caca: owner, `/freecaca`, atau punya credit aktif."""
+    if int(user_id) in OWNER_ID:
+        return True
+    try:
+        if caca_billing_db.is_freecaca_enabled():
+            return True
+    except Exception as e:
+        logger.warning("freecaca check failed in /mode | err=%r", e)
+    try:
+        return caca_billing_db.has_active_credit(user_id, min_credits=1)
+    except Exception as e:
+        logger.warning("Credit check failed in /mode | err=%r", e)
+        return False
 
 
 async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -16,10 +33,10 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not user:
         return
     user_id = user.id
-    if not premium.check(user_id):
+    if not _mode_allowed(user_id):
         return await msg.reply_text(
-            "❌ Persona mode is available for premium users only.\n"
-            "Non-premium users are not allowed to change it 😤"
+            "Hai sayang... buat ganti persona, kamu perlu credit Caca yang masih aktif dulu ya \U0001f97a\n\n"
+            "Top up pakai /cacatopup, atau cek saldo dengan /cacasaldo."
         )
     if not context.args:
         cur = caca_db.get_mode(user_id)

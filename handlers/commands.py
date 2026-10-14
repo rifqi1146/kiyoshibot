@@ -78,6 +78,11 @@ from handlers.caca import (
     cacaa_cmd,
     meta_query,
     mode_cmd,
+    cacatopup_cmd,
+    cacasaldo_cmd,
+    freecaca_cmd,
+    cacaadmin_cmd,
+    addcredit_cmd,
 )
 
 from handlers.moderation import (
@@ -97,6 +102,7 @@ from handlers.moderation import (
 )
 
 COMMAND_HANDLERS = [
+    ("addcredit", addcredit_cmd, False),
     ("addsudo", addsudo_cmd, False),
     ("aitext", aitext_cmd, False),
     ("share", share_cmd, False),
@@ -115,7 +121,11 @@ COMMAND_HANDLERS = [
     ("blacklist", blacklist_cmd, False),
     ("broadcast", broadcast_cmd, False),
     ("buypremium", buypremium_cmd, False),
+    ("buycaca", cacatopup_cmd, False),
     ("caca", meta_query, False),
+    ("cacaadmin", cacaadmin_cmd, False),
+    ("cacasaldo", cacasaldo_cmd, False),
+    ("cacatopup", cacatopup_cmd, False),
     ("cacaa", cacaa_cmd, False),
     ("cookies", cookies_cmd, False),
     ("demote", demote_cmd, False),
@@ -126,6 +136,7 @@ COMMAND_HANDLERS = [
     ("moviebox", moviebox_cmd, False),
     ("anichin", anichin_cmd, False),
     ("fasttelethon", fasttelethon_cmd, False),
+    ("freecaca", freecaca_cmd, False),
     ("getmodel", getmodel_cmd, False),
     ("getsticker", getsticker_cmd, False),
     ("groq", groq_query, False),
