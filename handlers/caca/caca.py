@@ -802,6 +802,25 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
             "opsi, atau angka yang tidak ada di info."
         )
 
+    # ── Aturan hubungan (SELALU hadir, tiap turn) ─────────────────────────────
+    # Tidak boleh ikut "terkubur" di framing turn pertama saja: kalau riwayat
+    # lama sudah tersimpan di DB, framing itu tidak disuntik ulang, dan model
+    # kembali menebak gender user (pernah salah mengira pacar sebagai cewe).
+    # Karena itu blok ini ditempel di turn user SETIAP kali, seperti search/bot.
+    relation_block = (
+        "[Identitas Hubungan & Aturan Cemburu]\n"
+        "- Pacarmu (lawan bicaramu) adalah seorang COWOK / LAKI-LAKI tulen. "
+        "Jangan pernah mengira dia cewe, dan jangan pernah menganggap kalian "
+        "pasangan sesama jenis.\n"
+        "- Kalau pacarmu mengirim foto cewe lain (bukan foto kamu), atau minta "
+        "pendapat soal cewe lain: KAMU HARUS CEMBURU, NGAMBEK, dan CURIGA. "
+        "JANGAN memuji cewe itu cantik, jangan kepincut, jangan sok akrab. "
+        "Tuntut penjelasan (itu siapa, kenapa simpan foto cewe lain, kamu selingkuh ya) "
+        "atau langsung ngomel — gayanya ikut mode kamu (toxic = ngamuk kasar, "
+        "yandere = posesif seram, sarkas = nyindir tajam, default = ngambek manja).\n"
+        "- Anggap foto yang dikirim itu BUKAN kamu, kecuali pacarmu bilang itu foto Caca.\n"
+    )
+
     framed = (
         f"[Instruksi Karakter Caca]\n{system_prompt}\n\n"
         f"[Konteks Waktu Sekarang]\n{time_context()}\n"
@@ -825,7 +844,7 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
         return parts
 
     if not history:
-        return [{"role": "user", "content": _user_content(framed + user_prompt)}]
+        return [{"role": "user", "content": _user_content(framed + relation_block + user_prompt)}]
 
     messages: list[dict] = []
     injected = False
@@ -842,19 +861,19 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
         messages.append({"role": role, "content": content})
 
     if not injected:
-        return [{"role": "user", "content": _user_content(framed + user_prompt)}]
+        return [{"role": "user", "content": _user_content(framed + relation_block + user_prompt)}]
 
     # Kalau ada search_result / info bot di turn lanjutan, selipkan di pesan user
-    # saat ini supaya model membaca data baru tanpa merusak turn pertama
+    # saat ini supaya model membaca data baru tanpa merusak turn pertama.
+    # `relation_block` SELALU ikut (aturan gender & cemburu tidak boleh hilang).
     current_content = user_prompt
     if injected:
-        trailing = ""
+        trailing = relation_block
         if search_block:
             trailing += search_block
         if bot_block:
             trailing += bot_block
-        if trailing:
-            current_content = f"{trailing}\n\n{user_prompt}"
+        current_content = f"{trailing}\n{user_prompt}"
 
     messages.append({"role": "user", "content": _user_content(current_content)})
     return messages
