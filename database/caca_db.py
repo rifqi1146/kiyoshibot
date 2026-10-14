@@ -92,6 +92,18 @@ def _caca_db_save_modes(modes: dict[int, str]):
             _rollback(con, "Caca save modes")
             raise
 
+def _caca_db_get_mode(user_id: int) -> str | None:
+    """Baca satu mode langsung dari SQLite (dipakai fallback `get_mode`)."""
+    with db_session(CACA_DB_PATH) as con:
+        row = con.execute(
+            "SELECT mode FROM caca_mode WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+    if not row or row[0] is None:
+        return None
+    return str(row[0])
+
+
 def _caca_db_upsert_mode(user_id: int, mode: str):
     with db_session(CACA_DB_PATH) as con:
         now = time.time()
@@ -172,7 +184,25 @@ async def reload_modes():
         log.warning("Failed to load Caca modes | err=%r", e)
 
 def get_mode(user_id: int) -> str:
-    return _MODE_CACHE.get(int(user_id), "default")
+    """Ambil mode persona Caca user.
+
+    Fallback ke DB kalau user tidak ada di cache. `importlib.reload()` (dipakai
+    `/reload`) mereset `_MODE_CACHE` jadi `{}`; tanpa fallback ini SEMUA user
+    mendadak kembali ke `default` walau barisnya masih ada di `caca_mode`.
+    """
+    uid = int(user_id)
+    cached = _MODE_CACHE.get(uid)
+    if cached is not None:
+        return cached
+    try:
+        mode = _caca_db_get_mode(uid)
+    except Exception as e:
+        log.warning("Caca get_mode DB fallback failed | user_id=%s err=%r", uid, e)
+        return "default"
+    if mode is None:
+        return "default"
+    _mode_cache_set(uid, mode)
+    return mode
 
 async def set_mode(user_id: int, mode: str):
     user_id = int(user_id)

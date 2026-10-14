@@ -39,9 +39,15 @@ def _table_exists() -> bool:
         con.close()
 
 def init_if_needed():
-    if not _PREMIUM_USERS and not _table_exists():
-        init_premium_db()
-    elif not _PREMIUM_USERS:
+    """Pastikan `_PREMIUM_USERS` terisi dari DB.
+
+    Dipanggil di seluruh jalur cek premium sebagai jaring pengaman: `importlib.reload()`
+    (dipakai `/reload`) mereset SEMUA variabel level modul, termasuk `_PREMIUM_USERS`
+    menjadi `set()` kosong. Tanpa reload ulang di sini, seluruh user premium
+    (kecuali owner) mendadak dianggap non-premium sampai ada kode lain yang
+    memanggil `init_premium_db()` — gejala nyata: `/mode` ditolak "premium only".
+    """
+    if not _PREMIUM_USERS:
         init_premium_db()
 
 def premium_add(user_id: int):
@@ -101,10 +107,9 @@ def is_premium(user_id: int, cache: set[int] | None = None) -> bool:
     uid = int(user_id)
     if uid in OWNER_ID:
         return True
-    if cache is not None:
-        return uid in cache
     init_if_needed()
-    return uid in _PREMIUM_USERS
+    active_cache = cache if (cache is not None and len(cache) > 0) else _PREMIUM_USERS
+    return uid in active_cache
 
 def init():
     init_premium_db()
@@ -119,6 +124,7 @@ def list_users() -> list[int]:
     return premium_list()
 
 def check(uid: int) -> bool:
+    init_if_needed()
     return is_premium(uid, _PREMIUM_USERS)
 
 def cache_set() -> set[int]:

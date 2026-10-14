@@ -1,10 +1,13 @@
 from telegram import Update
 from telegram.ext import ContextTypes
+import logging
 
 from .caca_prompt import PERSONAS
 from database import premium
 from database import caca_db
 from utils import caca_memory
+
+logger = logging.getLogger(__name__)
 
 
 async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -34,9 +37,31 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     mode = context.args[0].lower()
     if mode not in PERSONAS:
-        return await msg.reply_text("Unknown mode.")
-    await caca_db.set_mode(user_id, mode)
-    await caca_memory.clear(user_id)
+        return await msg.reply_text(
+            f"❌ Unknown mode: <b>{mode}</b>\n\n"
+            "Available modes:\n"
+            "• default\n"
+            "• bokep\n"
+            "• sarkas\n"
+            "• toxic\n"
+            "• yandere\n"
+            "• cabul\n"
+            "• loli",
+            parse_mode="HTML",
+        )
+    try:
+        await caca_db.set_mode(user_id, mode)
+    except Exception as e:
+        logger.exception("Caca set_mode failed | user_id=%s mode=%s err=%r", user_id, mode, e)
+        return await msg.reply_text(
+            "❌ Failed to save persona. Try again in a moment.",
+        )
+    try:
+        await caca_memory.clear(user_id)
+    except Exception as e:
+        # Memori gagal dibersihkan bukan alasan gagal ganti persona: mode sudah
+        # tersimpan. Cukup dicatat supaya konteks lama tidak menghalangi.
+        logger.warning("Caca memory clear failed after mode change | user_id=%s err=%r", user_id, e)
     return await msg.reply_text(
         f"🎭 Persona changed to <b>{mode}</b> ✨",
         parse_mode="HTML"
