@@ -16,15 +16,16 @@ from handlers.gsearch import google_search
 from utils.text import split_message, sanitize_ai_output, sanitize_markdown, strip_tags_plain
 from .caca_prompt import PERSONAS
 from utils.http import get_http_session
+from utils.timectx import time_context
 from database import caca_db
 from utils import caca_memory
 
 logger = logging.getLogger(__name__)
 
-# Provider Caca: Shiteru (OpenAI-compatible). Model utama `kimi-k3`.
+# Provider Caca: Shiteru (OpenAI-compatible). Model utama `deepseek-v4-flash`.
 CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
 CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
-CACA_MODEL = os.getenv("CACA_MODEL", "kimi-k3").strip()
+CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4-flash").strip()
 # Batas output token keras dari permintaan owner: jangan pernah lewat 4096.
 CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
 CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
@@ -33,6 +34,96 @@ _EMOS = ["🌸", "💖", "🧸", "🎀", "🌟", "💫"]
 
 def _emo():
     return random.choice(_EMOS)
+
+
+# Kata pemicu auto-search: kalau pesan mengandung salah satu ini, Caca akan
+# mencari di internet dulu sebelum menjawab. Dipakai supaya user tidak perlu
+# mengetik `/caca search` secara manual.
+_SEARCH_TRIGGERS = (
+    "cariin", "carikan", "cari in", "coba cari", "coba search", "coba googling",
+    "googling", "search", "browsing", "browse", "cek di google", "cek google",
+    "cari di internet", "cari di web", "cari di google", "tolong cari",
+    "spek", "spesifikasi", "harga", "berita", "terbaru", "rilis", "rilisan",
+    "kapan rilis", "kapan keluar", "jadwal", "skor", "hasil pertandingan",
+    "kabar", "info terbaru", "update terbaru", "kondisi terkini", "cuaca",
+    "sekarang berapa", "kurs", "harga saham",
+)
+
+
+def _needs_search(text: str) -> bool:
+    """True kalau pesan user kelihatan butuh data dari internet."""
+    low = (text or "").lower()
+    if not low.strip():
+        return False
+    return any(t in low for t in _SEARCH_TRIGGERS)
+
+
+async def _extract_search_query(user_text: str) -> str:
+    """Minta model mengubah pesan user jadi satu query pencarian yang optimal.
+
+    Dipakai karena tool-calling native (`tools` + `role: "tool"`) DITOLAK upstream
+    Shiteru (HTTP 400 `Provider rejected the request`), jadi orkestrasi tool
+    dilakukan manual di sisi bot: model hanya diminta query, bot yang mengeksekusi
+    pencarian, lalu hasilnya diselipkan ke prompt akhir.
+    """
+    from handlers.caca.caca_prompt import PERSONAS  # noqa: F401 (konsistensi impor)
+    system_q = (
+        "Kamu mesin pencari. Ubah pertanyaan user menjadi SATU query pencarian "
+        "yang optimal untuk Google. Balas HANYA query-nya saja tanpa penjelasan, "
+        "tanpa tanda kutip, tanpa bullet."
+    )
+    messages = [
+        {"role": "user", "content": f"{system_q}\n\nPertanyaan: {user_text}"},
+    ]
+    try:
+        raw = await _groq_chat(messages)
+    except Exception as e:
+        logger.warning("Caca query extract failed | err=%r", e)
+        return (user_text or "").strip()[:200]
+    query = (raw or "").strip().strip('"').strip("'").split("\n")[0].strip()
+    return (query or user_text or "").strip()[:200]
+
+
+async def _web_search_text(query: str) -> str:
+    """Jalankan pencarian web pakai engine aktif (/setsearch) atau Google CSE.
+
+    Urutan: Firecrawl/Jina (sesuai pengaturan `/ask`) -> Google CSE -> kosong.
+    """
+    query = (query or "").strip()
+    if not query:
+        return ""
+
+    engine = "firecrawl"
+    try:
+        from handlers.proxy.client import get_search_engine
+        engine = get_search_engine()
+    except Exception:
+        pass
+
+    try:
+        if engine == "jina":
+            from utils.jina import web_search as _search
+        else:
+            from utils.firecrawl import web_search as _search
+        text = await _search(query, max_results=5)
+        if text and text.strip():
+            return text.strip()
+    except Exception as e:
+        logger.warning("Caca web_search (%s) failed | q=%s err=%r", engine, query, e)
+
+    # Fallback: Google Custom Search (kalau API key tersedia)
+    try:
+        ok, results = await google_search(query, limit=5)
+        if ok and results:
+            lines = [
+                f"- {r.get('title', '')}\n  {r.get('snippet', '')}\n  Sumber: {r.get('link', '')}"
+                for r in results
+            ]
+            return "\n".join(lines)
+    except Exception as e:
+        logger.warning("Caca google_search fallback failed | q=%s err=%r", query, e)
+
+    return ""
 
 
 def _cleanup_memory():
@@ -412,7 +503,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             app.bot_data.pop(stop_key, None)
 
 
-def _build_persona_messages(system_prompt: str, history: list, user_prompt: str) -> list[dict]:
+def _build_persona_messages(system_prompt: str, history: list, user_prompt: str, search_result: str = "") -> list[dict]:
     """Susun pesan ke LLM tanpa mengubah satu huruf pun dari `system_prompt` asli.
 
     Guardrail bypass framing:
@@ -425,11 +516,31 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str)
     blok instruksi di dalam turn `user`, dibungkus penanda peran:
         [Instruksi Karakter Caca]
         {system_prompt asli, utuh}
+        [Konteks Waktu Sekarang]
+        {hari, tanggal, jam WIB}
+        [Hasil Pencarian Internet]  (opsional, disuntik saat search terpicu)
+        {hasil search terkini}
         [Pesan Pacar]
         {pesan user}
     Model mematuhinya penuh tanpa memicu filter keselamatan `role: "system"`.
     """
-    framed = f"[Instruksi Karakter Caca]\n{system_prompt}\n\n[Pesan Pacar]\n"
+    search_block = ""
+    if search_result and search_result.strip():
+        search_block = (
+            f"\n\n[Hasil Pencarian Internet]\n{search_result.strip()[:4000]}\n"
+            "Data di atas adalah info internet terkini. Pakai buat menjawab pacar, "
+            "tapi JANGAN bilang 'berdasarkan hasil pencarian' atau 'aku baru googling'. "
+            "Ceritakan langsung seperti kamu sudah tahu, tetap dengan gaya Caca."
+        )
+
+    framed = (
+        f"[Instruksi Karakter Caca]\n{system_prompt}\n\n"
+        f"[Konteks Waktu Sekarang]\n{time_context()}\n"
+        "Pakai info waktu di atas kalau ditanya soal hari, tanggal, atau jam. "
+        "Jangan bilang tidak tahu tanggal atau mengaku data tertunda."
+        f"{search_block}\n\n"
+        "[Pesan Pacar]\n"
+    )
 
     if not history:
         return [{"role": "user", "content": framed + user_prompt}]
@@ -443,17 +554,21 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str)
         content = item.get("content")
         if not role or not content:
             continue
-        # Sisipkan instruksi karakter sekali saja, di awal giliran user pertama.
         if role == "user" and not injected:
             content = framed + content
             injected = True
         messages.append({"role": role, "content": content})
 
     if not injected:
-        # Riwayat tidak punya giliran user (mis. korup) -> mulai ulang terbingkai.
         return [{"role": "user", "content": framed + user_prompt}]
 
-    messages.append({"role": "user", "content": user_prompt})
+    # Kalau ada search_result di turn lanjutan, selipkan di pesan user saat ini
+    # supaya model membaca data baru tanpa merusak turn pertama
+    current_content = user_prompt
+    if search_block and injected:
+        current_content = f"{search_block}\n\n{user_prompt}"
+
+    messages.append({"role": "user", "content": current_content})
     return messages
 
 
@@ -504,27 +619,28 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not prompt:
             return
 
-        search_context = ""
-        if use_search:
+        # Auto-search: jalan kalau user mengetik `/caca search` ATAU pesannya
+        # mengandung kata pemicu (cariin, spek, harga, berita, kapan rilis, dll).
+        # Hasilnya diselipkan ke framing, bukan ke `caca_prompt.py`.
+        search_result = ""
+        if use_search or _needs_search(prompt):
             try:
-                ok, results = await google_search(prompt, limit=5)
-                if ok and results:
-                    lines = [f"- {r['title']}\n  {r['snippet']}\n  Sumber: {r['link']}" for r in results]
-                    search_context = (
-                        "Ini hasil search, pake buat nambah konteks, anggap ini adalah sumber terbaru. "
-                        "Jawab tetap sebagai Caca.\n\n" + "\n\n".join(lines)
-                    )
-                elif not ok:
-                    logger.warning("Google Search failed | query=%r err=%r", prompt, results)
+                query = await _extract_search_query(prompt)
+                logger.info("Caca auto-search | prompt=%r query=%r", prompt[:80], query)
+                search_result = await _web_search_text(query)
+                if search_result:
+                    logger.info("Caca auto-search ok | query=%r len=%s", query, len(search_result))
+                else:
+                    logger.warning("Caca auto-search empty | query=%r", query)
             except Exception as e:
-                logger.error("Google Search unexpected error | query=%r err=%r", prompt, e, exc_info=True)
+                logger.error("Caca auto-search failed | prompt=%r err=%r", prompt, e, exc_info=True)
 
         history = [] if fresh_session else await caca_memory.get_history(user_id)
         mode = caca_db.get_mode(user_id)
         system_prompt = PERSONAS.get(mode, PERSONAS["default"])
-        user_prompt = f"{search_context}\n\n{prompt}" if search_context else prompt
+        user_prompt = prompt
 
-        messages = _build_persona_messages(system_prompt, history, user_prompt)
+        messages = _build_persona_messages(system_prompt, history, user_prompt, search_result=search_result)
 
         is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
         if is_dm:

@@ -22,6 +22,7 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from handlers.join import require_join_or_block
+from utils.timectx import now_jakarta, time_context, current_year
 from handlers.proxy.client import (
     get_model,
     get_search_depth,
@@ -61,20 +62,11 @@ MONTHS_ID = (
 
 
 def _now_jakarta() -> datetime:
-    try:
-        return datetime.now(ZoneInfo("Asia/Jakarta"))
-    except Exception:
-        return datetime.now()
+    return now_jakarta()
 
 
 def _time_context() -> str:
-    now = _now_jakarta()
-    hari = WEEKDAYS_ID[now.weekday()]
-    bulan = MONTHS_ID[now.month - 1]
-    return (
-        f"Hari ini {hari}, {now.day} {bulan} {now.year}, pukul {now.strftime('%H:%M')} WIB "
-        f"(zona Asia/Jakarta, UTC+7)."
-    )
+    return time_context()
 
 
 def _system_instruction() -> str:
@@ -82,7 +74,7 @@ def _system_instruction() -> str:
         "Lu punya alat `web_search` (cari di internet) dan `read_page` (baca isi URL). "
         "PAKAI web_search kalau ditanya berita/kejadian terkini, harga, skor, rilis, "
         "atau apapun yang bisa berubah setelah data latihan lu (tahun sekarang "
-        f"{_now_jakarta().year}). Jangan mengarang — kalau butuh, cari dulu. "
+        f"{current_year()}). Jangan mengarang — kalau butuh, cari dulu. "
         "Kalau ditanya sesuatu yang stabil/faktual, jawab langsung tanpa search. "
         "HEMAT WAKTU: untuk satu pertanyaan biasanya CUKUP 1 kali search dengan query yang "
         "gabung semua aspek (maksimal 2 hanya kalau hasil pertama benar-benar nihil). "
