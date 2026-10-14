@@ -3,7 +3,7 @@
 Replaces the cloud Gemini implementation:
   - No API key required (free upstream via local OpenCode proxy)
   - Streaming drafts for private chats (DMs)
-  - Local RAG + rolling user memory (gemini_memory)
+  - Local RAG + rolling user memory (ai_memory)
   - Upstream model controlled via /setmodel and listed via /getmodel
   - Agentic grounding: model can call web_search / read_page
     (Firecrawl / Jina AI) on demand; system prompt always injects real-time
@@ -40,7 +40,7 @@ from handlers.proxy.client import (
 from rag.loader import load_chunked_docs
 from rag.retriever import retrieve_context
 from utils import config as app_config
-from utils import gemini_memory
+from utils import ai_memory
 from utils.config import OWNER_ID
 from utils.jina import extract_urls
 from utils.text import (
@@ -519,13 +519,13 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
             clean_md = sanitize_markdown(raw) or "Response cancelled."
             last_id = await _send_chunks(bot, msg, [clean_md])
             history.append({"user": prompt, "ai": clean_md})
-            await gemini_memory.set_history(user_id, history, last_id)
+            await ai_memory.set_history(user_id, history, last_id)
             return
         clean_md = sanitize_markdown(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         last_id = await _send_chunks(bot, msg, chunks)
         history.append({"user": prompt, "ai": clean_md})
-        await gemini_memory.set_history(user_id, history, last_id)
+        await ai_memory.set_history(user_id, history, last_id)
     except RuntimeError as e:
         if "not supported in this chat" in str(e):
             stop = asyncio.Event()
@@ -537,7 +537,7 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
                 await _stop_typing_task(stop, typing)
                 last_id = await _send_chunks(bot, msg, chunks)
                 history.append({"user": prompt, "ai": clean_md})
-                await gemini_memory.set_history(user_id, history, last_id)
+                await ai_memory.set_history(user_id, history, last_id)
             finally:
                 await _stop_typing_task(stop, typing)
         else:
@@ -573,7 +573,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     elif msg.reply_to_message:
         reply_mid = msg.reply_to_message.message_id
-        active_mid = await gemini_memory.get_last_message_id(user_id)
+        active_mid = await ai_memory.get_last_message_id(user_id)
         if not active_mid or int(active_mid) != int(reply_mid):
             return await _reply_thread(
                 context.bot,
@@ -589,7 +589,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         is_forum = getattr(msg.chat, "is_forum", False)
         thread_id = msg.message_thread_id if is_forum else None
-        history = [] if fresh_session else await gemini_memory.get_history(user_id)
+        history = [] if fresh_session else await ai_memory.get_history(user_id)
         messages, tools = await _build_messages(history, prompt)
 
         is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
@@ -607,7 +607,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_sent_id = await _send_chunks(context.bot, msg, chunks)
         if last_sent_id:
             history.append({"user": prompt, "ai": clean_md})
-            await gemini_memory.set_history(user_id, history, last_sent_id)
+            await ai_memory.set_history(user_id, history, last_sent_id)
     except Exception as e:
         await _stop_typing_task(stop, typing)
         log.warning("OpenCode proxy /ask failed | user_id=%s err=%r", user_id, e)

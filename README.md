@@ -135,7 +135,6 @@ kiyoshibot/
 │   ├── igstory.py              # Instagram story downloader
 │   ├── anime.py                # Anime search & info (NeoXR API)
 │   ├── quoteanime.py           # Anime quote generator
-│   ├── gemini.py               # Google Gemini AI chat handler
 │   ├── groq.py                 # Groq AI chat handler
 │   ├── donate.py               # Donation/support info
 │   ├── groups.py               # Group listing & management
@@ -169,7 +168,7 @@ kiyoshibot/
 │   ├── jina.py                 # Jina AI reader & SERP fallback (grounding backend)
 │   ├── recent_messages.py      # In-memory rolling message buffer for grand-reply context
 │   ├── caca_memory.py          # Persona conversation memory store & cleanup
-│   ├── gemini_memory.py        # Gemini chat memory store
+│   ├── ai_memory.py            # /ask conversation memory store (OpenCode proxy)
 │   ├── groq_memory.py          # Groq chat memory store
 │   ├── nsfw.py                 # NSFW state helper
 │   ├── config.py               # Central env/config accessor
@@ -282,15 +281,6 @@ LOG_CHAT_ID=
 # https://my.telegram.org
 API_ID=
 API_HASH=
-
-# Optional - Gemini AI
-# Required only if you use Gemini / /ask feature.
-# Get GEMINI_API_KEY from Google AI Studio:
-# https://aistudio.google.com/app/apikey
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_API_URL="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}"
-
 
 # Optional - Groq AI
 # Required only if you use Groq / /groq feature.
@@ -417,7 +407,6 @@ python main.py
 This project uses and depends on the following tools and services:
 
 - [Groq Cloud](https://console.groq.com/home)
-- [Google Gemini](https://ai.google.dev/)
 - [OpenCode](https://opencode.ai)
 - [Jina AI](https://jina.ai)
 - [Firecrawl](https://www.firecrawl.dev)

@@ -109,14 +109,14 @@ async def _refresh_caca_cache():
     except Exception as e:
         log.warning("Reload caca memory failed | err=%r",e)
 
-async def _refresh_gemini_memory_cache():
+async def _refresh_ai_memory_cache():
     try:
-        from utils import gemini_memory
-        await gemini_memory.init()
-        await gemini_memory.cleanup()
-        log.info("Reload Gemini memory refreshed")
+        from utils import ai_memory
+        await ai_memory.init()
+        await ai_memory.cleanup()
+        log.info("Reload AI memory refreshed")
     except Exception as e:
-        log.warning("Reload Gemini memory failed | err=%r",e)
+        log.warning("Reload AI memory failed | err=%r",e)
     try:
         from utils import groq_memory
         await groq_memory.init()
@@ -171,13 +171,13 @@ async def _refresh_runtime_caches(app):
     except Exception as e:
         log.warning("Reload premium cache failed | err=%r",e)
     await _refresh_caca_cache()
-    await _refresh_gemini_memory_cache()
+    await _refresh_ai_memory_cache()
     try:
         from rag.loader import load_chunked_docs
         from rag.retriever import index_documents
         chunks=load_chunked_docs()
         index_documents(chunks)
-        for mod_name in ("handlers.gemini","handlers.groq","handlers.proxy.ask"):
+        for mod_name in ("handlers.groq","handlers.proxy.ask"):
             mod=sys.modules.get(mod_name)
             if mod and hasattr(mod,"LOCAL_CONTEXTS"):
                 setattr(mod,"LOCAL_CONTEXTS",chunks)

@@ -392,12 +392,12 @@ check("paid_preset_user_ids(9999) finds nobody", bill.paid_preset_user_ids(9999)
 section("Caca history truncation")
 import utils.caca_memory as cm
 
-check("META_MAX_TURNS defaults to 8", cm.META_MAX_TURNS == 8, str(cm.META_MAX_TURNS))
-check("max history messages sent is 16", cm.META_MAX_TURNS * 2 == 16)
+check("CACA_MAX_TURNS defaults to 8", cm.CACA_MAX_TURNS == 8, str(cm.CACA_MAX_TURNS))
+check("max history messages sent is 16", cm.CACA_MAX_TURNS * 2 == 16)
 
 # Simulate 30 messages in history -> trimming must keep the last 16
 hist = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(30)]
-max_msgs = cm.META_MAX_TURNS * 2
+max_msgs = cm.CACA_MAX_TURNS * 2
 trimmed = hist[-max_msgs:] if len(hist) > max_msgs else hist
 check("trimmed length is 16", len(trimmed) == 16, str(len(trimmed)))
 check("trimmed keeps newest messages", trimmed[-1]["content"] == "msg 29")

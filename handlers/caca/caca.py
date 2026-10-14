@@ -39,8 +39,8 @@ def _emo():
 
 
 # Kata pemicu auto-search: kalau pesan mengandung salah satu ini, Caca akan
-# mencari di internet dulu sebelum menjawab. Dipakai supaya user tidak perlu
-# mengetik `/caca search` secara manual.
+# mencari di internet dulu sebelum menjawab. Tidak ada perintah manual — user
+# tinggal bertanya biasa.
 _SEARCH_TRIGGERS = (
     "cariin", "carikan", "cari in", "coba cari", "coba search", "coba googling",
     "googling", "search", "browsing", "browse", "cek di google", "cek google",
@@ -78,7 +78,7 @@ async def _extract_search_query(user_text: str) -> str:
         {"role": "user", "content": f"{system_q}\n\nPertanyaan: {user_text}"},
     ]
     try:
-        raw = await _groq_chat(messages)
+        raw = await _caca_chat(messages)
     except Exception as e:
         logger.warning("Caca query extract failed | err=%r", e)
         return (user_text or "").strip()[:200]
@@ -414,13 +414,13 @@ async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
         raise
 
 
-async def _groq_chat(messages: list[dict]) -> str:
+async def _caca_chat(messages: list[dict]) -> str:
     """Wrapper non-streaming yang hanya mengembalikan teks (kompatibilitas lama)."""
     content, _ = await _chat_completion(messages)
     return content
 
 
-async def _groq_chat_stream(messages: list[dict], usage_out: dict | None = None):
+async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None):
     """Async generator delta streaming Caca via Shiteru (SSE OpenAI format).
 
     `usage_out` (opsional) akan diisi dengan `usage` provider saat stream selesai.
@@ -512,7 +512,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
     """Streaming Rich Message draft for Caca DMs; groups use the non-streaming path.
 
     `billing` (opsional) menerima `usage` provider + `stream_completed` supaya
-    `meta_query` bisa men-settle pemakaian credit tepat sekali setelah stream
+    `caca_cmd` bisa men-settle pemakaian credit tepat sekali setelah stream
     selesai (bukan per chunk).
     """
     from utils.rich_stream import stream_to_draft
@@ -531,7 +531,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
 
     async def gen():
         got = False
-        async for chunk in _groq_chat_stream(messages, usage_out=billing["usage"]):
+        async for chunk in _caca_chat_stream(messages, usage_out=billing["usage"]):
             got = True
             yield chunk
         if not got:
@@ -744,7 +744,7 @@ async def _settle_billing(user_id: int, chat_id: int, reservation_id: str | None
                 logger.warning("Reservation release after settle failure failed | err=%r", re)
 
 
-async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_join_or_block(update, context):
         return
     _cleanup_memory()
@@ -762,7 +762,6 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await _reply_thread(context.bot, msg, "<b>Caca tidak tersedia di grup ini</b>", parse_mode="HTML")
 
     prompt = ""
-    use_search = False
     fresh_session = False
     stop = None
     typing = None
@@ -771,18 +770,14 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if msg.text and msg.text.startswith("/caca"):
-            if context.args and context.args[0].lower() == "search":
-                use_search = True
-                prompt = " ".join(context.args[1:]).strip()
-            else:
-                fresh_session = True
-                prompt = " ".join(context.args).strip()
+            fresh_session = True
+            prompt = " ".join(context.args).strip()
 
             if not prompt:
                 return await _reply_thread(
                     context.bot,
                     msg,
-                    f"{em} Pake gini:\n/caca <teks>\n/caca search <teks>\natau reply pesan gue buat ngobrol.",
+                    f"{em} Pake gini:\n/caca <teks>\natau reply pesan gue buat ngobrol.",
                 )
         elif msg.reply_to_message:
             history = await caca_memory.get_history(user_id)
@@ -809,11 +804,11 @@ async def meta_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await _reply_no_credit(context, msg)
             billed = True
 
-        # Auto-search: jalan kalau user mengetik `/caca search` ATAU pesannya
-        # mengandung kata pemicu (cariin, spek, harga, berita, kapan rilis, dll).
-        # Hasilnya diselipkan ke framing, bukan ke `caca_prompt.py`.
+        # Auto-search: jalan kalau pesannya mengandung kata pemicu (cariin, spek,
+        # harga, berita, kapan rilis, dll). Hasilnya diselipkan ke framing,
+        # bukan ke `caca_prompt.py`.
         search_result = ""
-        if use_search or _needs_search(prompt):
+        if _needs_search(prompt):
             try:
                 query = await _extract_search_query(prompt)
                 logger.info("Caca auto-search | prompt=%r query=%r", prompt[:80], query)

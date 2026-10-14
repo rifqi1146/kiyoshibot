@@ -76,7 +76,7 @@ from handlers.asupan import (
 
 from handlers.caca import (
     cacaa_cmd,
-    meta_query,
+    caca_cmd,
     mode_cmd,
     cacatopup_cmd,
     cacasaldo_cmd,
@@ -122,7 +122,7 @@ COMMAND_HANDLERS = [
     ("broadcast", broadcast_cmd, False),
     ("buypremium", buypremium_cmd, False),
     ("buycaca", cacatopup_cmd, False),
-    ("caca", meta_query, False),
+    ("caca", caca_cmd, False),
     ("cacaadmin", cacaadmin_cmd, False),
     ("cacasaldo", cacasaldo_cmd, False),
     ("cacatopup", cacatopup_cmd, False),

@@ -35,10 +35,9 @@ LOG_CHAT_ID = require_env("LOG_CHAT_ID", int)
 SUPPORT_CHANNEL_ID = os.getenv("SUPPORT_CH_ID")
 SUPPORT_CHANNEL_LINK = os.getenv("SUPPORT_CH_LINK")
 
-# gsearch & gemini
+# gsearch
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JINA_API_KEY = os.getenv("JINA_API_KEY", "").strip()
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
 SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "firecrawl").strip().lower()

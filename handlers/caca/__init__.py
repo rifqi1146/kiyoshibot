@@ -1,5 +1,5 @@
 from .caca import (
-    meta_query,
+    caca_cmd,
     init_background as init_background,
 )
 
@@ -16,7 +16,7 @@ from .caca_billing import (
 )
 
 __all__ = [
-    "meta_query",
+    "caca_cmd",
     "cacaa_cmd",
     "mode_cmd",
     "cacatopup_cmd",

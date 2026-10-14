@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import MessageHandler, ChatMemberHandler, TypeHandler, ContextTypes, filters
 
 from handlers.blacklist import blacklist_message_gate
-from handlers.caca import meta_query
+from handlers.caca import caca_cmd
 from handlers.caca.caca_billing import cacabill_text_handler
 from handlers.collector import collect_chat
 from handlers.delete import reply_del_handler
@@ -10,15 +10,15 @@ from handlers.dl.router import auto_dl_detect
 from handlers.prefix_dollar import dollar_router
 from handlers.susunkata import susunkata_answer_handler
 from handlers.welcome import welcome_handler, welcome_chat_member_handler
-from utils.caca_memory import get_last_message_id as meta_db_get_last_message_id
-from utils.caca_memory import has_last_message_id as meta_db_has_last_message_id
+from utils.caca_memory import get_last_message_id as caca_db_get_last_message_id
+from utils.caca_memory import has_last_message_id as caca_db_has_last_message_id
 from utils.logger import log_commands
 from utils.recent_messages import remember as remember_recent_message
 from utils.stop_draft import stopped_generation_handler
 from utils.user_collector import user_collector
 from handlers.proxy.ask import ask_cmd as ai_cmd
-from utils.gemini_memory import get_last_message_id as ai_db_get_last_message_id
-from utils.gemini_memory import has_last_message_id as ai_db_has_last_message_id
+from utils.ai_memory import get_last_message_id as ai_db_get_last_message_id
+from utils.ai_memory import has_last_message_id as ai_db_has_last_message_id
 from handlers.groq import groq_query
 from utils.groq_memory import get_last_message_id as groq_db_get_last_message_id
 from utils.groq_memory import has_last_message_id as groq_db_has_last_message_id
@@ -46,9 +46,9 @@ async def ai_reply_router(update, context):
     if groq_mid == reply_mid:
         return await groq_query(update, context)
 
-    meta_mid = await meta_db_get_last_message_id(user_id)
-    if meta_mid == reply_mid:
-        return await meta_query(update, context)
+    caca_mid = await caca_db_get_last_message_id(user_id)
+    if caca_mid == reply_mid:
+        return await caca_cmd(update, context)
 
     ai_mid = await ai_db_get_last_message_id(user_id)
     if ai_mid == reply_mid:
@@ -70,7 +70,7 @@ async def ai_reply_router(update, context):
             parse_mode="HTML"
         )
 
-    if await meta_db_has_last_message_id(reply_mid):
+    if await caca_db_has_last_message_id(reply_mid):
         return await msg.reply_text(
             "😒 Who are you?\n"
             "I haven't talked to you yet.\n"

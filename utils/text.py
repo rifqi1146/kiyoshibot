@@ -259,7 +259,7 @@ def sanitize_ai_output(text: str) -> str:
 def convert_bullets(text: str) -> str:
     """Konversi bullet unicode (• ▪ ◦ dst) ke list markdown '-' / '1.'.
 
-    Gemini suka menulis bullet dengan karakter '•' + single newline. Di
+    Model AI suka menulis bullet dengan karakter '•' + single newline. Di
     Rich Markdown, '•' bukan penanda list dan single newline = softbreak
     (spasi), sehingga seluruh isi melipat jadi satu baris. Dengan '-',
     parser Telegram membloknya sebagai list yang benar.
