@@ -22,6 +22,9 @@ _GROUP_LABELS = {
     "premium": "Premium",
     "utility": "Utility",
     "group_admin": "Grup",
+    "games": "Games",
+    "manga": "Manga",
+    "welcome": "Welcome",
 }
 
 _MAX_DESC = 40

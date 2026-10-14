@@ -1,17 +1,29 @@
-# Fitur Premium & Pembayaran QRIS
+# Fitur Premium & Cara Berlangganan (QRIS)
 
-Layanan akun Premium dan metode pembayaran otomatis:
+KiyoshiBot memiliki sistem akun Premium untuk mengakses seluruh fitur eksklusif. Bot ini 100% bebas iklan, tidak ada iklan atau sponsor yang ditampilkan.
 
-## Keuntungan Premium (/premiumbenefit)
-- Bebas batas kuota download (Unlimited rate-limit).
-- Akses penuh ke seluruh explorer konten 18+ (/nekopoi, /simontok, /punish, /becekku, /lendirqu, /cosxplay).
-- Akses download media yang ditandai sensitif/dewasa (NSFW) oleh platform di Twitter/X dan Reddit. Konten normal tetap gratis untuk semua.
-- Akses mengubah 7 persona AI Caca via `/mode` (default, toxic, sarkas, yandere, cabul, bokep, loli).
-- Prioritas download dan pemrosesan media.
+## Keuntungan Premium Lengkap
+Cek daftar lengkap lewat `/premiumbenefit`:
+- Bebas batas kuota download tanpa limit rate-limit (pengguna gratis dibatasi 3 download per 60 detik).
+- Prioritas antrean download dan pemrosesan media yang lebih cepat.
+- Akses penuh ke seluruh explorer konten 18+ (`/nekopoi`, `/simontok`, `/punish`, `/cosxplay`, `/becekku`, `/lendirqu`).
+- Akses download media sensitif/dewasa (NSFW) dari X/Twitter dan Reddit (konten normal tetap gratis untuk semua).
+- Akses seluruh domain dewasa premium di downloader (`/dl`).
+- Download resolusi tinggi tanpa batas (video HD/1080p+).
+- Mode download dan pengaturan pribadi tanpa batas via `/settings`.
+- Akses fitur Manga 18+ (`/manga nh <judul>`).
+- Akses mengubah 7 persona AI Caca via `/mode`.
 
-## Beli Premium Otomatis (/buypremium)
-- Ketik `/buypremium` di chat bot atau grup (link otomatis menuju PM).
-- Bot menerbitkan QRIS dinamis lokal (Axiom Payment gateway) dalam hitungan detik.
-- Scan QRIS dengan aplikasi e-wallet apa saja (GoPay, OVO, Dana, ShopeePay, BCA, dll).
-- Berlaku selama 5 menit dengan auto-polling; status premium langsung aktif otomatis begitu terbayar.
-- Perintah `/premium` untuk admin/owner mengatur status premium manual.
+## Beli Premium Otomatis via QRIS (/buypremium)
+- Ketik `/buypremium` di chat bot atau grup; bot akan mengirim tautan menuju Private Message (PM).
+- Bot akan menerbitkan QRIS dinamis lokal dalam hitungan detik (integrasi Axiom Payment gateway).
+- Pindai QRIS dengan aplikasi e-wallet apa saja (GoPay, OVO, Dana, ShopeePay, LinkAja, BCA Mobile, dsb).
+- Harga paket Premium tertera langsung di sisi gateway pembayaran.
+- Invoice QRIS berlaku selama 5 menit dengan auto-polling. Status premium langsung aktif secara otomatis begitu pembayaran terdeteksi.
+
+## Donasi Manual (/donate) dan Kelola Premium
+- `/donate`: Tampilkan tautan donasi untuk mendukung operasional bot.
+- `/premium`: Manajemen premium manual (khusus owner bot, bisa tambah/hapus/lacak status premium user).
+- `/premiumbenefit`: Tampilkan daftar lengkap fitur Premium beserta daftar domain yang memerlukannya.
+
+Pembayaran 100% aman, terenkripsi, dan diproses langsung lewat gateway resmi tanpa iklan maupun perantara.

@@ -1,43 +1,43 @@
 # Utility, Jaringan & Alat Bantu
 
-Kumpulan perintah utilitas serbaguna:
+Kumpulan perintah utilitas, jaringan, pencarian, dan pengolahan gambar yang tersedia di KiyoshiBot.
 
-## Jaringan & Internet
-- `/ping`: Cek waktu respon bot.
-- `/stats`: Statistik bot dan sistem (CPU, RAM, uptime).
-- `/ip <ip/domain>`: Cek detail alamat IP.
-- `/net`: Informasi jaringan lengkap.
-- `/domain <domain>`: Cek informasi domain.
-- `/whoisdomain <domain>`: Lookup whois domain lengkap.
-- `/speedtest`: Tes kecepatan internet server.
+## Jaringan & Informasi Server
+- `/ping`: Cek latensi dan respon bot ke Telegram dalam milidetik (ms).
+- `/stats`: Cek statistik sistem bot (penggunaan RAM, CPU, disk, uptime, dan versi kernel).
+- `/ip <ip/domain>`: Cek detail lokasi geolokasi, ASN, organisasi, dan ISP alamat IP.
+- `/net`: Informasi koneksi jaringan all-in-one dari server bot.
+- `/domain <domain>`: Cek status IP dan informasi domain.
+- `/whoisdomain <domain>`: Lookup WHOIS domain lengkap (registrar, tanggal daftar, expired, nameserver).
+- `/speedtest`: Uji kecepatan koneksi internet server bot (download, upload, ping).
 
-## Informasi & Konversi
-- `/weather <kota>`: Cek prakiraan cuaca.
-- `/kurs`: Konversi mata uang asing ke Rupiah.
-- `/resi <no_resi>`: Lacak paket ekspedisi Indonesia.
-- `/tr <teks>`: Terjemahkan teks antar bahasa.
-- `/trlist`: Daftar bahasa yang didukung.
-- `/gsearch <query>`: Pencarian Google.
+## Alat Bantu Harian & Konversi
+- `/weather <kota>`: Cek prakiraan cuaca terkini di kota atau wilayah tertentu.
+- `/kurs`: Cek kurs mata uang asing terhadap Rupiah (USD, EUR, SGD, JPY, MYR, dll).
+- `/resi <no_resi>`: Lacak status paket pengiriman ekspedisi Indonesia (JNE, J&T, SiCepat, Shopee Xpress, Pos Indonesia, Anteraja, TIKI, Wahana, Ninja, Lion Parcel).
+- `/tr <kode_bahasa> <teks>`: Terjemahkan teks ke bahasa yang diinginkan (contoh: `/tr id hello` atau reply pesan dengan `/tr id`).
+- `/trlist`: Menampilkan daftar kode bahasa yang didukung penerjemah.
+- `/gsearch <query>`: Lakukan pencarian cepat di Google Search langsung dari Telegram.
 
-## Gambar & Sticker
-- `/upscale`: Perbesar resolusi gambar dengan AI.
-- `/nobg`: Hapus latar belakang gambar.
-- `/aidetect`: Deteksi gambar hasil AI.
-- `/aitext`: Deteksi teks hasil AI.
-- `/q [N] [r] [warna]`: Buat sticker quote dari pesan.
-- `/qi [N] [r] [warna]`: Buat gambar wallpaper quote.
-- `/qs [N] [r] [warna]`: Buat quote ukuran stories (9:16).
-- `/kang`: Simpan sticker ke pack.
-- `/getsticker`: Ambil sticker sebagai PNG atau WEBM.
-- `/waifu`: Kirim gambar waifu random.
+## Gambar, Sticker & Quotly
+- `/upscale`: Tingkatkan resolusi dan ketajaman gambar dengan AI (kirim/reply foto dengan `/upscale`).
+- `/nobg`: Hapus latar belakang foto secara otomatis (kirim/reply foto dengan `/nobg`).
+- `/aidetect`: Deteksi apakah suatu gambar dibuat oleh generator AI (reply foto).
+- `/aitext <teks>`: Deteksi probabilitas apakah sebuah teks ditulis oleh AI atau manusia.
+- `/q [N] [r] [warna]`: Buat quote sticker Quotly dari pesan chat. Mendukung jumlah `1` sampai `10` pesan ke depan, `-N` (pesan ke belakang), reply context `r`, dan warna latar/hex/gradasi.
+- `/qi [N] [r] [warna]`: Buat quote dalam format gambar wallpaper PNG resolusi tinggi.
+- `/qs [N] [r] [warna]`: Buat quote dalam format 9:16 untuk story Instagram/WhatsApp.
+- `/kang`: Tambahkan sticker orang lain ke sticker pack pribadi milik Anda di bot (reply sticker).
+- `/getsticker`: Ekstrak sticker Telegram menjadi file PNG atau animasi WEBM (reply sticker).
+- `/waifu`: Kirimkan gambar waifu anime acak berkualitas tinggi.
 
 ## Musik & Anime
-- `/music <judul>`: Cari dan download lagu.
-- `/anime <judul>`: Cari informasi anime.
-- `/quoteanime`: Kirim quote anime random.
+- `/music <judul>`: Cari dan unduh lagu MP3 lengkap dengan judul, artis, dan cover art album.
+- `/anime <judul>`: Cari informasi anime lengkap dari MyAnimeList (sinopsis, skor, status, episode, studio).
+- `/quoteanime`: Dapatkan kutipan kata-kata bijak acak dari karakter anime populer.
 
-## Lainnya
-- `/reminder <waktu> <pesan>`: Jadwalkan pengingat.
-- `/ship`: Pilih pasangan couple random.
-- `/share`: Bagikan media secara anonim.
-- `/donate`: Info donasi dan dukungan.
+## Lain-Lain
+- `/reminder <waktu> <pesan>`: Pasang pengingat otomatis (contoh: `/reminder 10m makan siang`, `/reminder 1h rapat`).
+- `/ship`: Pasangkan dua anggota grup secara acak untuk jodoh seru-seruan.
+- `/share`: Bagikan media secara anonim via tautan rahasia PM deep-link (reply media dengan `/share`).
+- `/donate`: Info donasi sukarela untuk mendukung kelangsungan server bot.

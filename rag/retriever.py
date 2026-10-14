@@ -40,20 +40,40 @@ INDONESIAN_STOPWORDS = {
 BOT_INTENT_KEYWORDS = {
     "bot", "kiyoshi", "kiyoshibot", "fitur", "command", "perintah", "bantuan",
     "downloader", "download", "unduh", "premium", "buypremium", "qris", "bayar",
-    "harga", "vip", "benefit", "premiumbenefit",
+    "harga", "vip", "benefit", "premiumbenefit", "iklan", "ads", "sponsor",
     "grup", "admin", "moderasi", "ban", "kick", "mute", "unmute", "wlc", "welcome",
     "nsfw", "spoiler", "autodl", "autodel", "asupann", "cacaa",
-    "caca", "mode", "persona", "ask", "groq",
+    "caca", "mode", "persona", "ask", "groq", "gemini", "ai",
     "quotly", "quote", "sticker", "stiker", "kang", "getsticker",
     "music", "lagu", "mp3", "anime", "drakor", "drakorid", "moviebox", "film",
-    "anichin", "donghua", "manga", "nekopoi", "simontok", "punish", "becekku",
-    "lendirqu", "cosxplay", "bunkr", "instagram", "igstory", "igstalk", "tiktok",
+    "anichin", "donghua", "manga", "manhwa", "mangadex", "maid", "nhentai",
+    "nekopoi", "simontok", "punish", "becekku",
+    "lendirqu", "cosxplay", "bunkr", "pawchive", "darknessporn", "femdomvc",
+    "cosplaytele", "heavyr", "bdsmlust", "asiangirl",
+    "instagram", "igstory", "igstalk", "tiktok", "douyin",
     "youtube", "twitter", "facebook", "reddit", "pinterest", "threads", "asupan",
     "ip", "domain", "whois", "speedtest", "ping", "stats",
     "kurs", "cuaca", "weather", "resi", "lacak", "translate", "trlist", "gsearch",
     "upscale", "nobg", "aidetect", "aitext", "waifu", "ship", "reminder", "share",
-    "donate", "settings", "uploadengine", "fasttelethon",
+    "donate", "settings", "uploadengine", "fasttelethon", "asahotak", "susunkata",
+    "quiz", "quoteanime", "sidang", "owner", "cookies", "backup", "broadcast",
+    "sudo", "restore", "autobackup", "groups", "helpowner", "game", "permainan",
 }
+
+# Multi-word intent phrases: matched as substrings of the raw lowercased query.
+# Handles identity questions ("kamu siapa", "kamu itu apa") and feature questions
+# whose keywords are ordinary Indonesian words ("game apa aja", "cara main asah
+# otak") that cannot be bare keywords without false positives ("cara" alone must
+# NOT trigger RAG — "cara masak nasi goreng" is not a bot question).
+BOT_INTENT_PHRASES = (
+    "siapa kamu", "siapa lu", "siapa anda", "kamu siapa", "lu siapa", "anda siapa",
+    "kamu itu siapa", "lu itu siapa", "kamu itu apa", "lu itu apa", "kamu apaan",
+    "itu bot apa", "bot apa ini", "ini bot apa", "bot ini apa", "apa ini bot",
+    "asah otak", "susun kata", "cara main", "cara pakai", "cara make", "cara guna",
+    "apa aja fitur", "fitur apa aja", "apa saja fitur", "fitur bot", "fungsi bot",
+    "developer bot", "owner bot", "pembuat bot", "yang bikin bot", "yang buat bot",
+    "bebas iklan", "ada iklan", "tanpa iklan", "no ads", "game apa", "permainan apa",
+)
 
 _FTS_DB: sqlite3.Connection | None = None
 _FTS_LOCK = asyncio.Lock()
@@ -137,7 +157,32 @@ def _has_bot_intent(query_lower: str, terms: list[str]) -> bool:
     for t in terms:
         if t in BOT_INTENT_KEYWORDS:
             return True
+    for phrase in BOT_INTENT_PHRASES:
+        if phrase in query_lower:
+            return True
     return False
+
+
+def _identity_chunk(db: sqlite3.Connection, top_k: int) -> list[str]:
+    """Fetch the bot identity/about chunk for stopword-only identity questions."""
+    try:
+        cur = db.execute(
+            """
+            SELECT title, content FROM rag_fts
+            WHERE id LIKE 'about_%'
+            LIMIT ?;
+            """,
+            (max(1, top_k),),
+        )
+        rows = cur.fetchall()
+    except Exception as e:
+        log.warning("RAG identity fallback failed | err=%r", e)
+        return []
+
+    out: list[str] = []
+    for title, content in rows:
+        out.append(f"### {title}\n{content}" if title else content)
+    return out
 
 
 def _search_fts(query: str, top_k: int = 2) -> list[str]:
@@ -148,24 +193,32 @@ def _search_fts(query: str, top_k: int = 2) -> list[str]:
     score strongly enough (strict relevance gate) so we never inject off-topic text.
     """
     terms = _clean_query_terms(query)
-    if not terms:
+    query_lower = (query or "").lower()
+    has_intent = _has_bot_intent(query_lower, terms)
+    # Stopword-only queries ("kamu siapa?", "kamu itu apa?") lose every term, but
+    # they are still identity questions about the bot — keep the roster + best match.
+    if not terms and not has_intent:
         return []
 
     # If the user is chatting generally (math, cooking, coding) without any bot-related
     # terms, bypass RAG completely. This saves tokens on 80%+ of chat interactions.
-    if not _has_bot_intent(query.lower(), terms):
+    if not has_intent:
         return []
 
     results: list[str] = []
     if _CACHED_ROSTER:
         results.append(_CACHED_ROSTER)
 
+    db = _get_fts_db()
     safe_terms = [re.sub(r"[^\w]", "", t) for t in terms]
     safe_terms = [t for t in safe_terms if len(t) >= 2]
     if not safe_terms:
+        # No searchable terms (e.g. "kamu siapa?"): fall back to the identity/about
+        # chunk so the model can answer who it is instead of hallucinating.
+        fallback = _identity_chunk(db, top_k)
+        results.extend(fallback)
         return results
 
-    db = _get_fts_db()
     fts_expression = " OR ".join(f'"{t}"*' for t in safe_terms[:8])
 
     try:
