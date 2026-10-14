@@ -12,7 +12,7 @@ Cek daftar lengkap lewat `/premiumbenefit`:
 - Download resolusi tinggi tanpa batas (video HD/1080p+).
 - Mode download dan pengaturan pribadi tanpa batas via `/settings`.
 - Akses fitur Manga 18+ (`/manga nh <judul>`).
-- Akses mengubah 7 persona AI Caca via `/mode`.
+- Akses mengubah 8 persona AI Caca via `/mode`.
 
 ## Beli Premium Otomatis via QRIS (/buypremium)
 - Ketik `/buypremium` di chat bot atau grup; bot akan mengirim tautan menuju Private Message (PM).

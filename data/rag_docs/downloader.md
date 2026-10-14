@@ -35,6 +35,16 @@ Selain konten dewasa otomatis di sosmed, ada juga domain khusus dewasa yang hany
 - `/moviebox`: Browse dan download Film dan TV Series internasional dari MovieBox (ribuan judul, subtitle tersedia).
 - Domain `drakorid.co`, `anichin.moe`, `officialmoviebox.com`, `moviebox.ph`, `moviebox.co` bisa diakses pengguna premium tanpa syarat NSFW grup.
 
+## Pengaturan Pribadi Pengguna (/settings)
+- `/settings`: Buka menu interaktif untuk mengatur preferensi download pribadi Anda (berlaku di semua chat/grup, tersimpan permanen per akun pengguna).
+- Pilihan pengaturan yang tersedia di `/settings`:
+  - **AutoDL All Groups**: Aktifkan/nonaktifkan auto-download untuk link yang Anda kirim di SEMUA grup (bahkan di grup yang belum mengaktifkan `/autodl`).
+  - **Downloader Format**: Format unduh default saat mendeteksi link — `Ask` (tanya dulu setiap link), `Video` (langsung unduh video), atau `MP3` (langsung ekstrak audio).
+  - **YouTube Resolution**: Kualitas default video YouTube — `Ask (Default)` (pilih manual), `360p`, `480p`, `720p`, atau `1080p ⭐️` (otomatis ambil resolusi tersebut tanpa menampilkan picker).
+  - **Music Output Format**: Format audio saat mengunduh lagu via `/music` — `FLAC` (kualitas tinggi lossless) atau `MP3`.
+  - **TikTok Slideshow**: Pilihan hasil untuk konten slideshow foto TikTok — `Ask` (tanya format), `Images` (kirim album foto), `Video` (jadikan video slideshow bergerak), atau `Audio Only` (lagunya saja).
+  - **Silent Download**: Mode senyap saat mendownload media. Jika aktif (ON), bot tidak akan mengedit pesan progres berkala di chat — hasil langsung dikirim begitu unduhan selesai (berguna agar tidak mengganggu obrolan grup).
+
 ## Tips Penggunaan
 - Semua downloader otomatis mendukung pilih resolusi (kualitas rendah sampai tinggi sesuai sumber) dan opsi ekstrak audio MP3.
 - Unduhan besar (>2GB) otomatis ditolak demi stabilitas server dan limit Telegram.
