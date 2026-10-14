@@ -1,5 +1,6 @@
 import re
 import os
+import base64
 import asyncio
 import random
 import html
@@ -58,6 +59,139 @@ def _needs_search(text: str) -> bool:
     if not low.strip():
         return False
     return any(t in low for t in _SEARCH_TRIGGERS)
+
+
+# ── Vision: Caca bisa lihat foto & stiker statis ─────────────────────────────
+# Batas ukuran file mentah sebelum di-encode. Dipilih 5 MB: cukup untuk foto
+# Telegram (compress ~200-500 KB, dokumen sampai beberapa MB) tanpa bikin
+# payload base64 membengkak (~4/3 dari ukuran asli).
+CACA_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+# MIME yang diterima provider. Semua ini sudah diuji live ke Shiteru.
+_CACA_IMAGE_MIMES = {
+    "image/jpeg": "image/jpeg",
+    "image/jpg": "image/jpeg",
+    "image/png": "image/png",
+    "image/webp": "image/webp",
+}
+
+_MEDIA_LABEL = {
+    "photo": "[Kirim foto]",
+    "document": "[Kirim gambar]",
+    "sticker": "[Kirim stiker]",
+    "reply_photo": "[Balas dengan foto]",
+    "reply_document": "[Balas dengan gambar]",
+    "reply_sticker": "[Balas dengan stiker]",
+}
+
+
+async def _extract_media_as_data_url(bot, msg, source: str, label_key: str):
+    """Ambil media dari pesan Telegram -> data URL base64 siap dikirim ke model.
+
+    `source` adalah objek pesan yang memuat media (pesan user sendiri, atau
+    `msg.reply_to_message` kalau user membalas gambar). `label_key` menentukan
+    teks ringkas yang dicatat ke memori (mis. "reply_photo").
+
+    Return `(data_url, media_label, error_reason)`; hanya satu yang terisi.
+    Media DIAMBIL KE MEMORI (`download_as_bytearray`) — tidak menulis ke disk,
+    dan TIDAK disimpan ke riwayat chat (lihat `caca_cmd`).
+    """
+    if source is None:
+        return None, "", "kosong"
+
+    file_obj = None
+    mime = None
+    filename = ""
+
+    try:
+        if getattr(source, "photo", None):
+            # photo adalah list ukuran; ambil yang terbesar
+            photo = source.photo[-1]
+            file_obj = photo
+            mime = "image/jpeg"
+        elif getattr(source, "document", None):
+            doc = source.document
+            m = (doc.mime_type or "").lower()
+            if not m.startswith("image/"):
+                return None, "", "bukan_gambar"
+            if m not in _CACA_IMAGE_MIMES:
+                return None, "", "format_tidak_didukung"
+            mime = _CACA_IMAGE_MIMES[m]
+            file_obj = doc
+            filename = doc.file_name or ""
+        elif getattr(source, "sticker", None):
+            st = source.sticker
+            if getattr(st, "is_animated", False) or getattr(st, "is_video", False):
+                return None, "", "stiker_gerak"
+            file_obj = st
+            mime = "image/webp"
+        else:
+            return None, "", "tidak_ada_media"
+    except Exception as e:
+        logger.warning("Caca media detect failed | err=%r", e)
+        return None, "", "gagal_baca"
+
+    size = getattr(file_obj, "file_size", None)
+    if size and size > CACA_MAX_IMAGE_BYTES:
+        return None, "", "terlalu_besar"
+
+    try:
+        tg_file = await bot.get_file(file_obj.file_id)
+        raw = await tg_file.download_as_bytearray()
+    except Exception as e:
+        logger.warning("Caca media download failed | err=%r", e)
+        return None, "", "gagal_unduh"
+
+    if not raw:
+        return None, "", "kosong"
+    if len(raw) > CACA_MAX_IMAGE_BYTES:
+        return None, "", "terlalu_besar"
+
+    data_url = f"data:{mime};base64,{base64.b64encode(bytes(raw)).decode()}"
+    return data_url, _MEDIA_LABEL.get(label_key, "[Kirim gambar]"), None
+
+
+def _pick_media_source(msg):
+    """Tentukan dari mana media diambil + label memorinya.
+
+    Prioritas:
+      1. Media di pesan user sendiri (foto/stiker/dokumen yang dia kirim).
+      2. Media di pesan yang user balas (`msg.reply_to_message`).
+    Return `(source, label_key)` atau `(None, "")`.
+    """
+    if msg is None:
+        return None, ""
+    if getattr(msg, "photo", None):
+        return msg, "photo"
+    if getattr(msg, "sticker", None):
+        return msg, "sticker"
+    if getattr(msg, "document", None) and (msg.document.mime_type or "").startswith("image/"):
+        return msg, "document"
+
+    target = getattr(msg, "reply_to_message", None)
+    if target is not None:
+        if getattr(target, "photo", None):
+            return target, "reply_photo"
+        if getattr(target, "sticker", None):
+            return target, "reply_sticker"
+        if getattr(target, "document", None) and (target.document.mime_type or "").startswith("image/"):
+            return target, "reply_document"
+    return None, ""
+
+
+# Pesan ramah saat media tidak bisa dibaca, tetap dalam karakter Caca.
+_MEDIA_ERROR_TEXT = {
+    "stiker_gerak": "Stiker geraknya aku gak bisa liat sayang, kirim foto biasa aja ya 😣",
+    "terlalu_besar": "Fotonya kegedean sayang, aku gak kuat bukanya 😵 coba yang lebih kecil ya",
+    "bukan_gambar": "Itu bukan gambar sih sayang, aku gak bisa liat 🤔",
+    "format_tidak_didukung": "Format gambarnya gak aku ngerti sayang, kirim JPG/PNG aja ya 🥺",
+    "gagal_unduh": "Fotonya gagal aku buka sayang, coba kirim ulang ya 😔",
+    "gagal_baca": "Fotonya gagal aku buka sayang, coba kirim ulang ya 😔",
+}
+
+
+def _media_error_reply(reason: str) -> str:
+    return _MEDIA_ERROR_TEXT.get(reason, "Aku gak bisa liat gambarnya sayang 🥺")
 
 
 async def _extract_search_query(user_text: str) -> str:
@@ -615,7 +749,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             app.bot_data.pop(stop_key, None)
 
 
-def _build_persona_messages(system_prompt: str, history: list, user_prompt: str, search_result: str = "", bot_info: str = "") -> list[dict]:
+def _build_persona_messages(system_prompt: str, history: list, user_prompt: str, search_result: str = "", bot_info: str = "", images: list | None = None) -> list[dict]:
     """Susun pesan ke LLM tanpa mengubah satu huruf pun dari `system_prompt` asli.
 
     Guardrail bypass framing:
@@ -678,8 +812,20 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
         "[Pesan Pacar]\n"
     )
 
+    # ── Vision: sisipkan gambar HANYA di turn user saat ini ───────────────────
+    # Gambar tidak pernah masuk `history` (lihat `caca_cmd`), jadi base64 besar
+    # tidak dikirim ulang di setiap pesan berikutnya. Kalau ada gambar, content
+    # turn user berubah jadi list multimodal (teks + image_url).
+    def _user_content(text):
+        if not images:
+            return text
+        parts = [{"type": "text", "text": text}]
+        for url in images:
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+        return parts
+
     if not history:
-        return [{"role": "user", "content": framed + user_prompt}]
+        return [{"role": "user", "content": _user_content(framed + user_prompt)}]
 
     messages: list[dict] = []
     injected = False
@@ -696,7 +842,7 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
         messages.append({"role": role, "content": content})
 
     if not injected:
-        return [{"role": "user", "content": framed + user_prompt}]
+        return [{"role": "user", "content": _user_content(framed + user_prompt)}]
 
     # Kalau ada search_result / info bot di turn lanjutan, selipkan di pesan user
     # saat ini supaya model membaca data baru tanpa merusak turn pertama
@@ -710,7 +856,7 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
         if trailing:
             current_content = f"{trailing}\n\n{user_prompt}"
 
-    messages.append({"role": "user", "content": current_content})
+    messages.append({"role": "user", "content": _user_content(current_content)})
     return messages
 
 
@@ -823,25 +969,64 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     typing = None
     reservation_id = None
     billed = False
+    media_label = ""
+    image_urls: list[str] = []
+
+    caption = (msg.caption or "").strip()
+    text = (msg.text or "").strip()
 
     try:
-        if msg.text and msg.text.startswith("/caca"):
+        # ── Teks/caption yang memicu sesi baru: "/caca ..." ───────────────────
+        if text.startswith("/caca") or caption.startswith("/caca"):
             fresh_session = True
-            prompt = " ".join(context.args).strip()
+            # context.args hanya terisi untuk pesan teks, jadi untuk caption
+            # kita potong manual dari awal string.
+            if caption.startswith("/caca"):
+                prompt = caption[len("/caca"):].strip()
+            else:
+                prompt = " ".join(context.args).strip()
 
-            if not prompt:
+            # `/caca` polos tanpa teks: boleh kalau ada gambar yang menyertai.
+            src, label_key = _pick_media_source(msg)
+            if src is not None:
+                url, media_label, reason = await _extract_media_as_data_url(
+                    context.bot, msg, src, label_key
+                )
+                if url:
+                    image_urls.append(url)
+                elif reason and reason not in ("tidak_ada_media", "bukan_gambar"):
+                    return await _reply_thread(context.bot, msg, _media_error_reply(reason))
+
+            if not prompt and not image_urls:
                 return await _reply_thread(
                     context.bot,
                     msg,
                     f"{em} Pake gini:\n/caca <teks>\natau reply pesan gue buat ngobrol.",
                 )
+            if not prompt and image_urls:
+                prompt = "liat ini dong"
+
+        # ── Lanjutan obrolan: reply ke pesan Caca (boleh bawa gambar) ─────────
         elif msg.reply_to_message:
             history = await caca_memory.get_history(user_id)
             if not history:
                 return await _reply_thread(context.bot, msg, "😒 I don't remember talking to you.\nUse /caca first.")
-            prompt = (msg.text or "").strip()
+            prompt = text or caption
 
-        if not prompt:
+            src, label_key = _pick_media_source(msg)
+            if src is not None:
+                url, media_label, reason = await _extract_media_as_data_url(
+                    context.bot, msg, src, label_key
+                )
+                if url:
+                    image_urls.append(url)
+                elif reason and reason not in ("tidak_ada_media", "bukan_gambar"):
+                    return await _reply_thread(context.bot, msg, _media_error_reply(reason))
+
+            if not prompt and image_urls:
+                prompt = "liat ini dong"
+
+        if not prompt and not image_urls:
             return
 
         # ── Credit gate ──────────────────────────────────────────────────────
@@ -889,12 +1074,19 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             system_prompt, history, user_prompt,
             search_result=search_result,
             bot_info=bot_info,
+            images=image_urls or None,
         )
+
+        # Turn yang dicatat ke memori memakai TEKS RINGKAS, bukan base64 gambar.
+        # Kalau gambar ikut disimpan, (a) DB membengkak dan (b) setiap pesan
+        # berikutnya mengirim ulang gambar itu -> token meledak. Yang disimpan
+        # cukup penanda "[Kirim foto] <teks>", sehingga Caca tetap ingat konteks.
+        memory_prompt = f"{media_label} {prompt}".strip() if media_label else prompt
 
         billing = {"usage": {}}
         is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
         if is_dm:
-            await _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing=billing)
+            await _caca_stream_dm(update, context, msg, user_id, history, memory_prompt, messages, billing=billing)
             await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed)
             return
 
@@ -909,7 +1101,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _stop_typing_task(stop, typing)
         last_id = await _send_chunks(context.bot, msg, chunks)
         history.extend([
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": memory_prompt},
             {"role": "assistant", "content": clean_md},
         ])
         await caca_memory.set_history(user_id, history)

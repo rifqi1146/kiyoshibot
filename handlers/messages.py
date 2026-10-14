@@ -28,11 +28,20 @@ AI_REPLY_FILTER = (
     filters.REPLY
     & (
         filters.TEXT
+        | filters.CAPTION
         | filters.PHOTO
         | filters.Document.IMAGE
-        | filters.Sticker.STATIC
+        | filters.Sticker.ALL
     )
     & ~filters.COMMAND
+)
+
+# `/caca` yang dikirim sebagai CAPTION (foto/stiker/dokumen) tidak tertangkap
+# `CommandHandler` — PTB hanya mencocokkan `msg.text`, sedangkan caption ada di
+# `msg.caption`. Handler ini menutup celah itu supaya "foto + caption /caca ..."
+# tetap sampai ke Caca.
+CACA_CAPTION_FILTER = (
+    filters.CAPTION & (filters.PHOTO | filters.Document.IMAGE | filters.Sticker.ALL)
 )
 
 async def ai_reply_router(update, context):
@@ -112,6 +121,10 @@ def register_messages(app):
     )
     app.add_handler(
         MessageHandler(AI_REPLY_FILTER, ai_reply_router),
+        group=-2,
+    )
+    app.add_handler(
+        MessageHandler(CACA_CAPTION_FILTER, caca_cmd),
         group=-2,
     )
     app.add_handler(
