@@ -125,12 +125,23 @@ async def _refresh_gemini_memory_cache():
     except Exception as e:
         log.warning("Reload Groq memory failed | err=%r",e)
 
-async def _refresh_runtime_caches(app):
+def _reload_env():
+    """Terapkan ulang `.env` ke `os.environ` SEBELUM modul di-reload.
+
+    Kritis: `importlib.reload()` mengevaluasi ulang konstanta level modul
+    (`os.getenv(...)`) saat dijalankan. Kalau `load_dotenv(override=True)`
+    dipanggil SETELAH `_reload_modules()`, modul yang baru di-reload tetap
+    memakai nilai env LAMA — perubahan `.env` baru terasa di reload berikutnya.
+    Karena itu env WAJIB di-refresh paling awal di `hot_reload()`.
+    """
     try:
         from dotenv import load_dotenv
         load_dotenv(override=True)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Reload load_dotenv failed | err=%r", e)
+
+
+async def _refresh_runtime_caches(app):
     try:
         from handlers import welcome
         welcome.init_welcome_db()
@@ -182,6 +193,9 @@ async def hot_reload(app):
         snapshot=_snapshot_handlers(app)
         try:
             await _pre_reload_cleanup(app)
+            # WAJIB paling awal: seringkas apa pun, modul yang di-reload di
+            # bawah membaca os.getenv() saat itu juga. Lihat _reload_env().
+            _reload_env()
             reloaded=_reload_modules()
             _register_all(app)
             await _refresh_runtime_caches(app)

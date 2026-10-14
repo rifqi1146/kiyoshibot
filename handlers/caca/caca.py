@@ -21,9 +21,13 @@ from utils import caca_memory
 
 logger = logging.getLogger(__name__)
 
-GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = os.getenv("CACA_GROQ_MODEL", "qwen/qwen3.8-27b").strip()
-GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT", "60"))
+# Provider Caca: Shiteru (OpenAI-compatible). Model utama `kimi-k3`.
+CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
+CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
+CACA_MODEL = os.getenv("CACA_MODEL", "kimi-k3").strip()
+# Batas output token keras dari permintaan owner: jangan pernah lewat 4096.
+CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
+CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
 _EMOS = ["🌸", "💖", "🧸", "🎀", "🌟", "💫"]
 
 
@@ -203,24 +207,13 @@ def _strip_thinking_leak(text: str) -> str:
     return text
 
 
-def _groq_api_keys() -> list[str]:
-    keys = []
-    seen = set()
+def _caca_api_key() -> str:
+    """Kunci API provider Caca (Shiteru) — satu kunci: `SHITERU_KEY`.
 
-    raw_primary = os.getenv("GROQ_API_KEY", "")
-    for k in raw_primary.split(","):
-        k = k.strip()
-        if k and k not in seen:
-            seen.add(k)
-            keys.append(k)
-
-    for i in range(1, 15):
-        k = os.getenv(f"GROQ_API_KEY_{i}", "").strip()
-        if k and k not in seen:
-            seen.add(k)
-            keys.append(k)
-
-    return keys
+    Cukup satu key. Tidak ada daftar fallback/numbered key; kalau key perlu
+    diganti, cukup edit `SHITERU_KEY` di `.env`.
+    """
+    return os.getenv("SHITERU_KEY", "").strip()
 
 
 async def _shared_http_session():
@@ -231,135 +224,128 @@ async def _shared_http_session():
 
 
 async def _groq_chat(messages: list[dict]) -> str:
-    keys = _groq_api_keys()
-    if not keys:
-        raise RuntimeError("GROQ_API_KEY is not set in the environment.")
+    key = _caca_api_key()
+    if not key:
+        raise RuntimeError("SHITERU_KEY is not set in the environment.")
 
     session = await _shared_http_session()
+    # `max_completion_tokens` didukung OpenAI/Shiteru, clamp ke batas 4096.
     payload = {
-        "model": GROQ_MODEL,
+        "model": CACA_MODEL,
         "messages": messages,
         "temperature": 0.9,
-        "max_completion_tokens": 1024,
+        "max_completion_tokens": CACA_MAX_TOKENS,
         "top_p": 0.95,
-        "reasoning_effort": "none",
         "stream": False,
     }
 
-    errors = []
-    for idx, key in enumerate(keys, start=1):
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with session.post(
-                GROQ_ENDPOINT,
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=GROQ_TIMEOUT),
-            ) as r:
-                data = await r.json(content_type=None)
-                if r.status != 200:
-                    err_msg = ""
-                    if isinstance(data, dict):
-                        err_msg = (data.get("error") or {}).get("message") or str(data)
-                    raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with session.post(
+            CACA_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=CACA_TIMEOUT),
+        ) as r:
+            data = await r.json(content_type=None)
+            if r.status != 200:
+                err_msg = ""
+                if isinstance(data, dict):
+                    err_msg = (data.get("error") or {}).get("message") or str(data)
+                raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
 
-                choices = data.get("choices") or []
-                if not choices:
-                    raise RuntimeError("Response choices kosong dari Groq.")
+            choices = data.get("choices") or []
+            if not choices:
+                raise RuntimeError("Response choices kosong dari provider Caca.")
 
-                content = (choices[0].get("message") or {}).get("content") or ""
-                if not content:
-                    raise RuntimeError("Konten balasan Groq kosong.")
+            content = (choices[0].get("message") or {}).get("content") or ""
+            if not content:
+                raise RuntimeError("Konten balasan Caca kosong.")
 
-                logger.info("Groq success | key_index=%s model=%s", idx, GROQ_MODEL)
-                return content
-        except Exception as e:
-            err = str(e)
-            errors.append(f"key#{idx}: {err}")
-            logger.warning("Groq request failed | key_index=%s err=%s", idx, err)
-            continue
-
-    raise RuntimeError("All Groq API keys failed: " + " | ".join(errors[-3:]))
+            logger.info("Caca chat success | model=%s tokens_max=%s", CACA_MODEL, CACA_MAX_TOKENS)
+            return content
+    except Exception as e:
+        logger.warning("Caca request failed | err=%s", e)
+        raise
 
 
 async def _groq_chat_stream(messages: list[dict]):
-    """Async generator delta streaming Caca via Groq (SSE OpenAI format)."""
-    keys = _groq_api_keys()
-    if not keys:
-        raise RuntimeError("GROQ_API_KEY is not set in the environment.")
+    """Async generator delta streaming Caca via Shiteru (SSE OpenAI format).
+
+    Catatan model kimi-k3: delta memuat `reasoning_content` (thinking) sebelum
+    `content`. Kita HANYA me-yield `content` (jawaban akhir Caca), mengabaikan
+    `reasoning_content` agar draft PM tidak kotor dengan monolog internal.
+    """
+    key = _caca_api_key()
+    if not key:
+        raise RuntimeError("SHITERU_KEY is not set in the environment.")
 
     session = await _shared_http_session()
     payload = {
-        "model": GROQ_MODEL,
+        "model": CACA_MODEL,
         "messages": messages,
         "temperature": 0.9,
-        "max_completion_tokens": 1024,
+        "max_completion_tokens": CACA_MAX_TOKENS,
         "top_p": 0.95,
-        "reasoning_effort": "none",
         "stream": True,
     }
 
-    errors = []
-    for idx, key in enumerate(keys, start=1):
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        }
-        try:
-            async with session.post(
-                GROQ_ENDPOINT,
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=GROQ_TIMEOUT),
-            ) as r:
-                if r.status != 200:
-                    err_msg = ""
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with session.post(
+            CACA_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=CACA_TIMEOUT),
+        ) as r:
+            if r.status != 200:
+                err_msg = ""
+                try:
+                    err_data = await r.json(content_type=None)
+                    if isinstance(err_data, dict):
+                        err_msg = (err_data.get("error") or {}).get("message") or str(err_data)
+                except Exception:
+                    err_msg = await r.text()
+                raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
+
+            buffer = b""
+            got_any = False
+            async for chunk_bytes in r.content.iter_any():
+                buffer += chunk_bytes
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data or data == b"[DONE]":
+                        continue
                     try:
-                        err_data = await r.json(content_type=None)
-                        if isinstance(err_data, dict):
-                            err_msg = (err_data.get("error") or {}).get("message") or str(err_data)
+                        obj = json.loads(data.decode("utf-8"))
                     except Exception:
-                        err_msg = await r.text()
-                    raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
-
-                buffer = b""
-                got_any = False
-                async for chunk_bytes in r.content.iter_any():
-                    buffer += chunk_bytes
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
-                        line = line.strip()
-                        if not line.startswith(b"data:"):
-                            continue
-                        data = line[5:].strip()
-                        if not data or data == b"[DONE]":
-                            continue
-                        try:
-                            obj = json.loads(data.decode("utf-8"))
-                        except Exception:
-                            continue
-                        choices = obj.get("choices") or []
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta") or {}
-                        content = delta.get("content")
-                        if content:
-                            got_any = True
-                            yield content
-                if got_any:
-                    logger.info("Groq stream success | key_index=%s model=%s", idx, GROQ_MODEL)
-                    return
-                raise RuntimeError("Response stream kosong dari Groq.")
-        except Exception as e:
-            err = str(e)
-            errors.append(f"key#{idx}: {err}")
-            logger.warning("Groq stream failed | key_index=%s err=%s", idx, err)
-            continue
-
-    raise RuntimeError("All Groq API keys (stream) failed: " + " | ".join(errors[-3:]))
+                        continue
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    # Abaikan delta.get("reasoning_content") — kimi-k3 thinking
+                    content = delta.get("content")
+                    if content:
+                        got_any = True
+                        yield content
+            if got_any:
+                logger.info("Caca stream success | model=%s tokens_max=%s", CACA_MODEL, CACA_MAX_TOKENS)
+                return
+            raise RuntimeError("Response stream kosong dari provider Caca.")
+    except Exception as e:
+        logger.warning("Caca stream failed | err=%s", e)
+        raise
 
 
 async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages):
