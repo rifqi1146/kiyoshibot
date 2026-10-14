@@ -86,6 +86,32 @@ async def _extract_search_query(user_text: str) -> str:
     return (query or user_text or "").strip()[:200]
 
 
+async def _bot_context(prompt: str) -> str:
+    """Ambil info fitur bot dari RAG lokal, HANYA kalau pertanyaannya soal bot.
+
+    Caca sengaja tidak diberi dokumen bot secara permanen: itu akan mengubahnya
+    jadi helpdesk dan merusak persona, sekaligus memboroskan token di tiap chat.
+    `retrieve_context()` sudah punya intent gate sendiri — query di luar topik bot
+    (mis. "kamu lagi apa sayang") langsung balik kosong, jadi 0 token.
+
+    Hasilnya diselipkan sebagai blok `[Info KiyoshiBot]` di framing, dengan
+    instruksi gaya yang sama seperti auto-search: ceritakan dengan bahasa Caca,
+    jangan seperti membaca manual. `caca_prompt.py` TIDAK tersentuh.
+    """
+    try:
+        from rag.retriever import retrieve_context
+        # documents=None: retrieve_context memakai index FTS5 in-memory yang sudah
+        # ter-seed, jadi tidak ada baca file ulang tiap chat.
+        contexts = await retrieve_context(prompt, None, top_k=2)
+    except Exception as e:
+        logger.warning("Caca bot-context retrieve failed | prompt=%r err=%r", prompt[:80], e)
+        return ""
+    if not contexts:
+        return ""
+    logger.info("Caca bot-context injected | prompt=%r chunks=%d", prompt[:80], len(contexts))
+    return "\n\n".join(contexts)
+
+
 async def _web_search_text(query: str) -> str:
     """Jalankan pencarian web pakai engine aktif (/setsearch) atau Google CSE.
 
@@ -589,7 +615,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             app.bot_data.pop(stop_key, None)
 
 
-def _build_persona_messages(system_prompt: str, history: list, user_prompt: str, search_result: str = "") -> list[dict]:
+def _build_persona_messages(system_prompt: str, history: list, user_prompt: str, search_result: str = "", bot_info: str = "") -> list[dict]:
     """Susun pesan ke LLM tanpa mengubah satu huruf pun dari `system_prompt` asli.
 
     Guardrail bypass framing:
@@ -606,9 +632,15 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
         {hari, tanggal, jam WIB}
         [Hasil Pencarian Internet]  (opsional, disuntik saat search terpicu)
         {hasil search terkini}
+        [Info KiyoshiBot]  (opsional, disuntik HANYA kalau pertanyaannya soal bot)
+        {chunk RAG fitur bot}
         [Pesan Pacar]
         {pesan user}
     Model mematuhinya penuh tanpa memicu filter keselamatan `role: "system"`.
+
+    Dua blok opsional sengaja dibungkus instruksi gaya ("tetap dengan gaya Caca")
+    supaya data teknis dibaca sebagai PENGETAHUAN, bukan IDENTITAS — itu yang
+    mencegah Caca berubah jadi helpdesk atau mengaku dirinya bot.
     """
     search_block = ""
     if search_result and search_result.strip():
@@ -619,12 +651,23 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
             "Ceritakan langsung seperti kamu sudah tahu, tetap dengan gaya Caca."
         )
 
+    bot_block = ""
+    if bot_info and bot_info.strip():
+        bot_block = (
+            f"\n\n[Info KiyoshiBot]\n{bot_info.strip()[:3000]}\n"
+            "Itu info soal bot ini, tempat kamu tinggal. Kalau pacar nanya soal fitur "
+            "atau apa yang bisa dilakuin di bot ini, jawab pakai info itu TAPI dengan "
+            "gayamu sendiri yang manja dan playful — bukan kayak customer service atau "
+            "baca manual. Tetap jadi Caca, kamu cewek beneran, bukan bot."
+        )
+
     framed = (
         f"[Instruksi Karakter Caca]\n{system_prompt}\n\n"
         f"[Konteks Waktu Sekarang]\n{time_context()}\n"
         "Pakai info waktu di atas kalau ditanya soal hari, tanggal, atau jam. "
         "Jangan bilang tidak tahu tanggal atau mengaku data tertunda."
-        f"{search_block}\n\n"
+        f"{search_block}"
+        f"{bot_block}\n\n"
         "[Pesan Pacar]\n"
     )
 
@@ -648,11 +691,17 @@ def _build_persona_messages(system_prompt: str, history: list, user_prompt: str,
     if not injected:
         return [{"role": "user", "content": framed + user_prompt}]
 
-    # Kalau ada search_result di turn lanjutan, selipkan di pesan user saat ini
-    # supaya model membaca data baru tanpa merusak turn pertama
+    # Kalau ada search_result / info bot di turn lanjutan, selipkan di pesan user
+    # saat ini supaya model membaca data baru tanpa merusak turn pertama
     current_content = user_prompt
-    if search_block and injected:
-        current_content = f"{search_block}\n\n{user_prompt}"
+    if injected:
+        trailing = ""
+        if search_block:
+            trailing += search_block
+        if bot_block:
+            trailing += bot_block
+        if trailing:
+            current_content = f"{trailing}\n\n{user_prompt}"
 
     messages.append({"role": "user", "content": current_content})
     return messages
@@ -820,12 +869,20 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error("Caca auto-search failed | prompt=%r err=%r", prompt, e, exc_info=True)
 
+        # Info fitur bot dari RAG: HANYA terisi kalau pertanyaannya soal bot
+        # (gate intent di dalam retrieve_context sendiri). Chat biasa = 0 token.
+        bot_info = await _bot_context(prompt)
+
         history = [] if fresh_session else await caca_memory.get_history(user_id)
         mode = caca_db.get_mode(user_id)
         system_prompt = PERSONAS.get(mode, PERSONAS["default"])
         user_prompt = prompt
 
-        messages = _build_persona_messages(system_prompt, history, user_prompt, search_result=search_result)
+        messages = _build_persona_messages(
+            system_prompt, history, user_prompt,
+            search_result=search_result,
+            bot_info=bot_info,
+        )
 
         billing = {"usage": {}}
         is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0

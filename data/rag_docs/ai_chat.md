@@ -12,6 +12,7 @@ KiyoshiBot dilengkapi beberapa model AI canggih yang bisa diajak ngobrol, tanya 
 ## Caca Chatbot (Roleplay)
 - `/caca <teks>`: Ngobrol dengan Caca, chatbot roleplay bergaya manja, playful, dan menyenangkan.
 - Caca otomatis mencari info terbaru di web (Firecrawl / Jina) saat pertanyaannya butuh data aktual — misalnya harga, berita, spesifikasi, jadwal, atau rilis. Tidak perlu perintah khusus.
+- Caca juga tahu fitur-fitur KiyoshiBot. Kalau ditanya soal fitur bot, Caca menjawab sesuai karakternya sendiri (bukan mode bantuan teknis).
 - Cara lanjut ngobrol: reply pesan terakhir Caca, tidak perlu ketik `/caca` lagi.
 - Di grup, Caca hanya aktif jika admin sudah mengaktifkannya dengan `/cacaa enable`.
 - Caca menggunakan sistem Credit berbasis token pemakaian AI. Top-up credit melalui `/cacatopup` atau `/buycaca`, dan cek saldo melalui `/cacasaldo`.
