@@ -1006,6 +1006,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 prompt = " ".join(context.args).strip()
 
             # `/caca` polos tanpa teks: boleh kalau ada gambar yang menyertai.
+            # Gambar dibiarkan bicara sendiri — TIDAK diinjeksi teks paksa.
             src, label_key = _pick_media_source(msg)
             if src is not None:
                 url, media_label, reason = await _extract_media_as_data_url(
@@ -1022,8 +1023,6 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg,
                     f"{em} Pake gini:\n/caca <teks>\natau reply pesan gue buat ngobrol.",
                 )
-            if not prompt and image_urls:
-                prompt = "liat ini dong"
 
         # ── Lanjutan obrolan: reply ke pesan Caca (boleh bawa gambar) ─────────
         elif msg.reply_to_message:
@@ -1032,6 +1031,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await _reply_thread(context.bot, msg, "😒 I don't remember talking to you.\nUse /caca first.")
             prompt = text or caption
 
+            # Gambar dibiarkan bicara sendiri; teks hanya dipakai kalau ada.
             src, label_key = _pick_media_source(msg)
             if src is not None:
                 url, media_label, reason = await _extract_media_as_data_url(
@@ -1041,9 +1041,6 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     image_urls.append(url)
                 elif reason and reason not in ("tidak_ada_media", "bukan_gambar"):
                     return await _reply_thread(context.bot, msg, _media_error_reply(reason))
-
-            if not prompt and image_urls:
-                prompt = "liat ini dong"
 
         if not prompt and not image_urls:
             return
