@@ -112,6 +112,10 @@ async def _build_ai_prompt_from_history(history:list,user_prompt:str)->str:
         lines.append("<bot_reference>")
         lines.extend(contexts)
         lines.append("</bot_reference>")
+        log.info(
+            "[GEMINI RAG] injected context into prompt | chunks=%d chars=%d",
+            len(contexts), sum(len(c) for c in contexts),
+        )
     lines.append(f"User: {user_prompt}")
     return "\n".join(lines)
 

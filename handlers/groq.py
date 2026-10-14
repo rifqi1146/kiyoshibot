@@ -161,6 +161,10 @@ async def build_groq_rag_prompt(user_prompt:str)->str:
         contexts=[]
     if contexts:
         ctx="\n\n".join(contexts)
+        log.info(
+            "[GROQ RAG] injected context into prompt | chunks=%d chars=%d",
+            len(contexts), len(ctx),
+        )
         return f"<bot_reference>\n{ctx}\n</bot_reference>\n\n{user_prompt}"
     return user_prompt
 

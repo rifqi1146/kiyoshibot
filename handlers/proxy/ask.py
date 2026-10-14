@@ -349,7 +349,12 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
         log.warning("RAG retrieve failed | err=%r", e)
         contexts = []
     if contexts:
-        sys_text += "\n\n<bot_reference>\n" + "\n\n".join(contexts) + "\n</bot_reference>"
+        injected = "\n\n<bot_reference>\n" + "\n\n".join(contexts) + "\n</bot_reference>"
+        sys_text += injected
+        log.info(
+            "[ASK RAG] injected context into system prompt | chunks=%d chars=%d",
+            len(contexts), len(injected),
+        )
 
     # Read at runtime (not import-by-value) so adding a key in .env + /reload
     # takes effect without a full restart.
