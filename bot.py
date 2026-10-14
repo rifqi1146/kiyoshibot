@@ -184,7 +184,7 @@ def _start_opencode_proxy():
     except ValueError:
         port=20130
     try:
-        from handlers.proxy.opencode_v1 import start_proxy_thread
+        from handlers.proxy.opencode import start_proxy_thread
         srv=start_proxy_thread(host,port)
         if srv is not None:
             log.info("✓ OpenCode proxy active | http://%s:%s",host,port)

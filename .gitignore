@@ -12,6 +12,8 @@ __pycache__/
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+# Backup/metadata file DB (mis. *.sqlite3.corrupted_bak, *.sqlite3.clean)
+*.sqlite3.*
 data/*.db
 data/cookies.txt
 data/upload_engine.json

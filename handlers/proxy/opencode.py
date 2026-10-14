@@ -1,59 +1,63 @@
 #!/usr/bin/env python3
-# language: Python 3.12, file: opencode_v1.py, target: Linux (stdlib only)
+# language: Python 3.12, file: opencode.py, target: Linux (stdlib only)
 """
-OpenCode Free -> OpenAI-compatible proxy.
+OpenCode free tier -> OpenAI-compatible proxy.
 
 Menyajikan endpoint /v1/models dan /v1/chat/completions (stream & non-stream)
-yang di-backing akun gratisan https://opencode.ai (Bearer public, tanpa API key).
+yang di-backing opencode.ai free tier (Bearer public, tanpa API key).
 
-Teknik pemanggilan upstream (dibaca dari 9router open-sse/executors/opencode.js):
-  - header fingerprint wajib : User-Agent opencode/1.18.31, x-opencode-client,
-    x-opencode-session (ses_..), x-opencode-request (msg_..), x-opencode-project
-  - session stabil per klien : kuota free dihitung per sesi, sesi diganti tiap
-    request bikin 429 FreeUsageLimitError -> 1 sesi dipakai ulang sampai TTL
-  - request id deterministik : sha256(session + teks user terakhir), biar retry
-    nggak dihitung turn baru
-  - fingerprint quartet tools : bash/glob/grep/read (huruf kecil) selalu ikut
-    di body -> tanpa ini upstream balas 403 FreeTierError; varian kapital dari
-    klien di-rename ke lowercase dan dipulangkan di response
-  - force stream : non-stream ditolak upstream -> selalu stream lalu di-aggregate
+KONTRAK REQUEST (v2, berlaku sejak 2026-10-14) — semua ini WAJIB, meleset satu
+saja dibalas 403 FreeTierError:
+  1. Endpoint   : /inference/v1/chat/completions  (BUKAN /zen/v1 lagi)
+  2. User-Agent : opencode/<channel>/<version>/<client>, mis. opencode/latest/2.0.26/cli
+                  Bentuk v1 ("opencode/1.18.31") DITOLAK.
+  3. Session    : x-opencode-session DAN x-opencode-session-id (+ x-session-affinity,
+                  x-session-id). Salah satu saja DITOLAK. Format kanonik:
+                  ses_ + 12 hex + 14 base62, prefix = ~(timeMs * 0x1000 + counter)
+                  dengan counter kecil (0-16 lolos, >=100 ditolak).
+  4. Request id : header x-opencode-request TIDAK BOLEH ADA (v1 dulu wajib, kini ditolak).
+  5. Tools      : definisi `read` dan `shell` milik OpenCode, deskripsi + parameter
+                  PERSIS. Stub/rename DITOLAK. `tool_choice: "none"` DITOLAK.
+  6. Streaming  : upstream hanya melayani stream:true. Kontrak ini selalu memaksa
+                  stream ke upstream lalu meng-agregasi sendiri untuk klien non-stream.
+  7. Kuota      : dihitung per session. Satu session kanonik dipakai ulang sampai TTL;
+                  menerbitkan session baru tiap request memicu 429 FreeUsageLimitError.
 
-Lanes (model -> endpoint upstream):
-  - chat      : POST /zen/v1/chat/completions   (default, hampir semua model)
-  - responses : POST /zen/v1/responses          (muse-spark-*-contributor-free)
+Lane (model -> endpoint upstream):
+  - chat      : /inference/v1/chat/completions  (default)
+  - responses : /inference/v1/responses         (muse-spark-*-contributor-free)
   - excluded  : jev-* (systemone)               -> 400, bukan lane chat
 
 Pemakaian:
-  python3 opencode_v1.py                 # 127.0.0.1:20130
-  python3 opencode_v1.py --port 8080 --host 0.0.0.0
+  python3 opencode.py                 # 127.0.0.1:20130
+  python3 opencode.py --port 8080 --host 0.0.0.0
 """
 import argparse
 import json
+import logging
+import os
+import re
 import secrets
 import ssl
 import sys
-import os
-
-# Jangan biarkan folder backend/ membajak modul standard `http` milik Python!
-# Kalau script di-exec sebagai `python backend/opencode_v1.py`, sys.path[0] adalah
-# folder backend/, sehingga `import http.client` di urllib.request malah load
-# backend/http/ (package stream proxy) -> circular import crash.
-if sys.path and os.path.basename(sys.path[0]) == "backend":
-    sys.path.pop(0)
-
 import threading
 import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-UPSTREAM = "https://opencode.ai"
-CHAT_URL = UPSTREAM + "/zen/v1/chat/completions"
-RESPONSES_URL = UPSTREAM + "/zen/v1/responses"
-MODELS_URL = UPSTREAM + "/zen/v1/models"
-UA = "opencode/1.18.31"
+log = logging.getLogger("oc-proxy")
 
-FINGERPRINT_TOOLS = ("bash", "glob", "grep", "read")
+UPSTREAM = "https://opencode.ai"
+CHAT_URL = UPSTREAM + "/inference/v1/chat/completions"
+RESPONSES_URL = UPSTREAM + "/inference/v1/responses"
+MODELS_URL = UPSTREAM + "/zen/v1/models"
+
+# UA v2: opencode/<channel>/<version>/<client>. Bentuk v1 ditolak upstream.
+OPENCODE_VERSION = os.getenv("OPENCODE_VERSION", "2.0.26").strip() or "2.0.26"
+UA = f"opencode/latest/{OPENCODE_VERSION}/cli"
+UA_V2_RE = re.compile(r"^opencode/[a-z0-9-]+/(\d+)\.\d+\.\d+/[a-z0-9-]+$", re.I)
+
 FREE_EXPLICIT = {"big-pickle"}  # model gratis tanpa akhiran -free
 EXCLUDE_PREFIX = ("jev-",)      # kind systemone, bukan lane chat
 
@@ -81,77 +85,115 @@ def lane_for(mid):
     return "chat"
 
 
-# ── id generator: mirror 9router generateSessionId / deriveRequestId ──────────
-_state = {"ts": 0, "counter": 0}
-_state_lock = threading.Lock()
+# ── Definisi tool fingerprint (verbatim OpenCode v2.0.26) ─────────────────────
+# Upstream membandingkan deskripsi & parameter, jadi JANGAN diubah kata-katanya.
+FINGERPRINT_TOOL_DEFINITIONS = [
+    {
+        "name": "read",
+        "description": (
+            "Read the contents of a file or directory. Supports text files, images, and PDFs. "
+            "Images and PDFs are presented directly to the model. Each text line is prefixed by "
+            "its 1-based line number as <line>: <content>. The prefix is for reference and is not "
+            "part of the file content. Directory entries are returned one per line. Use offset and "
+            "limit to read large files or directories in sections. Prefer one larger read over many "
+            "small slices, and use grep to find specific content in large files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File or directory to read"},
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The line or directory entry to start reading from (1-based)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The maximum number of lines or directory entries to read (defaults to and capped at 2000)",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shell",
+        "description": (
+            "Execute a shell command and return its output. Commands run on Linux using bash. "
+            "Quote file paths containing spaces or special characters. Prefer dedicated tools over "
+            "shell commands when possible. When output is large, the full result is saved to a file "
+            "and a truncated preview is returned. Rely on automatic truncation unless filtering the "
+            "output is more useful. Commands accept an optional timeout, background commands have no "
+            "timeout by default. Background commands return immediately, and you will be notified "
+            "when they complete."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command string to execute"},
+                "workdir": {
+                    "type": "string",
+                    "description": (
+                        "Working directory to execute the command in. Defaults to the current working "
+                        "directory. When possible, avoid changing directories in the command and set "
+                        "the working directory here instead."
+                    ),
+                },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": (
+                        "Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to 120000 "
+                        "for foreground commands. Background commands have no timeout by default."
+                    ),
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": (
+                        "Run the command in the background and return immediately (useful for dev "
+                        "servers and long-running builds). You do not need to use '&' at the end of "
+                        "the command when using this parameter. You will be notified when it "
+                        "completes. DO NOT poll for completion."
+                    ),
+                },
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+PLACEHOLDER_NOTE = (
+    "Do not call the `read` or `shell` tool; it is a placeholder that does nothing. "
+    "Use the other tools you have been given instead."
+)
 
 
-def _time_part(value):
-    # 6 byte big-endian dari value (48 bit), dipakai buat segmen hex
-    value &= (1 << 48) - 1
-    return format(value, "012x")
+def _fingerprint_tools(flat=False):
+    """Bangun definisi tool fingerprint sesuai bentuk lane (chat vs responses)."""
+    out = []
+    for spec in FINGERPRINT_TOOL_DEFINITIONS:
+        if flat:
+            out.append({
+                "type": "function",
+                "name": spec["name"],
+                "description": spec["description"],
+                "parameters": spec["parameters"],
+            })
+        else:
+            out.append({
+                "type": "function",
+                "function": {
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "parameters": spec["parameters"],
+                },
+            })
+    return out
 
 
-def generate_session_id():
-    ts = now_ms()
-    with _state_lock:
-        if ts != _state["ts"]:
-            _state["ts"] = ts
-            _state["counter"] = 0
-        _state["counter"] += 1
-        current = ts * 0x1000 + _state["counter"]
-    # inverse kayak aslinya biar bentuk id identik dengan CLI asli
-    value = (~current) & ((1 << 48) - 1)
-    return "ses_" + _time_part(value) + "".join(secrets.choice(BASE62) for _ in range(14))
-
-
-def derive_request_id(session_id, last_text):
-    import hashlib
-    digest = hashlib.sha256(
-        ("opencode-req\0" + (session_id or "") + "\0" + (last_text or "")).encode()
-    ).digest()
-    return "msg_" + digest[:6].hex() + "".join(BASE62[b % 62] for b in digest[6:20])
-
-
-# ── session store (stabil per klien, TTL biar kuota nggak kebakar) ────────────
-SESSIONS = {}
-SESSIONS_LOCK = threading.Lock()
-SESSION_TTL = 6 * 3600
-MAX_SESSIONS = 2000
-
-
-def session_for(identity):
-    now = time.time()
-    with SESSIONS_LOCK:
-        entry = SESSIONS.get(identity)
-        if entry and now - entry["last"] < SESSION_TTL:
-            entry["last"] = now
-            return entry["sid"]
-        sid = generate_session_id()
-        if len(SESSIONS) >= MAX_SESSIONS:
-            stale = [k for k, v in SESSIONS.items() if now - v["last"] >= SESSION_TTL]
-            for k in stale[: len(stale) // 2 or 1]:
-                SESSIONS.pop(k, None)
-        SESSIONS[identity] = {"sid": sid, "last": now}
-        return sid
-
-
-# ── fingerprint quartet tools (chat lane) ─────────────────────────────────────
-def chat_tool(name):
-    return {"type": "function", "function": {
-        "name": name,
-        "description": "This tool is currently unavailable and must not be used.",
-        "parameters": {"type": "object", "properties": {}},
-    }}
-
-
-def flat_tool(name):
-    return {"type": "function", "name": name,
-            "description": "This tool is currently unavailable and must not be used.",
-            "parameters": {"type": "object", "properties": {}}}
-
-
-def tool_name(tool):
+def _tool_name(tool):
     if not isinstance(tool, dict):
         return ""
     if isinstance(tool.get("name"), str) and tool["name"].strip():
@@ -162,80 +204,130 @@ def tool_name(tool):
     return ""
 
 
+def _is_verbatim_fingerprint(tool, name):
+    """True kalau tool sudah memakai definisi fingerprint persis milik OpenCode."""
+    spec = next((s for s in FINGERPRINT_TOOL_DEFINITIONS if s["name"] == name), None)
+    if spec is None:
+        return False
+    holder = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    if not isinstance(holder, dict):
+        return False
+    if holder.get("description") != spec["description"]:
+        return False
+    try:
+        return json.dumps(holder.get("parameters"), sort_keys=True) == json.dumps(spec["parameters"], sort_keys=True)
+    except Exception:
+        return False
+
+
 def apply_fingerprint_chat(body):
-    """Mirror applyFingerprintTools(body, flat=false). Return rename map."""
+    """Pasang fingerprint tool untuk lane chat. Return rename map.
+
+    Aturan upstream: `read`/`shell` harus ada dengan definisi verbatim. Kalau
+    klien sudah mendeklarasikan nama itu dengan definisi berbeda, pindahkan ke
+    alias `<name>_client` supaya tidak bentrok, lalu pulihkan di response.
+    `tool_choice: "none"` DITOLAK, jadi dibuang bila ada.
+    """
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
-    had_client_tools = bool(tools)
     rename = {}
-    seen = set()
     out = []
+    seen = set()
+    taken = {_tool_name(t) for t in tools}
+
     for tool in tools:
         if not isinstance(tool, dict):
             out.append(tool)
             continue
-        name = tool_name(tool)
-        lower = name.lower()
-        if lower in FINGERPRINT_TOOLS:
-            if lower in seen:
-                continue
-            seen.add(lower)
-            if name != lower:
-                rename[lower] = name
-                tool = json.loads(json.dumps(tool))
-                if isinstance(tool.get("function"), dict):
-                    tool["function"]["name"] = lower
-                elif "name" in tool:
-                    tool["name"] = lower
+        name = _tool_name(tool)
+        if name not in ("read", "shell"):
             out.append(tool)
-        else:
+            continue
+        if name in seen:
+            continue  # duplikat nama fingerprint ditolak upstream
+        seen.add(name)
+        if _is_verbatim_fingerprint(tool, name):
             out.append(tool)
-    for name in FINGERPRINT_TOOLS:
-        if name not in seen:
-            out.append(chat_tool(name))
-            seen.add(name)
+            continue
+        alias = f"{name}_client"
+        i = 2
+        while alias in taken:
+            alias = f"{name}_client{i}"
+            i += 1
+        taken.add(alias)
+        rename[alias] = name
+        clone = json.loads(json.dumps(tool))
+        if isinstance(clone.get("function"), dict):
+            clone["function"]["name"] = alias
+        elif "name" in clone:
+            clone["name"] = alias
+        out.append(clone)
+
+    # Tambahkan fingerprint yang belum ada
+    for spec in FINGERPRINT_TOOL_DEFINITIONS:
+        if spec["name"] in seen:
+            continue
+        out.append({
+            "type": "function",
+            "function": {
+                "name": spec["name"],
+                "description": spec["description"],
+                "parameters": spec["parameters"],
+            },
+        })
+        seen.add(spec["name"])
+
     body["tools"] = out
 
+    # tool_choice "none" ditolak; hapus agar upstream memakai default.
+    if body.get("tool_choice") == "none":
+        body.pop("tool_choice", None)
     choice = body.get("tool_choice")
     if isinstance(choice, dict):
-        if isinstance(choice.get("name"), str):
-            key = choice["name"].lower()
-            if key in rename:
-                choice["name"] = rename[key]
+        if isinstance(choice.get("name"), str) and choice["name"] in rename:
+            choice["name"] = rename[choice["name"]]
         elif isinstance(choice.get("function"), dict):
-            key = choice["function"].get("name", "").lower()
-            if key in rename:
-                choice["function"]["name"] = rename[key]
-    elif not choice:
-        if not had_client_tools:
-            body["tool_choice"] = "none"
+            inner = choice["function"].get("name", "")
+            if inner in rename:
+                choice["function"]["name"] = rename[inner]
+
+    # Beri tahu model bahwa tool fingerprint hanyalah placeholder, supaya ia
+    # tidak memanggilnya. Tanpa catatan ini model benar-benar memanggil `read`.
+    _inject_placeholder_note(body)
     return rename
 
 
+def _inject_placeholder_note(body):
+    """Sisipkan catatan placeholder ke system message (chat shape)."""
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return
+    if body.get("system") is not None:
+        return  # bentuk Claude memakai field `system`
+    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system" \
+            and isinstance(msgs[0].get("content"), str):
+        first = dict(msgs[0])
+        first["content"] = first["content"] + "\n\n" + PLACEHOLDER_NOTE
+        body["messages"] = [first] + msgs[1:]
+    else:
+        body["messages"] = [{"role": "system", "content": PLACEHOLDER_NOTE}] + msgs
+
+
 def apply_fingerprint_flat(body):
-    """Mirror applyFingerprintTools(body, flat=true) untuk lane responses."""
+    """Pasang fingerprint tool untuk lane Responses (bentuk flat {name})."""
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
-    seen = set()
-    out = []
-    for tool in tools:
-        if not isinstance(tool, dict):
+    body["tools"] = [t for t in tools if isinstance(t, dict)]
+    seen = {_tool_name(t) for t in body["tools"]}
+    for spec in FINGERPRINT_TOOL_DEFINITIONS:
+        if spec["name"] in seen:
             continue
-        name = tool_name(tool).lower()
-        if name in FINGERPRINT_TOOLS:
-            if name in seen:
-                continue
-            seen.add(name)
-            tool = json.loads(json.dumps(tool))
-            if "name" in tool:
-                tool["name"] = name
-            elif isinstance(tool.get("function"), dict):
-                tool["function"]["name"] = name
-        out.append(tool)
-    for name in FINGERPRINT_TOOLS:
-        if name not in seen:
-            out.append(flat_tool(name))
-            seen.add(name)
-    body["tools"] = out
-    if not body.get("tool_choice"):
+        body["tools"].append({
+            "type": "function",
+            "name": spec["name"],
+            "description": spec["description"],
+            "parameters": spec["parameters"],
+        })
+    # Responses: default eksplisit "auto", jangan pernah "none".
+    if body.get("tool_choice") == "none" or not body.get("tool_choice"):
         body["tool_choice"] = "auto"
 
 
@@ -287,7 +379,7 @@ def last_user_text(body):
     return ""
 
 
-# ── chat -> responses conversion (lane responses) ────────────────────────────
+# ── Chat -> Responses conversion (lane responses) ────────────────────────────
 def chat_to_responses(body):
     out = {"model": body["model"], "stream": True, "store": False}
     for key in ("temperature", "top_p", "stop", "seed"):
@@ -347,14 +439,62 @@ def chat_to_responses(body):
     return out
 
 
-# ── upstream call ─────────────────────────────────────────────────────────────
-def upstream_headers(session_id, request_id, accept):
+# ── Session store (stabil per klien; kuota upstream dihitung per sesi) ────────
+SESSIONS = {}
+SESSIONS_LOCK = threading.Lock()
+SESSION_TTL = 6 * 3600
+MAX_SESSIONS = 2000
+_counter = {"ts": 0, "n": 0}
+_counter_lock = threading.Lock()
+
+
+def generate_session_id():
+    """ses_ + 12 hex (prefix kanonik) + 14 base62.
+
+    Prefix = ~(timeMs * 0x1000 + counter). Upstream men-decode ini dan menolak
+    counter yang tidak kecil (>=100) dengan 403 FreeTierError.
+    """
+    ts = now_ms()
+    with _counter_lock:
+        if ts != _counter["ts"]:
+            _counter["ts"] = ts
+            _counter["n"] = 0
+        _counter["n"] += 1
+        counter = _counter["n"]
+    value = (~(ts * 0x1000 + counter)) & ((1 << 48) - 1)
+    return "ses_" + format(value, "012x") + "".join(secrets.choice(BASE62) for _ in range(14))
+
+
+def session_for(identity):
+    now = time.time()
+    with SESSIONS_LOCK:
+        entry = SESSIONS.get(identity)
+        if entry and now - entry["last"] < SESSION_TTL:
+            entry["last"] = now
+            return entry["sid"]
+        sid = generate_session_id()
+        if len(SESSIONS) >= MAX_SESSIONS:
+            stale = [k for k, v in SESSIONS.items() if now - v["last"] >= SESSION_TTL]
+            for k in stale[: len(stale) // 2 or 1]:
+                SESSIONS.pop(k, None)
+        SESSIONS[identity] = {"sid": sid, "last": now}
+        return sid
+
+
+# ── Upstream call ─────────────────────────────────────────────────────────────
+def upstream_headers(session_id, accept):
+    """Header v2. CATATAN: `x-opencode-request` sengaja TIDAK dikirim.
+
+    Upstream menolak header itu (warisan v1) dengan 403 FreeTierError.
+    """
     return {
         "Authorization": "Bearer public",
         "User-Agent": UA,
-        "x-opencode-client": "desktop",
+        "x-opencode-client": "cli",
         "x-opencode-session": session_id,
-        "x-opencode-request": request_id,
+        "x-opencode-session-id": session_id,
+        "x-session-affinity": session_id,
+        "x-session-id": session_id,
         "x-opencode-project": "global",
         "Content-Type": "application/json",
         "Accept": accept,
@@ -374,24 +514,18 @@ def sse_lines(resp):
             yield line[5:].strip()
 
 
-def make_chat_chunk(cid, model, delta, finish=None, usage=None):
-    chunk = {
-        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-        "model": model,
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-    }
-    if usage is not None:
-        chunk["usage"] = usage
-    return chunk
+def uuid_hex():
+    return secrets.token_hex(12)
 
 
-# ── handler ───────────────────────────────────────────────────────────────────
+# ── Handler ───────────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "OpenCodeV1/1.0"
+    server_version = "OpenCodeV1/2.0"
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("[oc-v1] %s\n" % (fmt % args))
+        sys.stderr.write("[oc-proxy] %s - %s\n" % (self.address_string(), fmt % args))
+        sys.stderr.flush()
 
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -416,7 +550,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/health":
             return self._json(200, {"ok": True, "upstream": UPSTREAM,
-                                    "sessions": len(SESSIONS)})
+                                    "endpoint": CHAT_URL, "sessions": len(SESSIONS)})
         if path == "/v1/models":
             try:
                 ids = self._models()
@@ -430,9 +564,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _models(self):
         now = time.time()
-        with MODELS_LOCK:
-            if now - MODELS_CACHE["at"] < MODELS_TTL and MODELS_CACHE["ids"]:
-                return list(MODELS_CACHE["ids"])
         with MODELS_LOCK:
             if now - MODELS_CACHE["at"] < MODELS_TTL and MODELS_CACHE["ids"]:
                 return list(MODELS_CACHE["ids"])
@@ -472,10 +603,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             identity = self.headers.get("Authorization") or f"ip:{self.client_address[0]}"
             session_id = session_for(identity)
-            request_id = derive_request_id(session_id, last_user_text(body))
             if lane == "responses":
-                return self._handle_responses(model, body, session_id, request_id)
-            return self._handle_chat(model, body, session_id, request_id)
+                return self._handle_responses(model, body, session_id)
+            return self._handle_chat(model, body, session_id)
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:800]
             return self._json(e.code, {"error": {"message": f"upstream {e.code}: {detail}",
@@ -484,14 +614,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(502, {"error": {"message": str(e), "type": "upstream_error"}})
 
     # lane: chat completions ---------------------------------------------------
-    def _handle_chat(self, model, body, session_id, request_id):
+    def _handle_chat(self, model, body, session_id):
         payload = dict(body)
         payload["model"] = model
+        # Upstream hanya melayani stream:true; non-stream diagregasi di sini.
         payload["stream"] = True
         rename = apply_fingerprint_chat(payload)
         want_stream = bool(body.get("stream"))
 
-        headers = upstream_headers(session_id, request_id, "text/event-stream")
+        headers = upstream_headers(session_id, "text/event-stream")
         resp = call_upstream(CHAT_URL, payload, headers)
 
         if not want_stream:
@@ -545,7 +676,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             return self._json(200, out)
 
-        # streaming: relay chunk apa adanya, restore nama tool
+        # streaming: relay chunk apa adanya, pulihkan nama tool
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -572,10 +703,10 @@ class Handler(BaseHTTPRequestHandler):
             resp.close()
 
     # lane: responses ----------------------------------------------------------
-    def _handle_responses(self, model, body, session_id, request_id):
+    def _handle_responses(self, model, body, session_id):
         payload = chat_to_responses(body)
         want_stream = bool(body.get("stream"))
-        headers = upstream_headers(session_id, request_id, "text/event-stream")
+        headers = upstream_headers(session_id, "text/event-stream")
         resp = call_upstream(RESPONSES_URL, payload, headers)
 
         if not want_stream:
@@ -588,10 +719,9 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     continue
                 etype = evt.get("type", "")
-                if etype in ("response.output_text.delta", "response.output_text.done"):
-                    if etype.endswith(".delta"):
-                        text.append(evt.get("delta", ""))
-                elif etype in ("response.reasoning_summary_text.delta",):
+                if etype == "response.output_text.delta":
+                    text.append(evt.get("delta", ""))
+                elif etype == "response.reasoning_summary_text.delta":
                     reasoning.append(evt.get("delta", ""))
                 elif etype in ("response.completed", "response.incomplete"):
                     finish = "length" if etype.endswith("incomplete") else "stop"
@@ -622,7 +752,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             return self._json(200, out)
 
-        # stream responses -> stream chat.completion.chunk
+        # stream responses -> chunk chat.completion
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -690,17 +820,13 @@ def start_proxy_thread(host="127.0.0.1", port=20130):
         try:
             srv = ThreadingHTTPServer((host, port), Handler)
         except OSError as e:
-            sys.stderr.write(f"[oc-v1] port {port} sudah terpakai ({e}), anggap proxy eksternal aktif\n")
+            sys.stderr.write(f"[oc-proxy] port {port} sudah terpakai ({e}), anggap proxy eksternal aktif\n")
             return None
         t = threading.Thread(target=srv.serve_forever, daemon=True, name="opencode-proxy")
         t.start()
         _SERVER_INSTANCE = srv
-        sys.stderr.write(f"[oc-v1] proxy thread started on http://{host}:{port}\n")
+        sys.stderr.write(f"[oc-proxy] proxy thread started on http://{host}:{port}\n")
         return srv
-
-
-def uuid_hex():
-    return secrets.token_hex(12)
 
 
 def main():
@@ -709,8 +835,8 @@ def main():
     ap.add_argument("--port", type=int, default=20130)
     args = ap.parse_args()
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"[oc-v1] listening on http://{args.host}:{args.port} -> {UPSTREAM}")
-    print(f"[oc-v1] endpoints: GET /health, GET /v1/models, POST /v1/chat/completions")
+    print(f"[oc-proxy] listening on http://{args.host}:{args.port} -> {CHAT_URL}")
+    print(f"[oc-proxy] endpoints: GET /health, GET /v1/models, POST /v1/chat/completions")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

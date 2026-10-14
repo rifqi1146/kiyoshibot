@@ -1,4 +1,4 @@
-"""Bot-side client untuk proxy OpenCode (`handlers/proxy/opencode_v1.py`).
+"""Bot-side client untuk proxy OpenCode (`handlers/proxy/opencode.py`).
 
 Proxy berjalan sebagai HTTP server lokal (default 127.0.0.1:20130) dengan
 endpoint OpenAI-compatible:

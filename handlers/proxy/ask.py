@@ -161,6 +161,23 @@ TOOLS = [
 
 _MAX_TOOL_ROUNDS = 2
 
+_SEARCH_TRIGGERS = (
+    "cariin", "carikan", "cari in", "coba cari", "coba search", "coba googling",
+    "googling", "search", "browsing", "browse", "cek di google", "cek google",
+    "cari di internet", "cari di web", "cari di google", "tolong cari",
+    "spek", "spesifikasi", "harga", "berita", "terbaru", "rilis", "rilisan",
+    "kapan rilis", "kapan keluar", "jadwal", "skor", "hasil pertandingan",
+    "kabar", "info terbaru", "update terbaru", "kondisi terkini", "cuaca",
+    "sekarang berapa", "kurs", "harga saham", "siapa presiden", "siapa yang",
+    "who is", "what is the latest", "current price", "release date",
+)
+
+
+def _needs_search(text: str) -> bool:
+    """True kalau prompt user terindikasi butuh data segar dari internet."""
+    low = (text or "").lower()
+    return any(t in low for t in _SEARCH_TRIGGERS)
+
 
 def _active_engine() -> str:
     """Active grounding engine: 'firecrawl' | 'jina' (runtime)."""
@@ -316,8 +333,14 @@ async def _send_chunks(bot, msg, chunks: list[str]) -> Optional[int]:
 async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[dict] | None]:
     """Build messages + tools.
 
-    Tools are active if a search backend exists (Firecrawl first, Jina
-    fallback) — without any key the model still answers normally instead of erroring.
+    Grounding dilakukan dengan pola PRE-SEARCH (bukan tool-calling native):
+    proxy free-tier OpenCode tidak bisa diandalkan untuk tool-calling gaya
+    agentic, jadi kalau prompt terindikasi butuh data segar, bot menjalankan
+    pencarian lebih dulu lalu menyuntikkan hasilnya ke system prompt sebagai
+    <web_search_results>.
+
+    `tools` tetap diisi kalau ada backend search supaya jalur agentic lama
+    (jika suatu saat tool-calling upstream kembali hidup) tetap tersedia.
     """
     sys_text = _system_instruction()
     try:
@@ -331,11 +354,29 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
     # Read at runtime (not import-by-value) so adding a key in .env + /reload
     # takes effect without a full restart.
     has_backend = bool(app_config.FIRECRAWL_API_KEY) or bool(app_config.JINA_API_KEY)
-    tools = TOOLS if has_backend else None
 
-    # URL in prompt: light hint so the model knows it can use read_page.
-    if tools and extract_urls(prompt):
-        sys_text += "\nUser menyertakan URL. PAKAI `read_page` untuk membacanya sebelum menjawab."
+    # PRE-SEARCH: jalur tool-calling agentic tidak diandalkan di free tier,
+    # jadi pencarian dikerjakan bot lalu hasilnya disuntikkan ke system prompt.
+    search_injected = False
+    if has_backend and _needs_search(prompt):
+        try:
+            results = await _web_search(prompt)
+            if results and results.strip():
+                sys_text += (
+                    "\n\n<web_search_results>\n"
+                    + results.strip()[:6000]
+                    + "\n</web_search_results>\n"
+                    "Data di atas adalah hasil pencarian internet TERBARU — pakai sebagai "
+                    "sumber utama untuk pertanyaan yang butuh data terkini. JANGAN bilang "
+                    "\"berdasarkan hasil pencarian\" atau \"aku baru googling\"; jawab langsung "
+                    "seolah kamu memang tahu. Sebutkan sumbernya singkat bila relevan."
+                )
+                search_injected = True
+        except Exception as e:
+            log.warning("Pre-search failed | err=%r", e)
+
+    # Jalur agentic lama tetap disiapkan (kalau backend mendukung tool-calling).
+    tools = TOOLS if (has_backend and not search_injected) else None
 
     messages = [{"role": "system", "content": sys_text}]
     for h in history:
