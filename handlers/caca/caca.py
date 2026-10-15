@@ -1075,8 +1075,6 @@ async def _settle_billing(user_id: int, chat_id: int, reservation_id: str | None
 
 
 async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update, context):
-        return
     _cleanup_memory()
     msg = update.message
     if not msg or not msg.from_user:
@@ -1085,6 +1083,23 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = msg.from_user.id
     chat = update.effective_chat
     em = _emo()
+
+    # Gate join channel HANYA untuk pemanggilan Caca yang sah (command `/caca`
+    # atau balasan ke pesan Caca sebelumnya). Handler ini dipasang di grup -2
+    # dengan filter caption yang luas, jadi gate TIDAK boleh berjalan sebelum
+    # kita tahu pesan ini benar-benar untuk Caca — kalau tidak, foto bercaption
+    # biasa di grup ikut memicu pesan broadcast join channel.
+    caption = (msg.caption or "").strip()
+    text = (msg.text or "").strip()
+    _is_caca_call = (
+        text.startswith("/caca")
+        or caption.startswith("/caca")
+        or bool(getattr(msg, "reply_to_message", None))
+    )
+
+    if _is_caca_call:
+        if not await require_join_or_block(update, context, silent=True):
+            return
 
     if chat and chat.type in ("group", "supergroup"):
         groups = await caca_db.load_groups()
@@ -1099,9 +1114,6 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     billed = False
     media_label = ""
     image_urls: list[str] = []
-
-    caption = (msg.caption or "").strip()
-    text = (msg.text or "").strip()
 
     try:
         # ── Teks/caption yang memicu sesi baru: "/caca ..." ───────────────────
