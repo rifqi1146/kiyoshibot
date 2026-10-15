@@ -100,40 +100,41 @@ async def gsearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def gsearch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update, context):
-        return
     q = update.callback_query
-    await q.answer()
-    if q.data == "noop":
+    if not q or not q.data:
         return
+    if q.data == "noop":
+        return await q.answer()
     parts = q.data.split(":", 2)
     if len(parts) != 3 or parts[0] != "gsearch":
         return
     _, a, b = parts
+
+    # Cek kepemilikan DULU: klik dari user lain ditolak alert tanpa
+    # mem-broadcast pesan gate join channel ke grup.
+    data = GSEARCH_CACHE.get(b if a == "close" else a)
+    if data and q.from_user.id != data.get("user"):
+        return await q.answer(
+            f"Only {data['owner_label']} can access this",
+            show_alert=True
+        )
+
+    if not await require_join_or_block(update, context):
+        return
+
+    await q.answer()
     if a == "close":
-        data = GSEARCH_CACHE.get(b)
         if not data:
             return await q.message.delete()
-        if q.from_user.id != data["user"]:
-            return await q.answer(
-                f"Only {data['owner_label']} can access this",
-                show_alert=True
-            )
         GSEARCH_CACHE.pop(b, None)
         return await q.message.delete()
     search_id = a
     page = int(b)
-    data = GSEARCH_CACHE.get(search_id)
     if not data:
         return await q.message.edit_text("Search data expired.")
     if time.time() - data["ts"] > GSEARCH_CACHE_TTL:
         GSEARCH_CACHE.pop(search_id, None)
         return await q.message.edit_text("Search expired.")
-    if q.from_user.id != data["user"]:
-        return await q.answer(
-            f"Only {data['owner_label']} can access this",
-            show_alert=True
-        )
     if page < 0:
         return
     query = data["query"]

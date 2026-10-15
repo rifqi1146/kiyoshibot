@@ -625,7 +625,9 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
             groups=load_auto_dl()
             if chat.id not in groups and not bool(settings.get("force_autodl")):
                 return
-        if not await require_join_or_block(update,context):
+        # Link yang dikirim tanpa command -> jangan broadcast gate join ke grup.
+        _silent = chat.type in ("group","supergroup")
+        if not await require_join_or_block(update,context,silent=_silent):
             return
         user_id=update.effective_user.id
         for u in batch_urls:
@@ -678,7 +680,9 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         groups=load_auto_dl()
         if chat.id not in groups and not bool(settings.get("force_autodl")):
             return
-    if not await require_join_or_block(update,context):
+    # Link yang dikirim tanpa command -> jangan broadcast gate join ke grup.
+    _silent = chat.type in ("group","supergroup")
+    if not await require_join_or_block(update,context,silent=_silent):
         return
         
     ok,reason=_premium_link_allowed(text,user_id,chat.id,chat.type)
@@ -737,14 +741,14 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
 
 async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update,context):
-        return
     q=update.callback_query
     if not q or not q.data:
         return
     _,dl_id,action=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    if not await require_join_or_block(update,context):
         return
     await q.answer()
     if not data:
@@ -1182,14 +1186,14 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     register_message_owner(msg.chat.id, sent.message_id, user_id)
 
 async def dlengine_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update,context):
-        return
     q=update.callback_query
     if not q or not q.data:
         return
     _,dl_id,_engine=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    if not await require_join_or_block(update,context):
         return
     await q.answer()
     if not data:
@@ -1206,14 +1210,14 @@ async def dlengine_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     return await _show_resolution_picker(context,q.message,dl_id,data,engine="ytdlp")
 
 async def dl_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update,context):
-        return
     q=update.callback_query
     if not q or not q.data:
         return
     _,dl_id,choice=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    if not await require_join_or_block(update,context):
         return
     await q.answer()
     if not data:
@@ -1230,14 +1234,14 @@ async def dl_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     return await _process_choice(context=context,message=q.message,dl_id=dl_id,data=data,choice=choice,user_id=q.from_user.id)
 
 async def tiktok_slideshow_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update,context):
-        return
     q=update.callback_query
     if not q or not q.data:
         return
     _,dl_id,choice=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    if not await require_join_or_block(update,context):
         return
     await q.answer()
     if not data:
@@ -1266,8 +1270,6 @@ async def tiktok_slideshow_callback(update:Update,context:ContextTypes.DEFAULT_T
     )
     
 async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update,context):
-        return
     q=update.callback_query
     if not q or not q.data:
         return
@@ -1275,12 +1277,14 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
     _,dl_id,height_raw=q.data.split(":",2)
     data=DL_CACHE.get(dl_id)
     
+    if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
+        return
+    if not await require_join_or_block(update,context):
+        return
+        
     if not data:
         await q.answer()
         return await q.edit_message_text("Request expired.")
-        
-    if not await guard_callback_owner(q, session_data=data, alert_text="This request does not belong to you."):
-        return
         
     ok,reason = _premium_link_allowed(data["url"], q.from_user.id, q.message.chat.id, q.message.chat.type)
     if not ok:

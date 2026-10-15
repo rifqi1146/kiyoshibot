@@ -33,16 +33,21 @@ def _is_nsfw_enabled(chat_id: int, chat_type: str) -> bool:
 
 
 async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    data = query.data
+
+    # Kunci kepemilikan tombol WAJIB dicek duluan sebelum gate join channel,
+    # supaya klik dari user lain langsung ditolak alert tanpa mem-broadcast pesan join ke grup.
+    if not await _ensure_callback_lock(query):
+        return
+
     if not await require_join_or_block(update, context):
         return
-    query = update.callback_query
-    data = query.data
 
     if not _is_nsfw_enabled(query.message.chat_id, query.message.chat.type):
         return await query.answer("❌ NSFW is not enabled in this group.", show_alert=True)
-
-    if not await _ensure_callback_lock(query):
-        return
 
     # nHentai gate premium
     if data.startswith(("mgnh:", "nhdetail_", "nhread_", "nhnav_", "pdfnh_")):

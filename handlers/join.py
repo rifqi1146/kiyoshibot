@@ -175,7 +175,19 @@ def join_required_keyboard():
     ])
 
 
-async def require_join_or_block(update:Update,context:ContextTypes.DEFAULT_TYPE)->bool:
+async def require_join_or_block(
+    update:Update,
+    context:ContextTypes.DEFAULT_TYPE,
+    silent:bool=False,
+)->bool:
+    """Gate keanggotaan channel support.
+
+    ``silent=True`` -> user yang belum join ditolak TANPA mengirim pesan apa pun
+    ke chat. Dipakai oleh handler PASIF (mis. klik tombol milik orang lain,
+    auto-detect link) supaya bot tidak pernah mem-broadcast pesan
+    "join support channel" ke grup hanya karena ada yang iseng menekan tombol
+    atau mengirim link tanpa command.
+    """
     if update.callback_query:
         user=update.callback_query.from_user
         reply_target=update.callback_query.message
@@ -189,14 +201,23 @@ async def require_join_or_block(update:Update,context:ContextTypes.DEFAULT_TYPE)
     joined=await is_joined_support_channel(user.id,context)
     if joined:
         return True
+    if silent:
+        log.info("[JOIN SILENT BLOCK] user_id=%s tidak join, handler pasif -> tolak diam-diam",user.id)
+        return False
     if not SUPPORT_CHANNEL_LINK:
         log.warning("SUPPORT_CHANNEL_ID is set but SUPPORT_CHANNEL_LINK is missing. Allowing access.")
         return True
     text="<b>To use the feature</b>\nyou must join the support channel first."
     try:
         if update.callback_query:
+            # Di callback query, tampilkan alert popup ke layar user yang menekan tombol.
+            # JANGAN kirim pesan baru ke grup agar tidak mengotori percakapan!
             await update.callback_query.answer("Please join the support channel first",show_alert=True)
-        await reply_target.reply_text(text,reply_markup=join_required_keyboard(),parse_mode="HTML")
+            chat_type=getattr(getattr(reply_target,"chat",None),"type","")
+            if chat_type=="private":
+                await reply_target.reply_text(text,reply_markup=join_required_keyboard(),parse_mode="HTML")
+        else:
+            await reply_target.reply_text(text,reply_markup=join_required_keyboard(),parse_mode="HTML")
     except Exception as e:
         log.warning("[JOIN BLOCK ERROR] user_id=%s err=%r",user.id,e)
     return False

@@ -139,8 +139,6 @@ async def waifu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def waifu_next_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update, context):
-        return
     q = update.callback_query
     if not q or not q.message:
         return
@@ -153,6 +151,8 @@ async def waifu_next_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.answer()
     if user.id != owner_id:
         return await q.answer("This is not yours, idiot.", show_alert=True)
+    if not await require_join_or_block(update, context):
+        return
     key = _state_key(chat_id, owner_id)
     _cleanup(key)
     tag = _WAIFU_LAST_TAG.get(key)
@@ -169,8 +169,6 @@ async def waifu_next_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
 async def waifu_pref_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update, context):
-        return
     q = update.callback_query
     if not q or not q.message:
         return
@@ -183,6 +181,8 @@ async def waifu_pref_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.answer()
     if user.id != owner_id:
         return await q.answer("This is not yours, idiot.", show_alert=True)
+    if not await require_join_or_block(update, context):
+        return
     key = _state_key(chat_id, owner_id)
     img = _pop(key)
     if not img:
