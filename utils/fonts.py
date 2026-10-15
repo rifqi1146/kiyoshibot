@@ -5,6 +5,53 @@ from utils.config import FONT_DIR
 
 log = logging.getLogger(__name__)
 
+# Poppins statis (SIL OFL 1.1) di folder fonts/ repo — font UI dashboard /stats.
+_UI_FONTS = {
+    400: ("Poppins-Regular.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
+    500: ("Poppins-Medium.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
+    600: ("Poppins-SemiBold.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf"),
+    700: ("Poppins-Bold.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf"),
+}
+
+
+def _font_bases():
+    bases = []
+    if FONT_DIR:
+        bases.append(FONT_DIR)
+    bases.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts"))
+    bases.append("./fonts")
+    return bases
+
+
+def _find_font(name):
+    for base in _font_bases():
+        path = os.path.join(base, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def get_ui_font(size, weight=400):
+    """Font UI (Poppins) dengan weight 400/500/600/700.
+
+    Fallback ke DejaVu/Liberation bila file Poppins tidak ada.
+    """
+    key = min(_UI_FONTS, key=lambda w: abs(w - weight))
+    names = _UI_FONTS[key]
+    path = _find_font(names[0])
+    if path:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            pass
+    return get_font(list(names[1:]), size)
+
+
+def get_ui_mono(size):
+    """Font angka/terminal untuk dashboard (tetap mono supaya rapi sejajar)."""
+    return get_font(["DejaVuSansMono.ttf", "LiberationMono-Regular.ttf", "FreeMono.ttf"], size)
+
+
 def get_font(font_names, size):
     """
     Robustly load a font from various locations.

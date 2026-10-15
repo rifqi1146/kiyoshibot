@@ -4,7 +4,7 @@ Kumpulan perintah utilitas, jaringan, pencarian, dan pengolahan gambar yang ters
 
 ## Jaringan & Informasi Server
 - `/ping`: Cek latensi dan respon bot ke Telegram dalam milidetik (ms).
-- `/stats`: Cek statistik sistem bot (penggunaan RAM, CPU, disk, uptime, dan versi kernel).
+
 - `/ip <ip/domain>`: Cek detail lokasi geolokasi, ASN, organisasi, dan ISP alamat IP.
 - `/net`: Informasi koneksi jaringan all-in-one dari server bot.
 - `/domain <domain>`: Cek status IP dan informasi domain.

@@ -51,7 +51,6 @@ BOT_COMMANDS=[
     ("qs","Create quote story"),
     ("quoteanime","Random anime quote"),
     ("susunkata","Play word arrangement game"),
-    ("stats","System statistics"),
     ("dl","Download video"),
     ("premiumbenefit","List premium features and commands"),
     ("manga","Read manga"),

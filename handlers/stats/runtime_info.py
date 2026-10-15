@@ -51,7 +51,14 @@ def get_ytdlp_version():
     return get_package_version("yt-dlp-ejs")
 
 def get_aria2c_version():
-    out = run_version_command(["aria2c", "--version"])
+    try:
+        from handlers.dl.proc import resolve_aria2
+        binary = resolve_aria2()
+    except Exception:
+        binary = None
+    if not binary:
+        return "N/A"
+    out = run_version_command([binary, "--version"])
     if out == "N/A":
         return "N/A"
     m = re.search(r"aria2\s+version\s+([^\s]+)", out, flags=re.I)
@@ -71,3 +78,15 @@ def get_runtime_versions():
         "psutil": get_package_version("psutil"),
         "aiofiles": get_package_version("aiofiles"),
     }
+
+_runtime_cache = {"ts": 0.0, "data": None}
+
+def get_runtime_versions_cached(ttl=300):
+    import time
+    now = time.time()
+    if _runtime_cache["data"] and now - _runtime_cache["ts"] < ttl:
+        return dict(_runtime_cache["data"])
+    data = get_runtime_versions()
+    _runtime_cache["ts"] = now
+    _runtime_cache["data"] = data
+    return dict(data)

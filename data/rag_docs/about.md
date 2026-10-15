@@ -19,5 +19,5 @@ KiyoshiBot adalah bot Telegram multifungsi buatan @HirohitoKiyoshi yang dirancan
 - `/menu`: Buka menu utama bot.
 - `/start`: Cek status aktif bot dan sapaan awal.
 - `/ping`: Cek kecepatan respon dan latensi bot dalam milidetik.
-- `/stats`: Cek statistik performa bot, penggunaan RAM/CPU, dan uptime server.
+
 - `/donate`: Info donasi sukarela untuk mendukung operasional server bot.

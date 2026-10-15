@@ -213,7 +213,6 @@ HELP_TEXT = {
         "### 🧰 Utilities\n"
         "\n"
         "- `/ping` — Check bot response time\n"
-        "- `/stats` — Bot & system statistics\n"
         "- `/ip` — IP address lookup\n"
         "- `/net` — all in one network information\n"
         "- `/domain` — Domain information\n"

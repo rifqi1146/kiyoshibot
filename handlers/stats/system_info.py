@@ -7,7 +7,7 @@ import logging
 import socket
 
 from .formatting import humanize_frequency
-from .runtime_info import get_runtime_versions
+from .runtime_info import get_runtime_versions_cached
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ def gather_system_stats():
     pyver = platform.python_version() or "N/A"
     uptime = get_pretty_uptime()
     hostname = socket.gethostname() or platform.node() or "N/A"
-    runtime = get_runtime_versions()
+    runtime = get_runtime_versions_cached()
 
     return {
         "ts": now,
@@ -207,6 +207,7 @@ def gather_system_stats():
 
 
 async def measure_network_speed():
+    """Sample RX/TX while the caller gathers the rest of the stats in parallel."""
     max_bps = (NET_BAR_MBIT * 1000 * 1000) / 8
     if not psutil:
         return {"rxps": 0.0, "txps": 0.0, "iface": "N/A", "max_bps": max_bps}
@@ -224,3 +225,11 @@ async def measure_network_speed():
         }
     except Exception:
         return {"rxps": 0.0, "txps": 0.0, "iface": "N/A", "max_bps": max_bps}
+
+
+async def gather_system_stats_async():
+    """Collect system stats concurrently (CPU sampling + everything else in parallel)."""
+    net_speed_task = asyncio.create_task(measure_network_speed())
+    stats = await asyncio.to_thread(gather_system_stats)
+    net_speed = await net_speed_task
+    return stats, net_speed

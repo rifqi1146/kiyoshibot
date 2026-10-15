@@ -10,6 +10,26 @@ def humanize_bytes(n: int) -> str:
     return f"{f:.1f}B"
 
 
+def humanize_duration(sec) -> str:
+    try:
+        sec = int(sec)
+    except Exception:
+        return "N/A"
+    days, rem = divmod(sec, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
 def humanize_frequency(mhz):
     try:
         mhz = float(mhz)
@@ -39,7 +59,7 @@ def clamp_percent(x):
     return value
 
 
-def build_fallback_text(stats):
+def build_fallback_text(stats, net_speed=None):
     cpu = stats["cpu"]
     ram = stats["ram"]
     swap = stats["swap"]
@@ -65,7 +85,20 @@ def build_fallback_text(stats):
         lines.append("SWAP: N/A")
     lines.append(f"DISK(/): {humanize_bytes(disk['used'])}/{humanize_bytes(disk['total'])} (used {disk['pct']:.1f}%)")
     lines.append(f"DISK FREE: {humanize_bytes(disk['free'])}")
-    lines.append(f"NET: RX {humanize_bytes(net['rx'])} | TX {humanize_bytes(net['tx'])}")
+    lines.append(f"HOST NET: RX {humanize_bytes(net['rx'])} | TX {humanize_bytes(net['tx'])}")
+    if isinstance(net_speed, dict):
+        lines.append(f"HOST SPEED: RX {humanize_bytes(net_speed.get('rxps', 0))}/s | TX {humanize_bytes(net_speed.get('txps', 0))}/s")
+    diag = stats.get("diagnostics", {})
+    process = diag.get("process", {})
+    lines.append("")
+    lines.append("BOT PROCESS")
+    lines.append(f"Uptime: {humanize_duration(process.get('uptime'))}")
+    lines.append(f"RSS: {humanize_bytes(process.get('rss'))}")
+    lines.append(f"CPU: {process.get('cpu', 'N/A')}% (one core = 100%)")
+    lines.append(f"Threads: {process.get('threads', 'N/A')} | FDs: {process.get('fds', 'N/A')}")
+    lines.append(f"Loop delay (on demand): {diag.get('loop_delay_ms', 0):.1f} ms")
+    lines.append(f"Telegram API: {diag.get('api_mode', 'N/A')}")
+    lines.append(f"Quote API: {diag.get('quote', 'N/A')}")
     lines.append("")
     lines.append(f"yt-dlp: {runtime['ytdlp']}")
     lines.append(f"Node: {runtime['node']}")

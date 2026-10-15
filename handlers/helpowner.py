@@ -31,6 +31,7 @@ async def helpowner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/setsearch</code> — Set web search engine/depth for /ask.\n"
         "• <code>/thinking</code> — Toggle reasoning/thinking for /ask.\n"
         "• <code>/reload</code> — Hot reload handlers, utils, database, and RAG.\n"
+        "• <code>/stats</code> — System and bot process diagnostics.\n"
         "• <code>/restart</code> — Restart the bot.\n"
         "• <code>/speedtest</code> — Run server speed test.\n"
         "• <code>/update</code> — Update system Bot.\n"
