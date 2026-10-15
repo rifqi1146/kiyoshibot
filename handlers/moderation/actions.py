@@ -661,11 +661,16 @@ async def kick_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     try:
-        until = datetime.now(timezone.utc) + timedelta(seconds=45)
+        # Kick = ban + unban instan. Tanpa `until_date` supaya ban tercatat
+        # sebagai ban biasa: Telegram mengeluarkan user seketika, lalu unban
+        # berikutnya langsung membersihkan ban list sehingga user BISA LANGSUNG
+        # join lagi lewat link invite tanpa masa tunggu.
+        # Memakai `until_date` justru membuat Telegram menahan ban sampai waktu
+        # itu habis, jadi user tidak bisa masuk kembali selama durasinya.
         await context.bot.ban_chat_member(
             chat_id=chat.id,
             user_id=int(target_id),
-            until_date=until,
+            revoke_messages=False,
         )
         await context.bot.unban_chat_member(
             chat_id=chat.id,
