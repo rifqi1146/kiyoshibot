@@ -54,6 +54,7 @@ async def helpowner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
         "<b>Caca Settings</b>\n"
         "• <code>/cacaa</code> — Enable/disable/list/status in groups.\n"
+        "• <code>/providercaca</code> — Switch Caca provider (shiteru/codebuddy).\n"
         "• <code>/freecaca</code> — Enable/disable global free Caca access.\n"
         "• <code>/addcredit</code> — Add credits to user (reply or @user/id).\n"
         "• <code>/cacaadmin</code> — View billing overview & grant credits.\n"

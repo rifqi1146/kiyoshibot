@@ -22,16 +22,24 @@ from database import caca_db
 from database import caca_billing_db
 from utils.config import OWNER_ID
 from utils import caca_memory
+from . import codebuddy
 
 logger = logging.getLogger(__name__)
 
 # Provider Caca: Shiteru (OpenAI-compatible). Model utama `deepseek-v4-flash`.
+# Dipakai sebagai FALLBACK kalau CodeBuddy tidak dikonfigurasi di `.env`.
 CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
 CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
 CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4-flash").strip()
 # Batas output token keras dari permintaan owner: jangan pernah lewat 4096.
 CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
 CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
+
+# Provider utama Caca: CodeBuddy intl (`www.codebuddy.ai`), stream-only.
+# Aktif otomatis kalau `CODEBUDDY_REFRESH_TOKEN` / `CODEBUDDY_ACCESS_TOKEN`
+# ada di `.env`; kalau tidak, Caca jatuh ke Shiteru seperti semula.
+# `reasoning_effort: "none"` dikirim supaya thinking mati (lihat codebuddy.py).
+CACA_PROVIDER = os.getenv("CACA_PROVIDER", "codebuddy").strip().lower()
 _EMOS = ["🌸", "💖", "🧸", "🎀", "🌟", "💫"]
 
 
@@ -471,6 +479,53 @@ def _caca_api_key() -> str:
     return os.getenv("SHITERU_KEY", "").strip()
 
 
+# ── Pemilihan provider Caca ──────────────────────────────────────────────────
+# Owner bisa memaksa provider lewat `/providercaca shiteru|codebuddy`. Pilihan
+# itu disimpan di `data/caca_provider.txt` supaya tahan restart, dan mengalahkan
+# default dari env. Kalau file tidak ada, pakai `CACA_PROVIDER`.
+_PROVIDER_FILE = os.path.join("data", "caca_provider.txt")
+_PROVIDER_CHOICES = ("shiteru", "codebuddy")
+
+
+def get_provider() -> str:
+    """Provider Caca yang sedang aktif: 'codebuddy' atau 'shiteru'."""
+    try:
+        if os.path.exists(_PROVIDER_FILE):
+            forced = (open(_PROVIDER_FILE, encoding="utf-8").read().strip().lower())
+            if forced in _PROVIDER_CHOICES:
+                return forced
+    except Exception as e:
+        logger.warning("Gagal baca caca_provider.txt | err=%s", e)
+    return CACA_PROVIDER if CACA_PROVIDER in _PROVIDER_CHOICES else "codebuddy"
+
+
+def set_provider(name: str) -> bool:
+    """Simpan pilihan provider. False kalau namanya tidak dikenal."""
+    name = (name or "").strip().lower()
+    if name not in _PROVIDER_CHOICES:
+        return False
+    try:
+        os.makedirs(os.path.dirname(_PROVIDER_FILE) or ".", exist_ok=True)
+        with open(_PROVIDER_FILE, "w", encoding="utf-8") as fh:
+            fh.write(name + "\n")
+        if name == "codebuddy":
+            # Buang token cache supaya switch langsung pakai kredensial segar.
+            codebuddy.reset_token_cache()
+        return True
+    except Exception as e:
+        logger.warning("Gagal simpan provider Caca | err=%s", e)
+        return False
+
+
+def _use_codebuddy() -> bool:
+    """True kalau provider aktif CodeBuddy DAN kredensialnya tersedia."""
+    return get_provider() == "codebuddy" and codebuddy.configured()
+
+
+def _codebuddy_model() -> str:
+    return os.getenv("CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip() or "deepseek-v4.1-flash"
+
+
 async def _shared_http_session():
     session = get_http_session()
     if inspect.isawaitable(session):
@@ -523,7 +578,33 @@ def _estimate_tokens(messages: list[dict]) -> int:
 
 
 async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
-    """Panggilan chat non-streaming. Mengembalikan `(content, usage)`."""
+    """Panggilan chat non-streaming. Mengembalikan `(content, usage)`.
+
+    Provider utama = CodeBuddy intl (stream-only, jadi delta dikumpulkan dulu).
+    Kalau CodeBuddy tidak dikonfigurasi, jatuh ke Shiteru seperti semula.
+    """
+    if _use_codebuddy():
+        session = await _shared_http_session()
+        try:
+            content, raw_usage = await codebuddy.chat(
+                session,
+                messages,
+                max_tokens=CACA_MAX_TOKENS,
+                temperature=0.9,
+                top_p=0.95,
+                timeout=CACA_TIMEOUT,
+            )
+            usage = _usage_from({"usage": raw_usage}) if raw_usage else _usage_from({})
+            logger.info(
+                "Caca chat success | provider=codebuddy model=%s tokens_max=%s prompt=%s completion=%s",
+                _codebuddy_model(), CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"],
+            )
+            return content, usage
+        except Exception as e:
+            logger.warning("Caca CodeBuddy gagal, fallback ke Shiteru | err=%s", e)
+            if not _caca_api_key():
+                raise
+
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
@@ -581,17 +662,45 @@ async def _caca_chat(messages: list[dict]) -> str:
 
 
 async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None):
-    """Async generator delta streaming Caca via Shiteru (SSE OpenAI format).
+    """Async generator delta streaming Caca (CodeBuddy atau Shiteru).
 
     `usage_out` (opsional) akan diisi dengan `usage` provider saat stream selesai.
-    Shiteru mengirim objek `usage` di chunk SSE, jadi kita tangkap dan simpan ke
-    dict itu. Kalau provider tidak mengirimkannya, dict dibiarkan kosong dan
-    pemanggil memakai kebijakan fallback.
+    Provider utama = CodeBuddy intl (thinking dimatikan via `reasoning_effort: 'none'`).
+    Kalau CodeBuddy tidak dikonfigurasi, jatuh ke Shiteru seperti semula.
 
     Catatan model thinking: delta memuat `reasoning_content` sebelum `content`.
     Kita HANYA me-yield `content` (jawaban akhir Caca), mengabaikan
     `reasoning_content` agar draft PM tidak kotor dengan monolog internal.
     """
+    if _use_codebuddy():
+        session = await _shared_http_session()
+        got_any = False
+        try:
+            async for piece in codebuddy.chat_stream(
+                session,
+                messages,
+                max_tokens=CACA_MAX_TOKENS,
+                temperature=0.9,
+                top_p=0.95,
+                timeout=CACA_TIMEOUT,
+                usage_out=usage_out,
+            ):
+                got_any = True
+                yield piece
+            if got_any:
+                logger.info("Caca stream success | provider=codebuddy model=%s tokens_max=%s usage=%s",
+                            _codebuddy_model(), CACA_MAX_TOKENS, usage_out or {})
+                return
+        except Exception as e:
+            if got_any:
+                # Sebagian chunk sudah ter-emit ke draft Telegram; fallback ke
+                # Shiteru akan mengulang dari awal dan bikin respon dobel.
+                logger.error("Caca CodeBuddy putus di tengah stream | err=%s", e)
+                raise
+            logger.warning("Caca CodeBuddy stream gagal, fallback ke Shiteru | err=%s", e)
+            if not _caca_api_key():
+                raise
+
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")

@@ -21,6 +21,7 @@ import asyncio
 import html
 import io
 import logging
+import os
 import re
 import secrets
 import time
@@ -438,6 +439,71 @@ async def freecaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + ("Everyone can chat with Caca without spending credits."
            if enabled else
            "Caca is back to paid credit mode. Existing credit lots are untouched."),
+        parse_mode="HTML",
+    )
+
+
+async def providercaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """`/providercaca [shiteru|codebuddy]`: owner-only command to switch Caca's provider."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or user.id not in OWNER_ID:
+        return
+
+    from handlers.caca.caca import get_provider, set_provider
+    from handlers.caca import codebuddy
+
+    args = [a.lower().strip() for a in (context.args or [])]
+    current = get_provider()
+
+    if not args or args[0] not in ("shiteru", "codebuddy", "status"):
+        cb_ready = "ready" if codebuddy.configured() else "no tokens in .env"
+        shiteru_ready = "ready" if bool(os.getenv("SHITERU_KEY")) else "no SHITERU_KEY in .env"
+        return await msg.reply_text(
+            "<b>Caca Provider Switch</b>\n\n"
+            f"<b>Active provider:</b> <code>{html.escape(current)}</code>\n\n"
+            "<b>Commands:</b>\n"
+            "<code>/providercaca codebuddy</code> \u2014 switch to CodeBuddy intl (deepseek-v4.1-flash, thinking off)\n"
+            "<code>/providercaca shiteru</code> \u2014 switch to Shiteru\n"
+            "<code>/providercaca status</code> \u2014 show current provider status\n\n"
+            f"<b>Backend readiness:</b>\n"
+            f"\u2022 CodeBuddy: <code>{cb_ready}</code>\n"
+            f"\u2022 Shiteru: <code>{shiteru_ready}</code>\n",
+            parse_mode="HTML",
+        )
+
+    if args[0] == "status":
+        cb_ready = "ready" if codebuddy.configured() else "no tokens"
+        shiteru_ready = "ready" if bool(os.getenv("SHITERU_KEY")) else "no key"
+        return await msg.reply_text(
+            f"<b>Caca active provider:</b> <code>{html.escape(current)}</code>\n"
+            f"\u2022 CodeBuddy: <code>{cb_ready}</code>\n"
+            f"\u2022 Shiteru: <code>{shiteru_ready}</code>",
+            parse_mode="HTML",
+        )
+
+    target = args[0]
+    if target == "codebuddy" and not codebuddy.configured():
+        return await msg.reply_text(
+            "<b>Cannot switch to CodeBuddy:</b> no tokens in <code>.env</code>.\n"
+            "Set <code>CODEBUDDY_REFRESH_TOKEN</code> or <code>CODEBUDDY_ACCESS_TOKEN</code> first.",
+            parse_mode="HTML",
+        )
+    if target == "shiteru" and not os.getenv("SHITERU_KEY"):
+        return await msg.reply_text(
+            "<b>Cannot switch to Shiteru:</b> <code>SHITERU_KEY</code> is not set in <code>.env</code>.",
+            parse_mode="HTML",
+        )
+
+    ok = set_provider(target)
+    if not ok:
+        return await msg.reply_text("<b>Failed to save provider choice.</b>", parse_mode="HTML")
+
+    log.info("Caca provider switched | user_id=%s provider=%s", user.id, target)
+    extra = " (thinking: disabled, stream-only)" if target == "codebuddy" else ""
+    return await msg.reply_text(
+        f"<b>Caca provider changed to:</b> <code>{html.escape(target)}</code>{extra}\n\n"
+        f"Every <code>/caca</code> call now routes through <b>{html.escape(target)}</b>.",
         parse_mode="HTML",
     )
 

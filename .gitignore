@@ -23,6 +23,8 @@ data/ig_session.json
 # Model & settings OpenCode proxy (per-device runtime state)
 data/opencode_model.json
 data/opencode_settings.json
+# Provider Caca terpilih (/providercaca — runtime state, bukan konfigurasi repo)
+data/caca_provider.txt
 downloads/
 tgdata/
 
