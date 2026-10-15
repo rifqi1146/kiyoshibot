@@ -56,6 +56,7 @@ BOT_INTENT_KEYWORDS = {
     "youtube", "twitter", "facebook", "reddit", "pinterest", "threads", "asupan",
     "ip", "domain", "whois", "speedtest", "ping", "stats",
     "kurs", "cuaca", "weather", "resi", "lacak", "translate", "trlist", "gsearch",
+    "firmware", "xiaomi", "redmi", "poco", "rom", "fastboot", "xmfirmwareupdater",
     "upscale", "nobg", "aidetect", "aitext", "waifu", "ship", "reminder", "share",
     "donate", "settings", "uploadengine", "upload", "engine", "telethon", "pyrofork", "mtproto",
     "fasttelethon", "asahotak", "susunkata",

@@ -66,6 +66,7 @@ BOT_COMMANDS=[
     ("drakorid","Browse & search Korean dramas"),
     ("moviebox","Browse, search & download from MovieBox"),
     ("anichin","Browse, search & download Donghua from Anichin"),
+    ("firmware","Download Xiaomi/Redmi/POCO firmware"),
     ("caca","Chat with Caca"),
     ("groq","Ask Groq AI"),
     ("gsearch","Google search"),

@@ -14,6 +14,7 @@ Kumpulan perintah utilitas, jaringan, pencarian, dan pengolahan gambar yang ters
 ## Alat Bantu Harian & Konversi
 - `/weather <kota>`: Cek prakiraan cuaca terkini di kota atau wilayah tertentu.
 - `/kurs`: Cek kurs mata uang asing terhadap Rupiah (USD, EUR, SGD, JPY, MYR, dll).
+- `/firmware <codename/device>`: Cari dan unduh firmware resmi Xiaomi, Redmi, dan POCO dari XM Firmware Updater (300+ perangkat, semua versi dari berbagai region Global/EEA/India/China, tombol download langsung ke CDN GitHub).
 - `/resi <no_resi>`: Lacak status paket pengiriman ekspedisi Indonesia (JNE, J&T, SiCepat, Shopee Xpress, Pos Indonesia, Anteraja, TIKI, Wahana, Ninja, Lion Parcel).
 - `/tr <kode_bahasa> <teks>`: Terjemahkan teks ke bahasa yang diinginkan (contoh: `/tr id hello` atau reply pesan dengan `/tr id`).
 - `/trlist`: Menampilkan daftar kode bahasa yang didukung penerjemah.

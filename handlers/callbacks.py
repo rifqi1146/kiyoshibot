@@ -21,6 +21,7 @@ from handlers.simontok import simontok_callback
 from handlers.drakor import drakorid_callback
 from handlers.moviebox import moviebox_callback
 from handlers.anichin import anichin_callback
+from handlers.firmware import firmware_callback
 from handlers.blacklist import blacklist_callback_gate
 from handlers.welcome import verify_method_callback
 from handlers.caca import cacabill_callback
@@ -59,6 +60,7 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(drakorid_callback, pattern=r"^dk:"))
     app.add_handler(CallbackQueryHandler(moviebox_callback, pattern=r"^mb:"))
     app.add_handler(CallbackQueryHandler(anichin_callback, pattern=r"^ac:"))
+    app.add_handler(CallbackQueryHandler(firmware_callback, pattern=r"^fw:"))
     app.add_handler(CallbackQueryHandler(verify_method_callback, pattern=r"^vmethod:"))
     app.add_handler(CallbackQueryHandler(cacabill_callback, pattern=r"^cacabill:"))
 

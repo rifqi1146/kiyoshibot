@@ -9,6 +9,7 @@ from handlers.payment.buypremium import buypremium_cmd
 from handlers.dl.router import dl_cmd, autodl_cmd
 from handlers.donate import donate_cmd
 from handlers.fasttelethon import fasttelethon_cmd
+from handlers.firmware import firmware_cmd
 from handlers.proxy.ask import (
     ask_cmd as ai_cmd,
     getmodel_cmd,
@@ -137,6 +138,7 @@ COMMAND_HANDLERS = [
     ("moviebox", moviebox_cmd, False),
     ("anichin", anichin_cmd, False),
     ("fasttelethon", fasttelethon_cmd, False),
+    ("firmware", firmware_cmd, False),
     ("freecaca", freecaca_cmd, False),
     ("getmodel", getmodel_cmd, False),
     ("getsticker", getsticker_cmd, False),

@@ -135,6 +135,7 @@ HELP_TEXT = {
         "- `/cosxplay` — Browse, search & download from CosXplay\n"
         "- `/dl` — Download videos from supported platforms\n"
         "- `/drakorid` — Browse & search Asian dramas on Drakor.id\n"
+        "- `/firmware` — Browse & download Xiaomi, Redmi, POCO firmware\n"
         "- `/gsearch` — Search on Google\n"
         "- `/getsticker` — Get sticker as PNG or WEBM file\n"
         "- `/igstalk` — Stalking Instagram account\n"
