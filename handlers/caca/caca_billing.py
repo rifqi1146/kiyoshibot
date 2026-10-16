@@ -402,66 +402,226 @@ async def freecaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _provider_keyboard(current: str):
+    from handlers.caca import codebuddy
+
+    cb_ready = codebuddy.configured()
+    sh_ready = bool(os.getenv("SHITERU_KEY"))
+
+    def label(name, ready):
+        mark = " �· active" if name == current else ""
+        if not ready:
+            mark = " (not configured)"
+        return f"{name.capitalize()}{mark}"
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label("shiteru", sh_ready), callback_data="cacaprov:set:shiteru")],
+        [InlineKeyboardButton(label("codebuddy", cb_ready), callback_data="cacaprov:set:codebuddy")],
+        [InlineKeyboardButton("Refresh Status", callback_data="cacaprov:status:0")],
+        [InlineKeyboardButton("Close", callback_data="cacaprov:close:0")],
+    ])
+
+
+async def _repair_missing_emails(codebuddy, codebuddy_store):
+    codebuddy_store.repair_labels()
+    for acc in codebuddy.account_summaries():
+        if not acc.get("email") and acc.get("has_refresh"):
+            key = acc.get("key")
+            for full in codebuddy_store.all_accounts():
+                if full.get("key") == key and full.get("refresh_token"):
+                    try:
+                        await codebuddy.bootstrap_account(full)
+                    except Exception as e:
+                        log.debug("repair email gagal | account=%s err=%r", key, e)
+                    break
+
+
+def _account_lines() -> list[str]:
+    from handlers.caca import codebuddy
+
+    accounts = codebuddy.account_summaries()
+    if not accounts:
+        return ["  <i>Belum ada akun tersimpan.</i>"]
+    now = int(time.time())
+    lines = []
+    for acc in accounts:
+        flags = []
+        refresh_exp = int(acc.get("refresh_exp") or 0)
+        access_exp = int(acc.get("access_exp") or 0)
+        if acc.get("has_refresh"):
+            flags.append("RT" if not refresh_exp or refresh_exp > now else "RT-expired")
+        if acc.get("has_access"):
+            flags.append("AT" if not access_exp or access_exp > now else "AT-expired")
+        if acc.get("disabled"):
+            flags.append("off")
+        label = html.escape(str(acc.get("label") or acc.get("key") or "unknown"))
+        suffix = f" [{', '.join(flags)}]" if flags else ""
+        lines.append(f"  {acc['index']}. <code>{label}</code>{suffix}")
+    return lines
+
+
+def _provider_status_text(current: str):
+    from handlers.caca import codebuddy
+
+    accounts = codebuddy.account_summaries()
+    active_accounts = [a for a in accounts if not a.get("disabled")]
+    cb_ready = f"{len(active_accounts)} akun" if active_accounts else "belum ada akun"
+    shiteru_ready = "ready" if bool(os.getenv("SHITERU_KEY")) else "no SHITERU_KEY in .env"
+
+    cursor = codebuddy.current_account_index()
+    active_line = ""
+    if active_accounts:
+        active_line = f"\n<b>Akun aktif berikutnya:</b> <code>{html.escape(str(active_accounts[0].get('label') or ''))}</code>"
+
+    body = (
+        "<b>Caca Provider Switch</b>\n\n"
+        f"<b>Active provider:</b> <code>{html.escape(current)}</code>\n\n"
+        "<b>CodeBuddy accounts:</b>\n"
+        + "\n".join(_account_lines())
+        + f"{active_line}\n\n"
+        "<b>Shiteru:</b> "
+        f"<code>{shiteru_ready}</code>\n\n"
+        "<i>Pick a provider below.</i>"
+    )
+    return body
+
+
 async def providercaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user or user.id not in OWNER_ID:
         return
 
-    from handlers.caca.caca import get_provider, set_provider
-    from handlers.caca import codebuddy
+    from handlers.caca.caca import get_provider
+    from handlers.caca import codebuddy, codebuddy_store
 
-    args = [a.lower().strip() for a in (context.args or [])]
+    await _repair_missing_emails(codebuddy, codebuddy_store)
+
     current = get_provider()
 
-    if not args or args[0] not in ("shiteru", "codebuddy", "status"):
-        cb_ready = "ready" if codebuddy.configured() else "no tokens in .env"
-        shiteru_ready = "ready" if bool(os.getenv("SHITERU_KEY")) else "no SHITERU_KEY in .env"
+    sent = await msg.reply_text(
+        _provider_status_text(current),
+        parse_mode="HTML",
+        reply_markup=_provider_keyboard(current),
+    )
+    register_message_owner(msg.chat_id, sent.message_id, user.id)
+    return sent
+
+
+async def cbacc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or user.id not in OWNER_ID:
+        return
+
+    from handlers.caca import codebuddy, codebuddy_store
+
+    args = list(context.args or [])
+    sub = (args[0].lower() if args else "list")
+
+    if sub in ("list", "ls"):
+        await _repair_missing_emails(codebuddy, codebuddy_store)
+        lines = _account_lines()
+        accounts = codebuddy.account_summaries()
         return await msg.reply_text(
-            "<b>Caca Provider Switch</b>\n\n"
-            f"<b>Active provider:</b> <code>{html.escape(current)}</code>\n\n"
-            "<b>Commands:</b>\n"
-            "<code>/providercaca codebuddy</code> \u2014 switch to CodeBuddy intl (deepseek-v4.1-flash, thinking off)\n"
-            "<code>/providercaca shiteru</code> \u2014 switch to Shiteru\n"
-            "<code>/providercaca status</code> \u2014 show current provider status\n\n"
-            f"<b>Backend readiness:</b>\n"
-            f"\u2022 CodeBuddy: <code>{cb_ready}</code>\n"
-            f"\u2022 Shiteru: <code>{shiteru_ready}</code>\n",
+            "<b>CodeBuddy Accounts</b>\n"
+            f"<b>Total:</b> <code>{len(accounts)}</code>\n\n"
+            + "\n".join(lines)
+            + "\n\n<code>/cbacc add &lt;refresh_token&gt; [access_token]</code>\n"
+            "<code>/cbacc del &lt;nomor|email&gt;</code>\n"
+            "<code>/cbacc toggle &lt;nomor|email&gt;</code>\n"
+            "<code>/cbacc clear</code>",
             parse_mode="HTML",
         )
 
-    if args[0] == "status":
-        cb_ready = "ready" if codebuddy.configured() else "no tokens"
-        shiteru_ready = "ready" if bool(os.getenv("SHITERU_KEY")) else "no key"
+    if sub == "add":
+        tokens = [t.strip() for t in args[1:] if t.strip()]
+        if not tokens:
+            return await msg.reply_text(
+                "<b>Format:</b>\n"
+                "<code>/cbacc add &lt;refresh_token&gt; [access_token]</code>\n\n"
+                "<i>Urutan bebas dideteksi otomatis dari isi JWT.</i>",
+                parse_mode="HTML",
+            )
+
+        refresh_token = ""
+        access_token = ""
+        for tok in tokens:
+            claims = codebuddy_store.decode_claims(tok)
+            typ = str(claims.get("typ") or "").lower()
+            if typ == "offline" and not refresh_token:
+                refresh_token = tok
+            elif typ == "bearer" and not access_token:
+                access_token = tok
+            elif not refresh_token:
+                refresh_token = tok
+            elif not access_token:
+                access_token = tok
+
+        ok, note, entry = codebuddy_store.add_account(refresh_token, access_token)
+        if not ok:
+            return await msg.reply_text(f"<b>Gagal:</b> {html.escape(note)}", parse_mode="HTML")
+
+        if not entry.get("email") and entry.get("refresh_token"):
+            try:
+                resolved = await codebuddy.bootstrap_account(entry)
+                if resolved.get("email"):
+                    entry = resolved
+            except Exception as e:
+                log.warning("CodeBuddy bootstrap email gagal | err=%r", e)
+
+        label = html.escape(str(entry.get("email") or entry.get("label") or entry.get("key") or ""))
         return await msg.reply_text(
-            f"<b>Caca active provider:</b> <code>{html.escape(current)}</code>\n"
-            f"\u2022 CodeBuddy: <code>{cb_ready}</code>\n"
-            f"\u2022 Shiteru: <code>{shiteru_ready}</code>",
+            f"<b>{html.escape(note)}</b>\n"
+            f"<b>Akun:</b> <code>{label}</code>\n"
+            f"<b>Total akun:</b> <code>{codebuddy.account_count()}</code>",
             parse_mode="HTML",
         )
 
-    target = args[0]
-    if target == "codebuddy" and not codebuddy.configured():
+    if sub in ("del", "delete", "rm"):
+        if len(args) < 2:
+            return await msg.reply_text("<b>Format:</b> <code>/cbacc del &lt;nomor|email&gt;</code>", parse_mode="HTML")
+        ok, note = codebuddy_store.remove_account(args[1])
         return await msg.reply_text(
-            "<b>Cannot switch to CodeBuddy:</b> no tokens in <code>.env</code>.\n"
-            "Set <code>CODEBUDDY_REFRESH_TOKEN</code> or <code>CODEBUDDY_ACCESS_TOKEN</code> first.",
-            parse_mode="HTML",
-        )
-    if target == "shiteru" and not os.getenv("SHITERU_KEY"):
-        return await msg.reply_text(
-            "<b>Cannot switch to Shiteru:</b> <code>SHITERU_KEY</code> is not set in <code>.env</code>.",
+            f"<b>{html.escape(note)}</b>\n<b>Total akun:</b> <code>{codebuddy.account_count()}</code>",
             parse_mode="HTML",
         )
 
-    ok = set_provider(target)
-    if not ok:
-        return await msg.reply_text("<b>Failed to save provider choice.</b>", parse_mode="HTML")
+    if sub in ("toggle", "off", "on"):
+        if len(args) < 2:
+            return await msg.reply_text("<b>Format:</b> <code>/cbacc toggle &lt;nomor|email&gt;</code>", parse_mode="HTML")
+        label = args[1]
+        current_disabled = False
+        for acc in codebuddy.account_summaries():
+            if label.isdigit() and int(label) == acc["index"]:
+                current_disabled = acc.get("disabled", False)
+                break
+            if label.lower() in str(acc.get("label") or "").lower() or label.lower() in str(acc.get("key") or "").lower():
+                current_disabled = acc.get("disabled", False)
+                break
+        ok, note = codebuddy_store.set_disabled(label, not current_disabled)
+        state = "OFF" if not current_disabled else "ON"
+        return await msg.reply_text(
+            f"<b>Akun {state}:</b> <code>{html.escape(str(note))}</code>" if ok
+            else f"<b>Gagal:</b> {html.escape(note)}",
+            parse_mode="HTML",
+        )
 
-    log.info("Caca provider switched | user_id=%s provider=%s", user.id, target)
-    extra = " (thinking: disabled, stream-only)" if target == "codebuddy" else ""
+    if sub == "clear":
+        count = codebuddy_store.clear_accounts()
+        return await msg.reply_text(
+            f"<b>Semua akun dihapus.</b> Total: <code>{count}</code>\n"
+            "<i>Akun dari .env tetap dipakai kalau ada.</i>",
+            parse_mode="HTML",
+        )
+
     return await msg.reply_text(
-        f"<b>Caca provider changed to:</b> <code>{html.escape(target)}</code>{extra}\n\n"
-        f"Every <code>/caca</code> call now routes through <b>{html.escape(target)}</b>.",
+        "<b>CodeBuddy Account Manager</b>\n\n"
+        "<code>/cbacc list</code> — lihat daftar akun\n"
+        "<code>/cbacc add &lt;refresh_token&gt; [access_token]</code> — tambah akun\n"
+        "<code>/cbacc del &lt;nomor|email&gt;</code> — hapus akun\n"
+        "<code>/cbacc toggle &lt;nomor|email&gt;</code> — aktif/nonaktif\n"
+        "<code>/cbacc clear</code> — hapus semua",
         parse_mode="HTML",
     )
 
@@ -1169,5 +1329,74 @@ async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             return await q.answer(f"Status: PENDING. Time left {rem_m:02d}:{rem_s:02d}.", show_alert=False)
+
+    return await q.answer()
+
+
+async def cacaprov_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    user = update.effective_user
+    if not user or user.id not in OWNER_ID:
+        return await q.answer("Owner only.", show_alert=True)
+
+    from handlers.caca.caca import get_provider, set_provider
+    from handlers.caca import codebuddy
+
+    parts = q.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == "close":
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        return await q.answer()
+
+    if action == "status":
+        current = get_provider()
+        await q.answer("Status refreshed.")
+        try:
+            await q.edit_message_text(
+                _provider_status_text(current),
+                parse_mode="HTML",
+                reply_markup=_provider_keyboard(current),
+            )
+        except Exception:
+            pass
+        return
+
+    if action == "set":
+        target = parts[2] if len(parts) > 2 else ""
+        if target not in ("shiteru", "codebuddy"):
+            return await q.answer("Invalid provider.", show_alert=True)
+
+        if target == "codebuddy" and not codebuddy.configured():
+            return await q.answer(
+                "Cannot switch: no tokens in .env (set CODEBUDDY_REFRESH_TOKEN).",
+                show_alert=True,
+            )
+        if target == "shiteru" and not os.getenv("SHITERU_KEY"):
+            return await q.answer(
+                "Cannot switch: SHITERU_KEY is missing in .env.",
+                show_alert=True,
+            )
+
+        ok = set_provider(target)
+        if not ok:
+            return await q.answer("Failed to save provider choice.", show_alert=True)
+
+        log.info("Caca provider switched via inline | user_id=%s provider=%s", user.id, target)
+        await q.answer(f"Switched to {target.capitalize()}!", show_alert=True)
+        try:
+            await q.edit_message_text(
+                _provider_status_text(target),
+                parse_mode="HTML",
+                reply_markup=_provider_keyboard(target),
+            )
+        except Exception:
+            pass
+        return
 
     return await q.answer()

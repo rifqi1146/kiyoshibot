@@ -19,6 +19,8 @@ data/cookies.txt
 data/upload_engine.json
 data/tikwm_cf.json
 data/drakorid_session.json
+data/codebuddy_accounts.json
+data/caca_provider.txt
 data/ig_session.json
 # Model & settings OpenCode proxy (per-device runtime state)
 data/opencode_model.json

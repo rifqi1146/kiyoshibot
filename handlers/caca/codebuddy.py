@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +9,8 @@ from typing import Any, Iterable
 
 import aiohttp
 
+from . import codebuddy_store as store
+
 logger = logging.getLogger(__name__)
 
 CHAT_URL = os.getenv(
@@ -19,7 +20,6 @@ REFRESH_URL = os.getenv(
     "CODEBUDDY_REFRESH_URL", "https://www.codebuddy.ai/v2/plugin/auth/token/refresh"
 ).strip()
 DEFAULT_MODEL = os.getenv("CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip()
-DEFAULT_SYSTEM_PROMPT = "You are CodeBuddy Code."
 
 REFRESH_HEADERS = {
     "Content-Type": "application/json",
@@ -52,28 +52,39 @@ def _env(name: str) -> str:
 
 
 def configured() -> bool:
-    return bool(_env("CODEBUDDY_REFRESH_TOKEN") or _env("CODEBUDDY_ACCESS_TOKEN"))
+    return len(store.all_accounts()) > 0
+
+
+def account_count() -> int:
+    return len(store.all_accounts())
+
+
+def account_summaries() -> list[dict]:
+    return store.summary()
+
+
+def current_account_index() -> int:
+    accounts = store.all_accounts()
+    if not accounts:
+        return 0
+    return store.peek_cursor() % len(accounts)
 
 
 def _model() -> str:
     return _env("CODEBUDDY_MODEL") or DEFAULT_MODEL
 
 
-def reset_token_cache() -> None:
-    _TOKEN_CACHE["access_token"] = None
-    _TOKEN_CACHE["expires_at"] = 0.0
-    _TOKEN_CACHE["refresh_token"] = None
-
-
 _TOKEN_LOCK = asyncio.Lock()
-_TOKEN_CACHE: dict[str, Any] = {"access_token": None, "expires_at": 0.0, "refresh_token": None}
+_CACHE: dict[str, dict[str, Any]] = {}
 
 
-def _seed_refresh_token() -> str:
-    return _TOKEN_CACHE.get("refresh_token") or _env("CODEBUDDY_REFRESH_TOKEN")
+def reset_token_cache() -> None:
+    _CACHE.clear()
 
 
-async def _refresh_access_token(session: aiohttp.ClientSession, refresh_token: str, timeout: int) -> dict:
+async def _refresh_access_token(
+    session: aiohttp.ClientSession, refresh_token: str, timeout: int
+) -> dict:
     headers = dict(REFRESH_HEADERS)
     headers["X-Refresh-Token"] = refresh_token
     async with session.post(
@@ -102,26 +113,38 @@ async def _refresh_access_token(session: aiohttp.ClientSession, refresh_token: s
     }
 
 
-async def _bearer_token(session: aiohttp.ClientSession, timeout: int) -> str:
-    static = _env("CODEBUDDY_ACCESS_TOKEN")
-    refresh = _seed_refresh_token()
+async def _bearer_token_for(
+    session: aiohttp.ClientSession, account: dict, timeout: int
+) -> str:
+    key = str(account.get("key") or "")
+    static = str(account.get("access_token") or "")
+    refresh = str(account.get("refresh_token") or "")
 
     if refresh:
         async with _TOKEN_LOCK:
             now = time.time()
-            cached = _TOKEN_CACHE.get("access_token")
-            if cached and now < (_TOKEN_CACHE.get("expires_at") or 0) - 60:
-                return cached
+            cached = _CACHE.get(key) or {}
+            token = cached.get("access_token")
+            exp = float(cached.get("expires_at") or 0)
+            if token and now < exp - 60:
+                return token
+
             tokens = await _refresh_access_token(session, refresh, timeout)
-            _TOKEN_CACHE["access_token"] = tokens["access_token"]
-            _TOKEN_CACHE["refresh_token"] = tokens["refresh_token"]
-            _TOKEN_CACHE["expires_at"] = now + float(tokens["expires_in"])
-            logger.info("CodeBuddy token di-refresh | expires_in=%s", tokens["expires_in"])
-            return tokens["access_token"]
+            new_at = tokens["access_token"]
+            new_rt = tokens["refresh_token"]
+            exp_at = now + float(tokens["expires_in"])
+            _CACHE[key] = {
+                "access_token": new_at,
+                "refresh_token": new_rt,
+                "expires_at": exp_at,
+            }
+            store.update_tokens(key, refresh_token=new_rt, access_token=new_at)
+            logger.info("CodeBuddy token di-refresh | account=%s", account.get("label"))
+            return new_at
 
     if static:
         return static
-    raise CodeBuddyError("tidak ada CODEBUDDY_REFRESH_TOKEN / CODEBUDDY_ACCESS_TOKEN di environment")
+    raise CodeBuddyError(f"akun {account.get('label')} tidak memiliki token")
 
 
 def _normalise_messages(messages: list[dict]) -> list[dict]:
@@ -131,7 +154,7 @@ def _normalise_messages(messages: list[dict]) -> list[dict]:
     )
     out: list[dict] = []
     if not has_system:
-        out.append({"role": "system", "content": DEFAULT_SYSTEM_PROMPT})
+        out.append({"role": "system", "content": " "})
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -161,52 +184,89 @@ def _build_body(messages: list[dict], max_tokens: int, temperature: float, top_p
     return body
 
 
-async def _iter_sse(
+def _candidate_accounts() -> list[dict]:
+    accounts = store.all_accounts()
+    if not accounts:
+        raise CodeBuddyError("Belum ada akun CodeBuddy tersimpan. Tambah via /cbacc add.")
+    start = store.peek_cursor() % len(accounts)
+    return accounts[start:] + accounts[:start]
+
+
+async def bootstrap_account(account: dict) -> dict:
+    key = str(account.get("key") or "")
+    refresh = str(account.get("refresh_token") or "")
+    if not refresh:
+        return account
+
+    timeout = 30
+    async with aiohttp.ClientSession() as session:
+        tokens = await _refresh_access_token(session, refresh, timeout)
+
+    new_at = tokens["access_token"]
+    new_rt = tokens["refresh_token"]
+    store.update_tokens(key, refresh_token=new_rt, access_token=new_at)
+    for acc in store.all_accounts():
+        if acc.get("key") == key:
+            return acc
+    return account
+
+
+async def _iter_sse_account(
     session: aiohttp.ClientSession,
+    account: dict,
     body: dict,
     timeout: int,
     usage_out: dict | None = None,
-) -> Iterable[str]:
-    token = await _bearer_token(session, timeout)
+) -> tuple[Iterable[str], dict]:
+    token = await _bearer_token_for(session, account, timeout)
     headers = dict(CHAT_HEADERS)
     headers["Authorization"] = f"Bearer {token}"
 
-    async with session.post(
+    r = await session.post(
         CHAT_URL,
         headers=headers,
         json=body,
         timeout=aiohttp.ClientTimeout(total=timeout),
-    ) as r:
-        if r.status != 200:
-            raw = await r.text()
-            raise CodeBuddyError(f"chat HTTP {r.status}: {raw[:400]}")
+    )
+    if r.status != 200:
+        raw = await r.text()
+        r.close()
+        raise CodeBuddyError(
+            f"chat HTTP {r.status} (account={account.get('label')}): {raw[:300]}"
+        )
 
-        buffer = b""
-        async for chunk in r.content.iter_any():
-            buffer += chunk
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                line = line.strip()
-                if not line.startswith(b"data:"):
-                    continue
-                payload = line[5:].strip()
-                if not payload or payload == b"[DONE]":
-                    continue
-                try:
-                    obj = json.loads(payload.decode("utf-8"))
-                except Exception:
-                    continue
+    async def _gen():
+        try:
+            buffer = b""
+            async for chunk in r.content.iter_any():
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload or payload == b"[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(payload.decode("utf-8"))
+                    except Exception:
+                        continue
 
-                if usage_out is not None and obj.get("usage"):
-                    usage_out.update(obj["usage"])
+                    if usage_out is not None and obj.get("usage"):
+                        usage_out.update(obj["usage"])
 
-                choices = obj.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                piece = delta.get("content")
-                if piece:
-                    yield piece
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    piece = delta.get("content")
+                    if piece:
+                        yield piece
+        finally:
+            r.close()
+
+    return _gen(), account
 
 
 async def chat_stream(
@@ -217,10 +277,41 @@ async def chat_stream(
     top_p: float = 0.95,
     timeout: int = 60,
     usage_out: dict | None = None,
+    meta_out: dict | None = None,
 ):
     body = _build_body(messages, max_tokens, temperature, top_p)
-    async for piece in _iter_sse(session, body, timeout, usage_out):
-        yield piece
+    accounts = _candidate_accounts()
+    last_err: Exception | None = None
+
+    for idx, acc in enumerate(accounts):
+        emitted = False
+        try:
+            generator, used_acc = await _iter_sse_account(
+                session, acc, body, timeout, usage_out
+            )
+            async for piece in generator:
+                emitted = True
+                yield piece
+            store.rotate_cursor(len(accounts))
+            if meta_out is not None:
+                meta_out["account"] = acc.get("label") or acc.get("email") or acc.get("key") or "unknown"
+                meta_out["account_key"] = acc.get("key") or ""
+                meta_out["attempts"] = idx + 1
+            return
+        except Exception as e:
+            last_err = e
+            if emitted:
+                logger.warning(
+                    "CodeBuddy stream putus setelah output | account=%s error=%r",
+                    acc.get("label"), e,
+                )
+                raise
+            logger.warning(
+                "CodeBuddy akun gagal | account=%s error=%r (mencoba akun berikutnya: %d/%d)",
+                acc.get("label"), e, idx + 1, len(accounts)
+            )
+
+    raise CodeBuddyError(f"Semua akun CodeBuddy ({len(accounts)}) gagal. Terakhir: {last_err}")
 
 
 async def chat(
@@ -230,11 +321,12 @@ async def chat(
     temperature: float = 0.9,
     top_p: float = 0.95,
     timeout: int = 60,
+    meta_out: dict | None = None,
 ) -> tuple[str, dict]:
     usage: dict = {}
     parts: list[str] = []
     async for piece in chat_stream(
-        session, messages, max_tokens, temperature, top_p, timeout, usage
+        session, messages, max_tokens, temperature, top_p, timeout, usage, meta_out=meta_out
     ):
         parts.append(piece)
     text = "".join(parts)

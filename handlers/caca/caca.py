@@ -493,6 +493,7 @@ def _estimate_tokens(messages: list[dict]) -> int:
 async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
     if _use_codebuddy():
         session = await _shared_http_session()
+        cb_meta: dict = {}
         try:
             content, raw_usage = await codebuddy.chat(
                 session,
@@ -501,11 +502,13 @@ async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
                 temperature=0.9,
                 top_p=0.95,
                 timeout=CACA_TIMEOUT,
+                meta_out=cb_meta,
             )
             usage = _usage_from({"usage": raw_usage}) if raw_usage else _usage_from({})
             logger.info(
-                "Caca chat success | provider=codebuddy model=%s tokens_max=%s prompt=%s completion=%s",
-                _codebuddy_model(), CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"],
+                "Caca chat success | provider=codebuddy account=%s model=%s tokens_max=%s prompt=%s completion=%s",
+                cb_meta.get("account", "unknown"), _codebuddy_model(), CACA_MAX_TOKENS,
+                usage["prompt_tokens"], usage["completion_tokens"],
             )
             return content, usage
         except Exception as e:
@@ -571,6 +574,7 @@ async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None)
     if _use_codebuddy():
         session = await _shared_http_session()
         got_any = False
+        cb_meta: dict = {}
         try:
             async for piece in codebuddy.chat_stream(
                 session,
@@ -580,12 +584,15 @@ async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None)
                 top_p=0.95,
                 timeout=CACA_TIMEOUT,
                 usage_out=usage_out,
+                meta_out=cb_meta,
             ):
                 got_any = True
                 yield piece
             if got_any:
-                logger.info("Caca stream success | provider=codebuddy model=%s tokens_max=%s usage=%s",
-                            _codebuddy_model(), CACA_MAX_TOKENS, usage_out or {})
+                logger.info(
+                    "Caca stream success | provider=codebuddy account=%s model=%s tokens_max=%s usage=%s",
+                    cb_meta.get("account", "unknown"), _codebuddy_model(), CACA_MAX_TOKENS, usage_out or {},
+                )
                 return
         except Exception as e:
             if got_any:
