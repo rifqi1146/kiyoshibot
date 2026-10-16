@@ -1,45 +1,3 @@
-"""Scraper Heavy-R (heavy-r.com)
-
-FLOW SCRAPER
-------------
-1. Terima URL Heavy-R -> `scrape_post(url)`.
-   URL yang didukung: post `heavy-r.com/video/<id>/<slug>` dan embed
-   `embed.heavy-r.com/embed[small]/<id>/...`. ID diekstrak dari keduanya.
-2. Ambil halaman post (curl_cffi impersonate Chrome) HANYA jika URL input
-   adalah halaman post. Baca:
-   - Judul: `og:title` -> `<h1 class="video-title">` -> `<title>`.
-   - Thumbnail: `og:image`.
-   - Sumber: `<video id="video-file">` -> `<source src>`:
-       * `.mp4` langsung (host `a-cdn`/`b-cdn.heavy-r.com`, Referer wajib).
-       * `.m3u8` (HLS) di `nl.object-storage.io/hr-vids|hr2-vids/hls/...`.
-3. Kalau post 404 / bukan halaman video / source HLS -> resolve via halaman
-   embed `https://embed.heavy-r.com/embed/<id>/` (selalu menyajikan MP4).
-   **WAJIB validasi**: anchor `flow-title` harus menunjuk `/video/<id>/`
-   dengan ID yang sama. ID yang sudah mati TIDAK 404 — embed merender video
-   random lain (HTTP 200). Mismatch -> tolak (FileNotFoundError).
-4. Kalau embed tak tersedia tapi post punya playlist HLS -> unduh file
-   `.m4s` langsung: `EXT-X-MAP URI` -> `urljoin` (init + semua segmen =
-   SATU file ISO BMFF utuh). `#EXT-X-KEY` di playlist = tolak (tidak ada
-   jalur dekripsi di sini). Master playlist (`#EXT-X-STREAM-INF`) -> ikuti
-   varian pertama.
-5. Ukuran: MP4 -> `Range: bytes=0-0` + `Content-Range` (HEAD di a-cdn
-   kadang kosong) -> fallback HEAD. HLS -> jumlah `#EXT-X-BYTERANGE`
-   terakhir (offset + length = ukuran file penuh).
-6. Return dict `{title, duration, thumbnail, width, height, download_url,
-   referer, filesize, source_type}`.
-
-FLOW DOWNLOADER
----------------
-1. `download_video(url, out_path, ...)` -> `scrape_post` dapat `download_url`.
-2. aria2c paralel (`HEAVYR_ARIA2_CONNS=16`) dengan header Referer; aria2c
-   mengikuti redirect CDN otomatis. Fallback: streaming `curl_cffi`
-   chunk 512KB (Referer ikut dikirim).
-3. `TransferStats` untuk progress bar Telegram + speed/ETA + batas
-   `MAX_TG_SIZE` (dicek dari Content-Length sebelum & saat streaming).
-4. Return dict `{"path", "title"}`; pemanggil (`main.py`) menangani mp3.
-   Tidak ada `remux_done` — file MP4 dari CDN punya `moov` di akhir,
-   pipeline standar (`prepare_download_result_for_send`) me-remux faststart.
-"""
 import asyncio
 import logging
 import os
@@ -127,7 +85,6 @@ def _parse_post_metadata(body: str) -> dict:
 
 
 def _fetch_post_page(url: str, session: curl_requests.Session) -> dict | None:
-    """Halaman post -> {title, thumbnail, source}. None jika bukan halaman video."""
     try:
         resp = session.get(url, timeout=HTTP_TIMEOUT)
     except Exception as e:
@@ -136,8 +93,6 @@ def _fetch_post_page(url: str, session: curl_requests.Session) -> dict | None:
     if resp.status_code != 200:
         return None
     body = resp.text
-    # Halaman listing / video dihapus memuat judul acak tapi TANPA player
-    # `id="video-file"` — jangan tertipu.
     if 'id="video-file"' not in body:
         return None
     source = _extract_source(body)
@@ -152,13 +107,6 @@ def _fetch_post_page(url: str, session: curl_requests.Session) -> dict | None:
 
 
 def _fetch_embed_page(vid: str, session: curl_requests.Session) -> dict | None:
-    """Halaman embed -> {title, poster, source}. None jika ID mati / rusak.
-
-    Penting: `embed.heavy-r.com/embed/<id>` untuk ID yang sudah dihapus
-    membalas HTTP 200 dengan video RANDOM lain (bukan error). Satu-satunya
-    penanda jujur adalah anchor `flow-title` yang harus menunjuk
-    `/video/<id>/` dengan ID yang sama dengan yang diminta.
-    """
     url = "%s/embed/%s/" % (HEAVYR_EMBED_ORIGIN, vid)
     try:
         resp = session.get(url, timeout=HTTP_TIMEOUT)
@@ -199,13 +147,6 @@ def _fetch_embed_page(vid: str, session: curl_requests.Session) -> dict | None:
 
 
 def _resolve_hls(playlist_url: str, session: curl_requests.Session) -> tuple[str, int, int]:
-    """Playlist HLS -> (url_m4s, size, duration).
-
-    Playlist heavy-r adalah media playlist VOD tanpa `#EXT-X-STREAM-INF`
-    dan tanpa `#EXT-X-KEY`. Seluruh segmen menunjuk file `.m4s` yang sama
-    (via `#EXT-X-MAP` + `#EXT-X-BYTERANGE`) — mengunduh file itu utuh
-    menghasilkan MP4 fMP4 yang valid.
-    """
     resp = session.get(playlist_url, timeout=HTTP_TIMEOUT)
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code} dari playlist HLS Heavy-R")
@@ -216,8 +157,6 @@ def _resolve_hls(playlist_url: str, session: curl_requests.Session) -> tuple[str
             "Heavy-R HLS playlist is encrypted (#EXT-X-KEY) — this path is not supported yet"
         )
 
-    # Master playlist -> ikuti varian pertama (belum teramati di produksi,
-    # tetap dijaga agar tidak diam-diam mengunduh playlist yang salah).
     if _STREAM_INF_RE.search(text):
         lines = [
             ln.strip() for ln in text.splitlines()
@@ -245,7 +184,6 @@ def _probe_size(
     referer: str,
     session: curl_requests.Session,
 ) -> int:
-    """Ukuran file: Range probe dulu (HEAD di a-cdn kadang kosong), lalu HEAD."""
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer
@@ -282,7 +220,6 @@ def _probe_size(
 
 
 def scrape_post(url: str) -> dict:
-    """Scrape metadata + download URL dari post heavy-r.com / embed URL."""
     vid = _extract_video_id(url)
     if not vid:
         raise RuntimeError(f"Not a valid Heavy-R video URL: {url}")
@@ -300,7 +237,6 @@ def scrape_post(url: str) -> dict:
     filesize = 0
     hls_playlist = ""
 
-    # 1. Halaman post (metadata + source). URL embed -> lewati, langsung ke embed.
     if _looks_like_post_page(url):
         post = _fetch_post_page(url, session)
         if post:
@@ -317,7 +253,6 @@ def scrape_post(url: str) -> dict:
         else:
             log.debug("HeavyR post bukan halaman video | url=%s", url)
 
-    # 2. Embed (divalidasi). Dipakai bila post tidak memberi MP4 langsung.
     if source_type != "mp4":
         emb = _fetch_embed_page(vid, session)
         if emb:
@@ -328,7 +263,6 @@ def scrape_post(url: str) -> dict:
                 thumbnail = emb["poster"]
             log.info("HeavyR resolve via embed MP4 | vid=%s", vid)
 
-    # 3. Fallback terakhir: file .m4s dari playlist HLS post.
     if source_type != "mp4" and hls_playlist:
         m4s_url, filesize, duration = _resolve_hls(hls_playlist, session)
         source, source_type = m4s_url, "hls_m4s"
@@ -340,7 +274,6 @@ def scrape_post(url: str) -> dict:
             f"Heavy-R: video {vid} not found or unsupported host"
         )
 
-    # 4. Ukuran (HLS sudah dihitung dari playlist).
     if source_type == "mp4":
         filesize = _probe_size(source, referer, session)
 
@@ -370,7 +303,6 @@ async def _download_aria2c(
     title: str,
     notify: bool,
 ) -> bool:
-    """Download paralel multi-koneksi via aria2c."""
     from handlers.dl.aria2 import _resolve_aria2
     aria2 = _resolve_aria2()
     if not aria2:
@@ -481,7 +413,6 @@ async def download_video(
             f"File exceeds 2GB limit ({total / 1024 ** 3:.2f} GB). Download canceled."
         )
 
-    # 1. aria2c paralel
     try:
         ok = await _download_aria2c(
             dl_url=dl_url,
@@ -501,7 +432,6 @@ async def download_video(
     except Exception as e:
         log.warning("HeavyR aria2c exception, fallback ke streaming | err=%r", e)
 
-    # 2. Fallback: streaming langsung via curl_cffi
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer

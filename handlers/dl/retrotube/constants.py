@@ -33,7 +33,6 @@ RETROTUBE_DOMAINS = (
     "bokeptod.pro",
     "bokepud.in",
     "growbokep.co",
-    # Domain baru
     "videobokep.vip",
     "bokepindonesia.me",
     "viralbocil.lol",
@@ -46,9 +45,8 @@ def _host_match(host: str, domain: str) -> bool:
         return False
     if host.startswith("www."):
         host = host[4:]
-    # Wildcard TLD: "lendirqu.*" cocok untuk lendirqu.pics, lendirqu.hair, dst.
     if domain.endswith(".*"):
-        base = domain[:-1]  # "lendirqu."
+        base = domain[:-1]
         return host.startswith(base) and "." not in host[len(base):]
     return host == domain or host.endswith("." + domain)
 
@@ -58,7 +56,6 @@ def is_retrotube_domain(host: str) -> bool:
 
 
 def mirror_domains_for(host: str) -> tuple:
-    """Kembalikan daftar domain dalam grup mirror yang sama (termasuk domain asal)."""
     host = (host or "").lower().split(":", 1)[0]
     if host.startswith("www."):
         host = host[4:]
@@ -68,7 +65,6 @@ def mirror_domains_for(host: str) -> tuple:
     return ()
 
 
-# Host yang embed-nya didukung khusus. Diprioritaskan.
 _PREFERRED_HOSTS = (
     "lulust.com",
     "lulustream.com",
@@ -94,10 +90,8 @@ _PREFERRED_HOSTS = (
     "nontonvideo.xyz",
 )
 
-# Host/file yang jelas-jelas bukan video asli (decoy), di-skip.
 _DECOY_HOSTS = ("test-videos.co.uk",)
 
-# Grup domain mirror: situs yang sama di beberapa domain (isi post & path identik)
 _MIRROR_GROUPS = (
     ("lendirqu.*",),
     ("bokepcrot.*",),
@@ -129,4 +123,4 @@ _FFMPEG_TIMEOUT = int(os.getenv("RETROTUBE_FFMPEG_TIMEOUT", "300"))
 
 _FAST_INTERVAL = float(os.getenv("RETROTUBE_FAST_INTERVAL", "5"))
 _SLOW_INTERVAL = float(os.getenv("RETROTUBE_SLOW_INTERVAL", "10"))
-_FAST_SPEED_BPS = float(os.getenv("RETROTUBE_FAST_SPEED_BPS", "1000000"))  # 1 MB/s
+_FAST_SPEED_BPS = float(os.getenv("RETROTUBE_FAST_SPEED_BPS", "1000000"))

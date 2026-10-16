@@ -1,12 +1,3 @@
-"""Command handler explorer RetroTube: `/becekku` (`bq:`) dan `/lendirqu` (`lq:`).
-
-FLOW COMMAND
-------------
-1. Gate premium + NSFW via `_premium_link_allowed(site["gate_url"], ...)`.
-2. Tanpa argumen -> menu Explorer (Rich Message).
-3. Dengan argumen -> search `/?s=<q>` (maks `MAX_RESULTS`), tampil sebagai
-   listing Rich Message + tombol angka (pola sama dengan search command lain).
-"""
 import asyncio
 import html
 import logging

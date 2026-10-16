@@ -1,24 +1,13 @@
-"""State in-memory untuk manga reader: cache data reader + lock kepemilikan tombol.
-
-- `_MANGA_CACHE` : cache per-user ber-TTL + ber-cap (pengganti `context.user_data`).
-  Key = `(user_id, suffix)`.
-- `_MANGA_MESSAGE_LOCKS` / `_MANGA_LOCK_TIMES` : pemetaan pesan -> user yang
-  memiliki tombolnya (fail-closed: tombol milik orang lain ditolak).
-"""
 import time
 
 from .constants import _MANGA_CACHE_TTL, _MANGA_CACHE_MAX
 
-# (user_id, suffix) -> (timestamp, value)
 _MANGA_CACHE: dict[tuple[int, str], tuple[float, object]] = {}
 
 _MANGA_MESSAGE_LOCKS = {}
 _MANGA_LOCK_TIMES = {}
 
 
-# ---------------------------------------------------------------------------
-# Cache per-user
-# ---------------------------------------------------------------------------
 def _udata_key(context, suffix: str):
     uid = getattr(getattr(context, "effective_user", None), "id", None)
     if uid is None:
@@ -58,9 +47,6 @@ def _udata_has(context, suffix: str) -> bool:
     return _udata_get(context, suffix) is not None
 
 
-# ---------------------------------------------------------------------------
-# Lock kepemilikan tombol per pesan
-# ---------------------------------------------------------------------------
 def _message_lock_key(chat_id: int, message_id: int):
     return (int(chat_id), int(message_id))
 
@@ -102,22 +88,16 @@ def _move_message_lock(old_chat_id: int, old_message_id: int, new_chat_id: int, 
         _MANGA_LOCK_TIMES[new_key] = time.time()
 
 
-# ---------------------------------------------------------------------------
-# Reply target per pesan (pesan reader/PDF membalas ke pesan command user)
-# ---------------------------------------------------------------------------
-# (chat_id, message_id) -> message_id pesan asal (command user) yang harus dibalas.
 _MANGA_REPLY_TARGETS: dict[tuple[int, int], int] = {}
 
 
 def set_reply_target(chat_id: int, message_id: int, reply_to_message_id: int | None):
-    """Daftarkan `reply_to_message_id` sebagai target balasan untuk pesan ini."""
     if chat_id is None or message_id is None or reply_to_message_id is None:
         return
     _MANGA_REPLY_TARGETS[(int(chat_id), int(message_id))] = int(reply_to_message_id)
 
 
 def get_reply_target(chat_id: int, message_id: int):
-    """Ambil target balasan untuk pesan ini (None kalau tidak ada)."""
     if chat_id is None or message_id is None:
         return None
     return _MANGA_REPLY_TARGETS.get((int(chat_id), int(message_id)))
@@ -130,7 +110,6 @@ def clear_reply_target(chat_id: int, message_id: int):
 
 
 def _extract_reply_to(msg) -> int | None:
-    """Ambil message_id pesan yang dibalas oleh `msg` (bila ada)."""
     rtm = getattr(msg, "reply_to_message", None)
     if rtm is None:
         return None

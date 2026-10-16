@@ -1,21 +1,3 @@
-"""Shared progress tracking, Telegram rendering, and terminal logging.
-
-Every downloader/uploader uses this module so the terminal logs and the
-Telegram status message look identical across all platforms.
-
-Terminal progress line:
-    <Kind> progress | title=<label> <pct>% <downloaded>/<total> speed=<speed> avg_speed=<avg> eta=<eta>
-Terminal completion line:
-    <Kind> done | title=<label> size=<size> elapsed=<elapsed>s avg_speed=<avg>
-
-Telegram status text:
-    <b>{title}</b>
-
-    <code>[■■■■□□□□□□] 42.7%</code>
-    <code>12.5 MB/29.0 MB</code>
-    <code>Speed: 3.2 MB/s</code>
-    <code>ETA: 8s</code>
-"""
 import html
 import time
 import asyncio
@@ -29,12 +11,9 @@ from .utils import progress_bar, format_size, format_speed, format_eta
 
 log = logging.getLogger(__name__)
 
-# Shared cadence for every downloader/uploader. Environment overrides remain available.
 PROGRESS_EDIT_INTERVAL = float(os.getenv("DL_PROGRESS_EDIT_INTERVAL", "5.0"))
 PROGRESS_LOG_INTERVAL = float(os.getenv("DL_PROGRESS_LOG_INTERVAL", "2.5"))
 
-# Jendela pengukuran kecepatan TransferStats (detik). Lihat komentar di
-# `TransferStats.sample` — sampling antar-chunk salah membaca buffer soket.
 _SPEED_WINDOW = float(os.getenv("DL_SPEED_WINDOW", "1.0"))
 
 _SIZE_UNITS = {
@@ -53,7 +32,6 @@ _NULLISH = {"", "n/a", "na", "unknown", "none", "null", "-", "?", "~"}
 
 
 def parse_size_str(value) -> int:
-    """Parse a human size such as ``12.34MiB`` / ``1.5 GB`` into bytes (0 if unknown)."""
     text = str(value or "").strip()
     if text.lower() in _NULLISH:
         return 0
@@ -70,7 +48,6 @@ def parse_size_str(value) -> int:
 
 
 def parse_speed_str(value) -> float:
-    """Parse a human speed such as ``3.2MiB/s`` into bytes/second (0 if unknown)."""
     text = str(value or "").strip()
     if text.lower() in _NULLISH:
         return 0.0
@@ -80,7 +57,6 @@ def parse_speed_str(value) -> float:
 
 
 def parse_eta_str(value) -> float | None:
-    """Parse an ETA such as ``01:02`` / ``1:02:03`` / ``42`` into seconds (None if unknown)."""
     text = str(value or "").strip()
     if text.lower() in _NULLISH:
         return None
@@ -99,12 +75,6 @@ def parse_eta_str(value) -> float | None:
         return None
 
 
-# Single shared edit cache stored on the bot instance, keyed by (chat_id, message_id).
-# Tanpa batas, dict ini tumbuh tanpa henti: tiap pesan status yang pernah diedit
-# menyimpan satu entri permanen selama umur proses (satunya-satunya pembersihan
-# dulu adalah pop milik Instagram yang memang tidak pernah menulis). Sekarang
-# dibatasi TTL + cap supaya tetap efektif sebagai dedup/throttle tetapi memori
-# yang dipakai konstan.
 _EDIT_CACHE_ATTR = "_dl_status_edit_cache"
 _EDIT_CACHE_MAX = int(os.getenv("DL_EDIT_CACHE_MAX", "2048"))
 _EDIT_CACHE_TTL = float(os.getenv("DL_EDIT_CACHE_TTL", "1800"))
@@ -117,11 +87,6 @@ def prune_edit_cache(
     max_entries: int | None = None,
     ttl: float | None = None,
 ) -> int:
-    """Buang entri cache edit yang sudah basi lalu cap ukurannya.
-
-    Dict Python menjaga urutan insert, jadi membuang dari kepala = FIFO paling
-    lama. Mengembalikan jumlah entri yang dibuang.
-    """
     if not cache:
         return 0
     if max_entries is None:
@@ -152,12 +117,6 @@ async def edit_status(
     label: str = "Progress",
     force: bool = False,
 ) -> None:
-    """Edit a Telegram status message with a shared, flood-safe throttle.
-
-    Used by every downloader so the edit behaviour (dedup + RetryAfter handling)
-    is identical across platforms. Default throttle 5.0s per-message so no
-    chat ever hits Telegram edit flood limit.
-    """
     if bot is None or not chat_id or not message_id:
         return
     cache = getattr(bot, _EDIT_CACHE_ATTR, None)
@@ -202,11 +161,6 @@ def render_progress_text(
     extra: str = "",
     pct: float | None = None,
 ) -> str:
-    """Build the standard Telegram status body shared by every downloader.
-
-    ``pct`` lets segment-based downloaders (e.g. HLS) drive the progress bar from
-    completed segments while the size line still reports real bytes.
-    """
     try:
         downloaded = max(int(downloaded or 0), 0)
     except (TypeError, ValueError):
@@ -251,7 +205,6 @@ def log_progress(
     avg_bps: float = 0.0,
     eta_seconds: float | None = None,
 ) -> None:
-    """Emit one consistent terminal progress line (percentage, speed, avg_speed, eta)."""
     try:
         downloaded = max(int(downloaded or 0), 0)
     except (TypeError, ValueError):
@@ -293,7 +246,6 @@ def log_done(
     elapsed: float = 0.0,
     avg_bps: float = 0.0,
 ) -> None:
-    """Emit one consistent terminal completion line (size, elapsed, avg_speed)."""
     try:
         size = max(int(size or 0), 0)
     except (TypeError, ValueError):
@@ -313,11 +265,6 @@ def log_done(
 
 
 class TransferStats:
-    """Tracks instantaneous + average transfer speed, ETA and percentage.
-
-    Reused by every download/upload loop so the numbers shown in Telegram and in
-    the terminal are computed identically.
-    """
 
     __slots__ = (
         "total",
@@ -337,7 +284,6 @@ class TransferStats:
     def __init__(self, total: int = 0, *, started: float | None = None) -> None:
         self.total = max(int(total or 0), 0)
         self.started = started if started is not None else time.monotonic()
-        # Jendela pengukuran kecepatan (lihat `sample`).
         self._win_ts = self.started
         self._win_bytes = 0
         self._last_log_ts = 0.0
@@ -356,12 +302,6 @@ class TransferStats:
         except (TypeError, ValueError):
             done = 0
 
-        # Byte pertama mengalir: geser titik mulai ke sekarang. `TransferStats`
-        # dibuat SEBELUM koneksi terbuka, jadi tanpa reset ini burst awal
-        # (16 koneksi aria2 mengisi buffer OS sekaligus) dibagi dengan elapsed
-        # yang terlalu kecil -> avg/speed meledak (pernah 60-230 MB/s) padahal
-        # throughput riil 3-4 MB/s. Itu juga yang membuat interval edit dinamis
-        # salah pilih bucket tercepat.
         first_byte = done > 0 and self.downloaded <= 0
         if first_byte:
             self.started = now
@@ -369,24 +309,12 @@ class TransferStats:
             self._win_bytes = 0
         self.downloaded = done
 
-        # Pada sample byte pertama, elapsed == 0 -> jangan hitung avg/speed
-        # (pembagian dengan floor 0.001s menghasilkan angka palsu 1000 MB/s).
         if first_byte:
             self.avg_bps = 0.0
             self.speed_bps = 0.0
             self.eta_seconds = None
             return self
 
-        # Kecepatan dihitung dari JENDELA WAKTU (~1.0s), bukan antar-sample.
-        # Sample per-chunk di thread unduh menabrak dua masalah:
-        #   1. `dt` di-floor ke 0.001s, jadi chunk 16KB yang masuk beruntun dari
-        #      buffer soket selalu membaca 16KB/1ms = 15.6 MB/s — angka STAGNAN
-        #      yang bukan kecepatan riil, dan inilah yang tampil di UI Telegram
-        #      walau unduhan jalan ~80 KB/s.
-        #   2. curl menyerahkan isi buffer berlomba, sehingga delta/dt tidak
-        #      pernah mewakili throughput jaringan.
-        # Dengan jendela >= 1s, kelompok chunk berapapun polanya dirata-ratakan
-        # atas durasi jendela, jadi angkanya mengikuti kecepatan nyata.
         span = now - self._win_ts
         elapsed = max(now - self.started, 0.001)
         self.avg_bps = done / elapsed
@@ -396,15 +324,7 @@ class TransferStats:
             self.speed_bps = max(gained, 0) / span
             self._win_ts = now
             self._win_bytes = done
-        # Sebelum jendela pertama terbuka `speed_bps` masih 0; jangan isi dengan
-        # delta/dt maupun avg — keduanya sama-sama artefak pada elapsed <1ms
-        # (16KB/1ms = 15.6 MB/s, angka stagnan yang pernah nongol di UI).
-        # Konsumen tampil pakai `speed_bps or avg_bps` (lihat `telegram_text`).
 
-        # Clamp avg saat baru mulai (belum 5 detik): `done/elapsed` meledak
-        # karena pembagi masih kecil (pernah tampil avg_speed=34.5 MB/s padahal
-        # riil ~4 MB/s). Kalau jendela sudah terisi, batasi avg ke 2x speed_bps
-        # supaya angka yang dipakai UI/log tidak menyesatkan.
         if elapsed < 5.0 and self.speed_bps > 0:
             self.avg_bps = min(self.avg_bps, self.speed_bps * 2.0)
 
@@ -427,9 +347,6 @@ class TransferStats:
     def should_log(self, interval: float = 2.5, *, now: float | None = None) -> bool:
         iv = float(interval if interval is not None else 2.5)
         now = now if now is not None else time.monotonic()
-        # Sudah 100%: log sekali saja, lalu diam (proses kadang belum exit
-        # begitu file penuh — aria2c menutup koneksi — dan emit/sample terus
-        # dipanggil, bikin log "100.0%" terus-menerus).
         if self.total > 0 and self.downloaded >= self.total:
             if self._done_logged:
                 return False
@@ -445,28 +362,6 @@ class TransferStats:
         return False
 
     def adaptive_edit_interval(self) -> float:
-        """Interval edit pesan Telegram dinamis, mengikuti kecepatan unduhan.
-
-        Bucket kecepatan:
-          - Speed < 1 MB/s  -> 10 detik
-          - Speed < 3 MB/s  -> 7 detik
-          - Speed < 5 MB/s  -> 5 detik
-          - Speed >= 5 MB/s -> 3 detik
-
-        Sifatnya REAKTIF: kalau kecepatan drop di tengah unduhan, interval
-        otomatis naik ke bucket yang lebih lambat (dan sebaliknya). Jadi pesan
-        tidak di-edit tiap detik saat CDN sedang lambat / ke-throttle.
-
-        Kecepatan dipakai = `speed_bps` (jendela ~1s) bila sudah terisi; kalau
-        belum, `avg_bps` baru dipercaya setelah unduhan berjalan >= 5 detik.
-        Keduanya rawan overstate tepat setelah byte pertama (burst buffer +
-        pembagi elapsed kecil: pernah terbaca 60-130 MB/s padahal throughput
-        riil 3-4 MB/s), karena itu ada guard waktu.
-
-        Faktor ukuran: kalau sisa file tinggal sedikit (ETA < 2x interval),
-        interval dirapatkan (floor 2 detik) supaya progress akhir tetap tampil
-        sebelum file selesai.
-        """
         now = time.monotonic()
         if self.speed_bps > 0:
             speed = self.speed_bps
@@ -485,8 +380,6 @@ class TransferStats:
         else:
             iv = 5.0
 
-        # Rapetkan hanya kalau unduhan BENAR-BENAR hampir selesai (ETA < 2x iv),
-        # tetapi MINIMAL tetap 5.0 detik agar tidak melanggar rate limit Telegram.
         if self.total > 0 and speed > 0 and self.downloaded < self.total:
             eta = (self.total - self.downloaded) / speed
             if eta < iv * 2.0:
@@ -496,15 +389,10 @@ class TransferStats:
     def should_edit(self, interval: float = 5.0, *, now: float | None = None) -> bool:
         iv = float(interval if interval is not None else 5.0)
         now = now if now is not None else time.monotonic()
-        # Jika interval <= 0, anggap caller memaksakan edit (mis. awal 0% / akhir 100%)
         if iv <= 0:
             self._last_edit_ts = now
             return True
 
-        # Sudah 100%: paksa edit SEKALI saja (supaya bar penuh tampil), lalu
-        # diam. Tanpa flag ini, setiap panggilan emit() selama proses unduhan
-        # belum exit (aria2c masih menutup koneksi) akan lolos -> spam edit
-        # tiap detik di 100% (terjadi pada FemdomVC 23:01:20-23:01:28).
         if self.total > 0 and self.downloaded >= self.total:
             if self._done_edited:
                 return False
@@ -512,8 +400,6 @@ class TransferStats:
             self._last_edit_ts = now
             return True
 
-        # Pakai interval dinamis (sesuai kecepatan + sisa ukuran),
-        # minimal sebesar interval yang diminta caller dan minimal 5.0 detik.
         effective = max(5.0, iv, self.adaptive_edit_interval())
 
         if self._last_edit_ts < 0 or (now - self._last_edit_ts) >= effective:
@@ -522,8 +408,6 @@ class TransferStats:
         return False
 
     def telegram_text(self, title: str, *, extra: str = "") -> str:
-        # Sebelum jendela pertama (~1s) terbuka, speed_bps masih 0; gunakan
-        # avg_bps sebagai fallback agar bar tidak menampilkan speed kosong.
         display_speed = self.speed_bps if self.speed_bps > 0 else self.avg_bps
         display_eta = self.eta_seconds
         if display_eta is None and display_speed > 0 and self.total > 0 and self.downloaded <= self.total:
@@ -538,7 +422,6 @@ class TransferStats:
         )
 
     def log(self, kind: str, *, label: str = "") -> None:
-        # Sama dengan telegram_text: fallback avg_bps sebelum jendela terbuka.
         display_speed = self.speed_bps if self.speed_bps > 0 else self.avg_bps
         display_eta = self.eta_seconds
         if display_eta is None and display_speed > 0 and self.total > 0 and self.downloaded <= self.total:
@@ -554,7 +437,6 @@ class TransferStats:
         )
 
     def log_done(self, kind: str, *, label: str = "", size: int | None = None) -> None:
-        """Emit the canonical completion line using this transfer's average speed."""
         final_size = self.downloaded if size is None else size
         log_done(
             kind,
@@ -577,7 +459,6 @@ class TransferStats:
         log_interval: float = 2.5,
         edit_interval: float = 5.0,
     ) -> None:
-        """Sample was already called; emit terminal log and edit Telegram if intervals elapsed."""
         now = time.monotonic()
         if self.should_log(log_interval, now=now):
             self.log(kind, label=label)
@@ -606,7 +487,6 @@ class TransferStats:
         log_interval: float = 2.5,
         edit_interval: float = 5.0,
     ) -> "TransferStats":
-        """Sample bytes, log terminal if interval elapsed, edit Telegram if interval elapsed."""
         self.sample(done)
         await self.emit(
             bot=bot,

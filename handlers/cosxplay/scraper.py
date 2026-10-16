@@ -1,23 +1,3 @@
-"""HTTP client + parser + fetcher untuk explorer CosXplay (`/cosxplay`).
-
-FLOW SCRAPER
-------------
-1. `http_get(url)` -> HTML mentah (curl_cffi impersonate Chrome, lolos Cloudflare).
-2. `parse_cards(html)` -> kartu listing `div.row.no-gutters div.video-block`
-   (judul, url, thumb, durasi, views, rating).
-3. `_collect_pages(first_url, page_tmpl, max_items)` -> gabungkan beberapa
-   halaman server sampai `MAX_RESULTS` (48 kartu/halaman).
-4. `search(query)` -> `/?s=<q>` dengan paginasi `/page/<N>/?s=<q>`.
-5. `fetch_latest()` -> beranda `/` dengan paginasi `/page/<N>/`.
-6. `fetch_category(path)` -> `/<id>-<slug>/page/N/` (mendukung subkategori).
-7. `fetch_tag(slug)` -> `/tag/<slug>/page/N/`.
-8. `fetch_actor(slug)` -> `/?actors=<slug>` + `/page/N/?actors=<slug>`.
-9. `fetch_categories()` -> `/categories/` (176 kategori, cache 1 jam).
-10. `fetch_tags()` -> `/9-video-tags/` (900+ tag, cache 1 jam).
-11. `fetch_actors()` -> `/11314-video-actors/` (cache 1 jam).
-12. `fetch_detail(url)` -> metadata halaman post (judul, thumb, statistik,
-    kategori, tag).
-"""
 import logging
 import math
 import re
@@ -40,9 +20,6 @@ log = logging.getLogger(__name__)
 
 _sessions: dict = {}
 
-# Kategori bisa bertingkat: `/<id>-<slug>/` ATAU `/<id>-<slug>/<sub_id>-<sub_slug>/`.
-# `path` menyimpan jalur lengkap (tanpa origin) supaya listing & paginasi benar,
-# termasuk untuk subkategori (mis. `19621-uniform/13908-maid`).
 _CAT_RE = re.compile(r"^(?:https?://cosxplay\.com)?/((?:[a-z0-9-]+/)*\d+-[a-z0-9-]+)/?$", re.I)
 _TAG_RE = re.compile(r"/tag/([^/]+)/?")
 _ACTOR_RE = re.compile(r"[?&]actors=([^&/]+)")
@@ -58,7 +35,6 @@ def _http(host_key: str = "default"):
 
 
 def http_get(url: str, referer: str = "") -> str:
-    """Ambil HTML halaman; kosong kalau gagal."""
     try:
         headers = {"User-Agent": UA}
         if referer:
@@ -81,10 +57,6 @@ def _clean_views(text: str) -> str:
 
 
 def parse_cards(html_text: str) -> list[dict]:
-    """Kartu listing dari `div.row.no-gutters div.video-block`.
-
-    -> [{title, url, thumbnail, duration, views, rating, meta}]
-    """
     if not html_text:
         return []
     soup = BeautifulSoup(html_text, "html.parser")
@@ -146,10 +118,6 @@ def parse_cards(html_text: str) -> list[dict]:
 
 
 def _has_results(html_text: str) -> bool:
-    """Halaman search menaruh jumlah video di h1: `<query> Porn (N Videos)`.
-
-    N == 0 -> site menampilkan video fallback (bukan hasil search) -> buang.
-    """
     m = re.search(r"<h1[^>]*>(.*?)</h1>", html_text or "", re.S | re.I)
     if not m:
         return True
@@ -161,7 +129,6 @@ def _has_results(html_text: str) -> bool:
 
 
 def _collect_pages(first_url: str, page_tmpl: str, max_items: int) -> list[dict]:
-    """Ambil halaman 1..N sampai `max_items`; `page_tmpl` memakai `{page}`."""
     first = http_get(first_url)
     results = parse_cards(first)
     if not results:
@@ -190,7 +157,6 @@ def _collect_pages(first_url: str, page_tmpl: str, max_items: int) -> list[dict]
 
 
 def search(query: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Cari di `/?s=<q>`; halaman berikutnya `/page/<N>/?s=<q>`."""
     from urllib.parse import quote_plus
     slug = quote_plus((query or "").strip())
     first = http_get(f"{BASE_URL}/?s={slug}")
@@ -222,16 +188,10 @@ def search(query: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def fetch_latest(max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing beranda (`/`) dengan paginasi `/page/<N>/`."""
     return _collect_pages(f"{BASE_URL}/", f"{BASE_URL}/page/{{page}}/", max_items)
 
 
 def fetch_category(path: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing kategori `/<path>/page/N/`.
-
-    `path` = jalur kategori tanpa origin, mis. `11104-anal` atau
-    `19621-uniform/13908-maid` (subkategori bertingkat).
-    """
     path = (path or "").strip().strip("/")
     if not path:
         return []
@@ -240,7 +200,6 @@ def fetch_category(path: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def fetch_tag(slug: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing tag `/tag/<slug>/page/N/`."""
     slug = (slug or "").strip()
     if not slug:
         return []
@@ -249,7 +208,6 @@ def fetch_tag(slug: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def fetch_actor(slug: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing aktris `/?actors=<slug>` dengan paginasi `/page/N/?actors=<slug>`."""
     slug = (slug or "").strip()
     if not slug:
         return []
@@ -261,13 +219,6 @@ def fetch_actor(slug: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def fetch_categories() -> list[dict]:
-    """Kategori dari `/categories/` (cache 1 jam).
-
-    -> [{path, slug, name, count, thumb, url}]
-
-    Hasil apa pun (termasuk `FALLBACK_CATEGORIES` statis) SELALU disimpan ke
-    cache supaya `build_categories_content` ikut terisi.
-    """
     slot = get_categories_cache()
     now = time.time()
     if slot.get("list") and now - slot.get("ts", 0) < INDEX_TTL:
@@ -316,7 +267,6 @@ def fetch_categories() -> list[dict]:
 
 
 def fetch_tags() -> list[dict]:
-    """Tag dari `/9-video-tags/` (cache 1 jam). -> [{slug, name, url}]"""
     slot = get_tags_cache()
     now = time.time()
     if slot.get("list") and now - slot.get("ts", 0) < INDEX_TTL:
@@ -347,10 +297,6 @@ def fetch_tags() -> list[dict]:
 
 
 def fetch_actors() -> list[dict]:
-    """Aktris dari `/11314-video-actors/` (cache 1 jam).
-
-    -> [{slug, name, count, thumb, url}]
-    """
     actors_slot = get_actors_cache()
     now = time.time()
     if actors_slot.get("list") and now - actors_slot.get("ts", 0) < INDEX_TTL:
@@ -394,11 +340,6 @@ def fetch_actors() -> list[dict]:
 
 
 def fetch_detail(url: str) -> dict:
-    """Metadata halaman post.
-
-    -> {kind, title, thumbnail, duration, views, rating, categories, tags}
-    `kind="video"` kalau ada `<video>`/source; `"unknown"` kalau tidak.
-    """
     raw = http_get(url, referer=f"{BASE_URL}/")
     if not raw:
         return {"kind": "unknown", "title": "", "url": url}
@@ -449,10 +390,6 @@ def fetch_detail(url: str) -> dict:
         if not name:
             continue
         cls = " ".join(a.get("class", []))
-        # Klasifikasi dari class anchor dulu (`label-cat-video` vs `label-tag-video`),
-        # baru dari bentuk href. `/tag/<id>-<slug>/` juga cocok dengan `_CAT_RE`
-        # (prefix `tag/` ikut ke-capture grup nested), jadi urutan cek WAJIB:
-        # buang dulu yang jelas tag, baru cocokkan kategori.
         if "label-tag-video" in cls or "/tag/" in href:
             if name not in tags:
                 tags.append(name)

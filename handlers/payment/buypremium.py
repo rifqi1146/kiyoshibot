@@ -1,27 +1,3 @@
-"""Command /buypremium & Axiom QRIS payment handler.
-
-FLOW:
-1. User types `/buypremium` in a group/supergroup:
-   - Bot replies with an inline button pointing to direct PM:
-     `https://t.me/<bot_username>?start=buypremium`.
-2. User types `/buypremium` in private chat OR clicks the deep link:
-   - If the user is already premium, notify them and stop.
-   - If the user already has a PENDING invoice still inside its 5-minute
-     deadline, resend that invoice instead of creating a duplicate bill.
-   - Otherwise call `utils.axiom.create_qris(amount=AXIOM_PREMIUM_AMOUNT)`
-     (default Rp 20.000) and render the QRIS payload to PNG locally.
-   - Save the invoice in `data/payments.sqlite3` with a hard 5-minute deadline.
-   - Send the QR photo with a caption (status, amount, IDs, fee, net, created,
-     live countdown) and inline buttons: Refresh / Open page / Cancel.
-3. Auto-poll every 15 seconds via `job_queue.run_repeating`:
-   - Past the 5-minute deadline -> mark EXPIRED, close the job.
-   - Gateway reports PAID -> activate premium, close the job, send the success
-     card and a private confirmation message.
-   - Still PENDING -> refresh the countdown in the caption.
-   - Gateway errors (429/503/network) -> keep the last known status.
-4. Manual Refresh button: validates ownership, checks the gateway immediately.
-5. Cancel button: stops polling and marks the invoice CANCELLED.
-"""
 
 import asyncio
 import html
@@ -41,8 +17,8 @@ from utils.config import AXIOM_BASE_URL, AXIOM_PREMIUM_AMOUNT, OWNER_ID
 
 log = logging.getLogger(__name__)
 
-PAYMENT_DEADLINE_SEC = 300  # 5-minute payment window
-POLL_INTERVAL_SEC = 15      # auto refresh interval
+PAYMENT_DEADLINE_SEC = 300
+POLL_INTERVAL_SEC = 15
 WIB = timezone(timedelta(hours=7))
 
 _CHECK_LOCKS: dict[str, "asyncio.Lock"] = {}
@@ -165,8 +141,6 @@ def _stop_polling_job(context: ContextTypes.DEFAULT_TYPE, short_id: str):
     for job in jq.get_jobs_by_name(_job_name(short_id)):
         job.schedule_removal()
         removed = True
-    # Evict the per-invoice lock: the invoice is terminal (PAID/EXPIRED/CANCELLED)
-    # so the lock will never be acquired again — prevents unbounded dict growth.
     if removed:
         _CHECK_LOCKS.pop(short_id, None)
 
@@ -194,7 +168,6 @@ def _schedule_polling_job(app, short_id: str, chat_id: int, message_id: int, use
 
 
 async def _close_as_paid(context: ContextTypes.DEFAULT_TYPE, inv: dict):
-    """Idempotent: mark PAID, grant premium, update card, notify the user."""
     short_id = inv["short_id"]
     user_id = int(inv["user_id"])
 
@@ -212,8 +185,6 @@ async def _close_as_paid(context: ContextTypes.DEFAULT_TYPE, inv: dict):
     except Exception as e:
         log.debug("Failed to edit success caption | short_id=%s err=%r", short_id, e)
 
-    # Tidak ada PM kedua: kartu invoice di atas sudah diedit menjadi kartu
-    # "Payment successful" — pesan tambahan hanya duplikat spam.
 
     log.info("Premium payment success | user_id=%s trx_id=%s amount=%s",
              user_id, inv["trx_id"], inv["amount"])
@@ -293,21 +264,16 @@ async def _poll_payment_job(context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=_build_keyboard(short_id, f"{AXIOM_BASE_URL}/qr/{fresh['qris_id']}"),
             )
         except Exception:
-            # Telegram rejects a caption edit when the text is unchanged.
             pass
 
 
 async def buypremium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /buypremium in groups and private chat."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
     if not msg or not chat or not user:
         return
 
-    # Group / supergroup: route the user to a private chat for privacy.
-    # A `url` button cannot be locked down (anyone in the group could press it),
-    # so we use a callback button bound to the invoker's user id and verify it.
     if chat.type in ("group", "supergroup") or int(chat.id) < 0:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(
@@ -328,7 +294,6 @@ async def buypremium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def buypremium_pm_direct(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point for the deep link `/start buypremium`."""
     user = update.effective_user
     chat = update.effective_chat
     if not user or not chat:
@@ -337,7 +302,6 @@ async def buypremium_pm_direct(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def _resend_invoice(context: ContextTypes.DEFAULT_TYPE, chat_id: int, inv: dict) -> int | None:
-    """Resend an existing invoice card. Returns the new message_id."""
     short_id = inv["short_id"]
     qr_url = f"{AXIOM_BASE_URL}/qr/{inv['qris_id']}"
     caption = _build_caption(
@@ -500,7 +464,6 @@ async def _start_buypremium_pm(
 
 
 async def buyprem_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inline buttons: refresh status, cancel, buy again."""
     q = update.callback_query
     if not q or not q.data:
         return
@@ -513,7 +476,6 @@ async def buyprem_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     action = parts[1]
 
-    # Group button deep link: locked to the user who invoked /buypremium
     if action == "open":
         if len(parts) < 3:
             return

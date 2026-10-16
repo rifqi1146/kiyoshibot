@@ -12,10 +12,8 @@ _MODE_CACHE_MAX = int(__import__("os").getenv("CACA_MODE_CACHE_MAX", "5000"))
 
 
 def _mode_cache_set(user_id: int, mode: str):
-    """Bounded insert into the in-memory Caca mode cache (LRU-ish eviction)."""
     _MODE_CACHE[int(user_id)] = str(mode)
     if len(_MODE_CACHE) > _MODE_CACHE_MAX:
-        # Drop the oldest 10% (dicts preserve insertion order) to avoid a full clear.
         overflow = len(_MODE_CACHE) - _MODE_CACHE_MAX
         for k in list(_MODE_CACHE.keys())[: max(1, overflow + _MODE_CACHE_MAX // 10)]:
             _MODE_CACHE.pop(k, None)
@@ -93,7 +91,6 @@ def _caca_db_save_modes(modes: dict[int, str]):
             raise
 
 def _caca_db_get_mode(user_id: int) -> str | None:
-    """Baca satu mode langsung dari SQLite (dipakai fallback `get_mode`)."""
     with db_session(CACA_DB_PATH) as con:
         row = con.execute(
             "SELECT mode FROM caca_mode WHERE user_id = ?",
@@ -184,12 +181,6 @@ async def reload_modes():
         log.warning("Failed to load Caca modes | err=%r", e)
 
 def get_mode(user_id: int) -> str:
-    """Ambil mode persona Caca user.
-
-    Fallback ke DB kalau user tidak ada di cache. `importlib.reload()` (dipakai
-    `/reload`) mereset `_MODE_CACHE` jadi `{}`; tanpa fallback ini SEMUA user
-    mendadak kembali ke `default` walau barisnya masih ada di `caca_mode`.
-    """
     uid = int(user_id)
     cached = _MODE_CACHE.get(uid)
     if cached is not None:

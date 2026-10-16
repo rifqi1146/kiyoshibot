@@ -1,18 +1,3 @@
-"""Rich-message search layer untuk manga reader (MangaDex, Maid-Manga, nHentai).
-
-Semua sumber memakai helper bersama `utils.rich_search.build_search_content`
-supaya tampilan hasil search seragam dengan `/simontok`, `/punish`, `/nekopoi`:
-heading besar, tabel `#`/`Title`/`Info`, footer `aside`, tombol nomor + Prev/Close/Next.
-
-Saat user menekan tombol nomor, pesan hasil search **DIHAPUS** lalu detail manga
-dikirim sebagai **foto cover + caption** dengan tombol chapter.
-
-Grammar callback (4 segmen: `prefix:action:search_id:arg`):
-- `mgdex:` / `mgmaid:` / `mgnh:` = prefix per sumber.
-- `nav:<sid>:<page>`   -> pindah halaman hasil search.
-- `open:<sid>:<idx>`   -> buka detail (hapus pesan search + kirim foto).
-- `close:<sid>:0`      -> hapus pesan hasil search.
-"""
 import hashlib
 import logging
 import time
@@ -57,9 +42,6 @@ def get_search(context, sid: str):
     return _udata_get(context, f"search_{sid}")
 
 
-# ---------------------------------------------------------------------------
-# Collector per sumber
-# ---------------------------------------------------------------------------
 async def collect_results(source: str, query: str, context):
     if source == "dex":
         return await _collect_dex(query)
@@ -143,9 +125,6 @@ async def _collect_nh(query: str):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Render + callback
-# ---------------------------------------------------------------------------
 def render_search_page(source: str, sid: str, data: dict):
     label = LABEL_BY_SOURCE[source]
     prefix = PREFIX_BY_SOURCE[source]
@@ -163,7 +142,6 @@ def render_search_page(source: str, sid: str, data: dict):
 
 
 async def _build_detail(source: str, item: dict, context):
-    """-> (rich_html, plain_html, keyboard, cover_url)."""
     if source == "dex":
         return await mangadex.fetch_detail_view(item["id"], 0)
     if source == "maid":
@@ -216,8 +194,6 @@ async def handle_search_callback(query, context, data_str: str):
         message_id = query.message.message_id
         thread_id = getattr(query.message, "message_thread_id", None)
         cmd_msg_id = data.get("cmd_msg_id")
-        # Pesan hasil search hilang, lalu detail dikirim sebagai Rich Message baru
-        # yang membalas ke pesan command user.
         try:
             await query.message.delete()
         except Exception:

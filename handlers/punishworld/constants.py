@@ -1,13 +1,3 @@
-"""Konstanta explorer PunishWorld (`/punish`).
-
-FLOW KONSTANTA
---------------
-1. Label, prefix callback `pw`, base URL dan gate URL.
-2. Paginasi: `PER_PAGE=5`, `CATS_PER_PAGE=10`, `TAGS_PER_PAGE=20`.
-3. `POPULAR_SHORTCUTS`: shortcut kategori terpopuler di menu utama.
-4. `FALLBACK_CATEGORIES`: cadangan statis jika halaman /categories/ gagal.
-5. Cache TTL & limits.
-"""
 
 LABEL = "PunishWorld"
 PREFIX = "pw"
@@ -32,7 +22,6 @@ UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Shortcut kategori populer di menu utama (path = jalur kategori tanpa origin)
 POPULAR_SHORTCUTS = (
     ("22-anal", "Anal"),
     ("24-bdsm", "BDSM"),

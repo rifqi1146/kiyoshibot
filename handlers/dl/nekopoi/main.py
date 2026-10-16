@@ -1,38 +1,3 @@
-"""Downloader Nekopoi (nekopoi.care)
-
-FLOW DOWNLOADER
----------------
-1. `is_nekopoi_url(url)`: host nekopoi.* + path post (slug) -> dipakai router
-   (`supports_resolution_picker`, `service.download_non_tiktok`, label platform).
-
-2. `probe_nekopoi(raw_url)` (sinkron, dipanggil via `asyncio.to_thread`):
-   a. `extractor.scrape_post` -> judul, thumbnail, daftar iframe embed.
-   b. embed prio streampoi -> `extractor.probe_stream` (unpack Dean Edwards)
-      -> master.m3u8.
-   c. `extractor.list_resolutions` -> varian resolusi tertinggi dulu,
-      **di-dedup per tinggi** (2 varian 720p -> ambil bandwidth terbesar)
-      karena picker Telegram & DL_CACHE router di-key oleh tinggi (int).
-   d. Hasil di-cache di `_VARIANT_CACHE[url]` (TTL 5 menit) supaya callback
-      resolusi (yang hanya menerima `format_id` = tinggi) bisa memakai URL
-      varian + token yang sama dengan yang ditampilkan ke user.
-   e. `format_id` = tinggi (str) karena `res_map`/callback hanya membawa satu
-      nilai string; URL varian penuh diambil dari cache, bukan dari format_id.
-
-3. `nekopoi_download(...)`:
-   - fmt video: ambil varian sesuai `format_id` (fallback: varian terbaik)
-     -> `extractor.download_variant` (segmen .ts paralel -> concat -> ffmpeg
-     -c copy) -> {"path", "title"}.
-   - fmt mp3: varian terbaik -> `extractor.download_audio` (libmp3lame).
-
-4. Cache miss (mis. cache router sudah expired / worker retry setelah flood):
-   `nekopoi_download` re-probe halaman post untuk token segar -> unduh.
-
-5. Batas MAX_TG_SIZE dicek setelah file jadi; `FileSizeLimitExceeded` dipakai
-   supaya pesan errornya konsisten dengan modul downloader lain.
-
-6. Tidak ada fallback ke yt-dlp di manapun. Kalau master/variant 404 (file
-   sudah dihapus di CDN) -> RuntimeError dengan pesan yang jelas.
-"""
 import os
 import time
 import uuid
@@ -48,23 +13,16 @@ from .constants import EMBED_HOST_STREAMPOI, EMBED_HOST_DOOD
 
 log = logging.getLogger(__name__)
 
-# {post_url: {"ts": float, "probe": {...}}} — TTL 5 menit.
-# Dipakai untuk mengikat pilihan resolusi user (format_id=tinggi) ke URL varian
-# beserta token streamruby yang sudah tervalidasi, tanpa request berulang.
 _VARIANT_CACHE: dict = {}
 _CACHE_TTL = 300.0
 
 
 def _import_extractor():
-    """Import extractor secara lazy supaya package tetap bisa di-import walau
-    dependensi (curl_cffi) belum tersedia saat import awal."""
     from . import extractor
     return extractor
 
 
 def is_nekopoi_url(url: str) -> bool:
-    """Cocok untuk halaman post Nekopoi, mis.
-    https://nekopoi.care/koutetsu-no-majo-annerose-episode-2-subtitle-indonesia/"""
     parsed = urlparse((url or "").strip())
     host = (parsed.hostname or "").lower()
     if host.startswith("www."):
@@ -96,8 +54,6 @@ def peek_probe(post_url: str) -> dict | None:
 
 
 def _dedup_by_height(variants: list) -> list:
-    """Picker Telegram hanya mengenal tinggi (int) -> simpan varian dengan
-    bandwidth tertinggi per tinggi supaya tidak ada tombol duplikat."""
     best: dict = {}
     for v in variants:
         height = int(v.get("height") or 0)
@@ -114,12 +70,6 @@ def _dedup_by_height(variants: list) -> list:
 
 
 def _list_download_hosts(html_text: str) -> list[str]:
-    """Daftar label host unduh di `.nk-download-row` yang BUKAN Pixeldrain / Mp4Upload.
-
-    Dipakai hanya untuk pesan error yang jujur ketika sebuah post tidak punya
-    jalur yang didukung (tidak ada streampoi, tidak ada Pixeldrain, tidak ada
-    Mp4Upload).
-    """
     try:
         from bs4 import BeautifulSoup
     except Exception:
@@ -141,12 +91,6 @@ def _list_download_hosts(html_text: str) -> list[str]:
 
 
 def probe_nekopoi(raw_url: str) -> dict:
-    """-> {title, thumbnail, variants:[...], res_list:[...]}
-
-    `variants` = varian lengkap (dengan url + token); `res_list` = format yang
-    dipahami `router._show_resolution_picker` (height/format_id/has_audio/
-    filesize/total_size).
-    """
     ext = _import_extractor()
     post = ext.scrape_post(raw_url)
     title = sanitize_filename(post.get("title") or "Nekopoi", 100)
@@ -167,24 +111,12 @@ def probe_nekopoi(raw_url: str) -> dict:
             elif "480" in name: h = 480
             elif "360" in name: h = 360
 
-            # Tiap baris punya DUA link Pixeldrain: shortener langsung
-            # (`linkpoi.me/<id>`, teks "PixelDrain") dan versi via ouo
-            # (`ouo.io/<id>`, teks "Pixel[ouo]"). Filter "pixeldrain" TIDAK
-            # menangkap yang ouo (teksnya "Pixel[ouo]"), jadi pakai "pixel"
-            # supaya keduanya masuk, lalu utamakan host ouo.io yang terbukti
-            # tembus (linkpoi sering 500 / butuh JS).
             hrefs = [a["href"] for a in row.find_all("a", href=True)
                      if "pixel" in a.get_text(strip=True).lower()]
 
-            # Juga kumpulkan link Mp4Upload (teks label "Mp4Upload" -> "mp4")
-            # sebagai cadangan per tinggi ketika Pixeldrain gagal di-bypass.
             mp4_hrefs = [a["href"] for a in row.find_all("a", href=True)
                          if "mp4upload" in a.get_text(strip=True).lower()]
 
-            # Buang tautan yang shortener-nya MATI (mis. linkpoi.me balas 500
-            # di semua path). Kalau tidak dibuang, baris ini "membayangi"
-            # tinggi tersebut di picker padahal mustahil diunduh, dan varian
-            # DoodStream untuk tinggi yang sama jadi tidak pernah terpakai.
             hrefs = [u for u in hrefs if not ext.shortener_dead(u)]
             mp4_hrefs = [u for u in mp4_hrefs if not ext.shortener_dead(u)]
 
@@ -202,8 +134,6 @@ def probe_nekopoi(raw_url: str) -> dict:
             if mp4_hrefs:
                 chosen_mp4 = next((u for u in mp4_hrefs if _is_ouo(u)), mp4_hrefs[0])
 
-            # Baris tanpa Pixeldrain tapi ada Mp4Upload -> Mp4Upload jadi
-            # varian utama tinggi itu (post tetap terunduh).
             if chosen_pd:
                 out_vars.append({
                     "height": h or 480,
@@ -233,15 +163,10 @@ def probe_nekopoi(raw_url: str) -> dict:
         sz = ext._probe_direct_size(api_url, {"User-Agent": ext.UA})
         return api_url, sz
 
-    # Hanya host embed yang benar-benar jalur HLS mandiri (streampoi) yang
-    # errornya layak disurface ke user. Embed lain (playmogo/DoodStream butuh
-    # Turnstile, widget discord, dsb.) selalu gagal dengan pesan "packer tidak
-    # ditemukan" yang menyesatkan -> jangan dipakai sebagai pesan akhir.
     primary_err = None
     primary_host = None
     last_err = None
     
-    # Coba HLS embeds (streampoi) dulu
     for emb in embeds:
         emb_host = (urlsplit(emb).hostname or "").lower()
         is_primary = any(emb_host == d or emb_host.endswith("." + d) for d in EMBED_HOST_STREAMPOI)
@@ -280,13 +205,6 @@ def probe_nekopoi(raw_url: str) -> dict:
                 primary_err, primary_host = e, emb_host
             continue
 
-    # Fallback 2: kumpulkan varian dari DoodStream (direct MP4) + Pixeldrain (ouo),
-    # lalu GABUNG per tinggi.
-    #
-    # Pixeldrain didahulukan PER TINGGI: delay bypass ouo (~16-20s) jauh lebih
-    # murah daripada throttle CDN DoodStream (~81 KB/s setelah burst awal).
-    # DoodStream hanya mengisi tinggi yang tidak tersedia di Pixeldrain,
-    # sehingga semua resolusi tetap tersedia, termasuk post tanpa Pixeldrain.
     dood_variants: list = []
     for emb in embeds:
         emb_host = (urlsplit(emb).hostname or "").lower()
@@ -305,7 +223,6 @@ def probe_nekopoi(raw_url: str) -> dict:
 
     merged: list = []
     seen_heights: set = set()
-    # Pixeldrain dulu (62-100 MB/s), baru DoodStream untuk tinggi yang absen.
     for v in pd_variants:
         h = int(v.get("height") or 0)
         if h and h not in seen_heights:
@@ -350,13 +267,6 @@ def probe_nekopoi(raw_url: str) -> dict:
         cache_probe(raw_url, probe)
         return probe
 
-    # Tidak ada streampoi (primary) dan tidak ada link Pixeldrain.
-    # JANGAN angkat error embed non-utama (playmogo/videobin/discord) —
-    # teksnya "Skrip packer tidak ditemukan di embed" yang menyesatkan dan
-    # bikin seolah parser HLS-nya rusak, padahal parser baik-baik saja: memang
-    # tidak ada satu pun jalur unduh yang didukung di post ini. Sebutkan host
-    # apa saja yang tersedia supaya user tahu ini post yang memang tidak
-    # didukung (host-nya pun sering sudah mati semua).
     if primary_err is None:
         hosts = _list_download_hosts(post.get("raw_html") or "")
         names = ", ".join(hosts) if hosts else "none detected"
@@ -392,7 +302,6 @@ async def nekopoi_download(
     known_size: int = 0,
     engine: str | None = None,
 ):
-    """Unduh post Nekopoi (HLS streamruby)."""
     del has_audio, known_size, engine
     ext = _import_extractor()
     work_dir = os.path.join(TMP_DIR, f"neko_{uuid.uuid4().hex[:10]}")
@@ -417,8 +326,6 @@ async def nekopoi_download(
         )
 
         if chosen.get("type") == "doodstream_direct":
-            # Direct MP4 dari CDN DoodStream. Referer WAJIB = halaman embed:
-            # CDN menolak permintaan tanpa referer playmogo.
             direct_url = chosen["url"]
             headers = {
                 "User-Agent": ext.UA,
@@ -463,12 +370,6 @@ async def nekopoi_download(
             return {"path": final_path, "title": title, "remux_done": True}
 
         if chosen.get("type") in ("pixeldrain_ouo", "mp4upload_ouo"):
-            # Urutan sumber per tinggi:
-            #   1. Pixeldrain (kalau baris punya) — CDN 62-100 MB/s.
-            #   2. Mp4Upload (kolom `alt_url`, atau varian utama bila baris tak
-            #      punya Pixeldrain) — cadangan saat bypass ouo Pixeldrain gagal
-            #      atau file Pixeldrain sudah mati. CDN mp4upload stabil & cepat.
-            # Semua lewat shortener ouo.io, jadi bypass-nya blocking -> thread.
             srcs: list[tuple[str, str]] = []
             if chosen.get("type") == "pixeldrain_ouo" and chosen.get("url"):
                 srcs.append(("pixeldrain", chosen["url"]))

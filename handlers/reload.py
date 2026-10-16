@@ -22,10 +22,6 @@ def _is_reloadable(name,module):
     return bool(path and path.endswith(".py"))
 
 def _module_priority(name):
-    # Modul "state" (shared mutable dict) HARUS reload paling awal. Kalau
-    # di-reload SETELAH konsumennya, objek dict-nya diganti baru sementara
-    # konsumen masih pegang dict lama -> split-brain (mis. `DL_CACHE[dl_id]`
-    # KeyError di router padahal callbacks baru saja menulisnya).
     if name.endswith(".state"):
         return 0
     if name.startswith("utils"):
@@ -126,14 +122,6 @@ async def _refresh_ai_memory_cache():
         log.warning("Reload Groq memory failed | err=%r",e)
 
 def _reload_env():
-    """Terapkan ulang `.env` ke `os.environ` SEBELUM modul di-reload.
-
-    Kritis: `importlib.reload()` mengevaluasi ulang konstanta level modul
-    (`os.getenv(...)`) saat dijalankan. Kalau `load_dotenv(override=True)`
-    dipanggil SETELAH `_reload_modules()`, modul yang baru di-reload tetap
-    memakai nilai env LAMA — perubahan `.env` baru terasa di reload berikutnya.
-    Karena itu env WAJIB di-refresh paling awal di `hot_reload()`.
-    """
     try:
         from dotenv import load_dotenv
         load_dotenv(override=True)
@@ -193,8 +181,6 @@ async def hot_reload(app):
         snapshot=_snapshot_handlers(app)
         try:
             await _pre_reload_cleanup(app)
-            # WAJIB paling awal: seringkas apa pun, modul yang di-reload di
-            # bawah membaca os.getenv() saat itu juga. Lihat _reload_env().
             _reload_env()
             reloaded=_reload_modules()
             _register_all(app)

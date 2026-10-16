@@ -159,11 +159,6 @@ async def reencode_mp3(src_path:str, cover_path:str|None=None, title:str="", art
 
 
 def _embed_audio_metadata(path:str, cover_path:str|None, title:str, artist:str):
-    """Tulis tag ID3v2 (judul, artis) + cover art APIC ke file MP3.
-
-    Pakai mutagen (in-process, tanpa spawn ffmpeg ekstra). Gagal sekalipun
-    tidak merusak audio, cukup log warning.
-    """
     try:
         from mutagen.mp3 import MP3
         from mutagen.id3 import ID3, APIC, TIT2, TPE1, error as id3_error
@@ -181,8 +176,6 @@ def _embed_audio_metadata(path:str, cover_path:str|None, title:str, artist:str):
         if artist:
             audio.tags.add(TPE1(encoding=3, text=[artist[:80]]))
         if cover_path and os.path.exists(cover_path) and os.path.getsize(cover_path) > 0:
-            # Telegram butuh thumbnail persegi <200KB. Cover besar di-ekstrak
-            # jadi JPG 320px via ffmpeg agar aman dan kecil.
             thumb_out = f"{TMP_DIR}/{uuid.uuid4().hex}_cover.jpg"
             try:
                 subprocess.run(
@@ -555,7 +548,6 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
                 if file_path and os.path.exists(file_path):
                     detected=detect_media_type(file_path)
                     if file_path.lower().endswith(".gif"):
-                        # GIF harus sudah dikonversi ke MP4 sebelum tahap ini.
                         log.warning("Skipping unconverted GIF in album | chat_id=%s path=%s",chat_id,os.path.basename(file_path))
                         continue
                     if detected == "photo":
@@ -616,7 +608,6 @@ async def _send_media_group_result(bot,chat_id,reply_to,result:dict,message_thre
                 _safe_close(fh,f"album media {name}",chat_id)
 
 def _rich_slideshow_label(fmt_key: str, source: str) -> str:
-    """Label platform untuk caption slideshow (bukan hardcode TikTok)."""
     key = (fmt_key or "").strip().lower()
     src = (source or "").strip().lower()
     if key in ("slideshow_images", "slideshow_video") or src == "tiktok":
@@ -641,26 +632,15 @@ def _rich_slideshow_label(fmt_key: str, source: str) -> str:
 
 
 async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key: str, message_thread_id=None, has_spoiler=False) -> bool:
-    """Kirim album foto sebagai Rich Slideshow (swipe horizontal).
-
-    Digunakan untuk SEMUA platform (TikTok, Instagram, X/Twitter, Threads,
-    Reddit, Pinterest, dst) supaya tampilan album konsisten.
-
-    Return True jika berhasil SEMUA chunk, False jika gagal/harus fallback
-    ke sendMediaGroup (fallback menangani seluruh album dari awal).
-    """
     items = result.get("items") or []
     if len(items) < 2:
         return False
-    # Spoiler aktif: Rich Slideshow tidak mendukung blur, jadi paksa fallback
-    # ke sendMediaGroup yang mengirim tiap foto dengan has_spoiler=True.
     if has_spoiler:
         log.info(
             "Rich slideshow skipped | chat_id=%s reason=spoiler count=%s",
             chat_id, len(items),
         )
         return False
-    # Cek apakah semua item berupa photo (slideshow tidak mendukung video)
     paths: list[str] = []
     for it in items:
         p = it.get("path")
@@ -677,8 +657,6 @@ async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key
     credit = f"🪄 Powered by {bot_name or 'Bot'}"
     caption = title or _rich_slideshow_label(fmt_key, source)
 
-    # Telegram sendMediaGroup dipecah per 10; slideshow juga dipecah agar
-    # jumlah foto besar tidak ditolak server.
     chunks = [paths[i:i + _ALBUM_CHUNK_SIZE] for i in range(0, len(paths), _ALBUM_CHUNK_SIZE)]
     for idx, chunk in enumerate(chunks):
         try:
@@ -697,10 +675,7 @@ async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key
                 chat_id, idx + 1, len(chunks), e,
             )
             if idx == 0:
-                # Belum ada yang terkirim -> fallback penuh ke sendMediaGroup.
                 return False
-            # Sebagian sudah terkirim -> kirim SISA item via media group
-            # agar tidak menggandakan foto chunk yang sudah sukses.
             await _send_media_group_result(
                 bot=bot,
                 chat_id=chat_id,
@@ -724,14 +699,10 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
         album_items=[it for it in all_items if it.get("type")!="animation"]
         anim_items=[it for it in all_items if it.get("type")=="animation"]
 
-        # Video dipisah dari album: kirim album foto dulu (biar jadi rich
-        # slideshow), baru video sebagai pesan sendiri via upload engine
-        # (pyrofork) supaya cepat. Berlaku untuk silent mode maupun tidak.
         video_items=[it for it in album_items if (it.get("type") or "").lower()=="video"]
         if video_items:
             album_items=[it for it in album_items if (it.get("type") or "").lower()!="video"]
 
-        # 1. Kirim album foto (tanpa animasi GIF / video)
         if len(album_items) == 1:
             it = album_items[0]
             single_payload = {
@@ -755,7 +726,6 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 first_type=detect_media_type(first_path)
             await _set_uploading_status(bot,chat_id,status_msg_id,"album")
             try:
-                # Coba kirim via Rich Slideshow jika semua item adalah foto
                 sent = await _try_send_rich_slideshow(
                     bot=bot, chat_id=chat_id, reply_to=reply_to,
                     result=path, fmt_key=fmt_key, message_thread_id=message_thread_id,
@@ -766,7 +736,6 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             finally:
                 await _cleanup_album_files(album_items)
 
-        # 1b. Kirim video terpisah (setelah album)
         for it in video_items:
             video_path=it.get("path")
             if not video_path or not os.path.exists(video_path):
@@ -784,7 +753,6 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 log.warning("Separate video send failed | path=%s err=%r",video_path,e)
                 await _delete_file(video_path,"separate video")
 
-        # 2. Kirim animasi GIF sebagai pesan animasi terpisah
         if anim_items:
             bot_name=await _get_bot_name(bot)
             title=(path.get("title") or "Animation").strip() or "Animation"
@@ -870,7 +838,6 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 pre_thumb=meta.get("thumb") if isinstance(meta,dict) else None
                 pre_meta=meta.get("meta") if isinstance(meta,dict) else None
                 if pre_thumb and os.path.exists(pre_thumb):
-                    # Thumbnail sudah dibuat paralel dengan remux di tahap processing.
                     thumb_path=pre_thumb
                     meta_video=pre_meta or await asyncio.to_thread(video_meta,file_path)
                 else:
@@ -880,7 +847,6 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                     )
                 caption=_build_safe_caption(caption_text,bot_name)
                 if isinstance(meta,dict) and meta.get("is_animation"):
-                    # GIF yang dikonversi ke MP4 -> kirim sebagai animasi terpisah
                     video_fh=open(file_path,"rb")
                     thumb_fh=open(thumb_path,"rb") if thumb_path and os.path.exists(thumb_path) else None
                     await _send_animation_with_fallback(
@@ -1230,11 +1196,6 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
 
 
 async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results:list,message_thread_id=None,has_spoiler=False):
-    """Kirim hasil batch (multi-link).
-
-    Foto/video dikumpulkan jadi satu album Telegram. Audio dikirim terpisah
-    setelah album supaya tetap rapi.
-    """
     album_items:list[dict]=[]
     anim_items:list[dict]=[]
     audio_entries:list[dict]=[]

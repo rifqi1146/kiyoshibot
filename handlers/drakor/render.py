@@ -1,8 +1,3 @@
-"""Renderer Rich Message (Bot API 10.3) + plain HTML fallback untuk /drakorid.
-
-Setiap builder mengembalikan tuple:
-`(rich_html, plain_html, markup)` atau `(rich_html, plain_html)`.
-"""
 import html
 import math
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup

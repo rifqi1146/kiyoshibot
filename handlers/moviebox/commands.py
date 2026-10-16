@@ -1,4 +1,3 @@
-"""Command handler `/moviebox`."""
 import asyncio
 import html
 import logging
@@ -21,7 +20,6 @@ log = logging.getLogger(__name__)
 
 
 async def moviebox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main command handler for /moviebox."""
     if not await require_join_or_block(update, context):
         return
 

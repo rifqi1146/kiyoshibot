@@ -116,17 +116,14 @@ def _pick_color(arg: str | None) -> str:
     if arg in color_map:
         return color_map[arg]
 
-    # Support gradient: "#111/#222"
     if "/" in arg and not arg.startswith("//"):
         parts = arg.split("/")
         if len(parts) == 2 and all(p.startswith("#") for p in parts):
             return arg
 
-    # Support semi-transparent hex: "//#292232"
     if arg.startswith("//#") and len(arg) in (6, 9):
         return arg
 
-    # Support hex color
     if arg.startswith("#") and len(arg) in (4, 7):
         return arg
 
@@ -187,12 +184,6 @@ def _get_message_text_and_entities(message):
 
 
 def _extract_media_list(message) -> tuple[list[dict] | None, str | None, int | None]:
-    """Extract media list and mediaType for quote-api.
-    
-    quote-api expects media to be an ARRAY of file objects.
-    Returns (media_array, media_type, duration)
-    """
-    # Photo: send all photo sizes as an array (quote-api picks the best size)
     photos = getattr(message, "photo", None)
     if photos:
         items = []
@@ -205,7 +196,6 @@ def _extract_media_list(message) -> tuple[list[dict] | None, str | None, int | N
         if items:
             return items, "photo", None
 
-    # Sticker
     sticker = getattr(message, "sticker", None)
     if sticker:
         thumb = getattr(sticker, "thumbnail", None) or getattr(sticker, "thumb", None)
@@ -224,7 +214,6 @@ def _extract_media_list(message) -> tuple[list[dict] | None, str | None, int | N
             }
         return [item], "sticker", None
 
-    # Animation / GIF
     animation = getattr(message, "animation", None)
     if animation:
         thumb = getattr(animation, "thumbnail", None) or getattr(animation, "thumb", None)
@@ -236,7 +225,6 @@ def _extract_media_list(message) -> tuple[list[dict] | None, str | None, int | N
         }
         return [item], "animation", getattr(animation, "duration", None)
 
-    # Video
     video = getattr(message, "video", None)
     if video:
         thumb = getattr(video, "thumbnail", None) or getattr(video, "thumb", None)
@@ -248,14 +236,12 @@ def _extract_media_list(message) -> tuple[list[dict] | None, str | None, int | N
         }
         return [item], "video", getattr(video, "duration", None)
 
-    # Video note
     video_note = getattr(message, "video_note", None)
     if video_note:
         thumb = getattr(video_note, "thumbnail", None) or getattr(video_note, "thumb", None)
         file_id = thumb.file_id if thumb else video_note.file_id
         return [{"file_id": file_id}], "video_note", getattr(video_note, "duration", None)
 
-    # Document as image
     document = getattr(message, "document", None)
     if document:
         mime = getattr(document, "mime_type", "") or ""
@@ -268,7 +254,6 @@ def _extract_media_list(message) -> tuple[list[dict] | None, str | None, int | N
 
 
 def _extract_voice(message):
-    """Extract voice waveform and duration if available."""
     voice = getattr(message, "voice", None)
     if not voice:
         return None
@@ -288,9 +273,6 @@ def _extract_voice(message):
 
 
 def _build_reply_payload(message):
-    """Build replyMessage context. If replied message has no text, provide
-    a descriptive placeholder so quote-api will always render the reply block.
-    """
     reply = getattr(message, "reply_to_message", None)
     if not reply:
         return {}
@@ -298,8 +280,6 @@ def _build_reply_payload(message):
     reply_sender = _get_sender_obj(reply)
     reply_text, reply_entities = _get_message_text_and_entities(reply)
 
-    # If the replied message has no text (e.g. photo or sticker), create a label
-    # so that index.js (which requires both name AND text) will render the reply block.
     reply_thumb_file_id = None
 
     if not reply_text:
@@ -360,13 +340,6 @@ def _build_reply_payload(message):
 
     return payload
 
-
-# --- MTProto fallback for stripped nested replies ----------------------------
-# The Bot API deliberately drops `reply_to_message` from the message inside
-# another `reply_to_message`, so for grand-replies the bot never sees the
-# context. When the in-memory buffer has no richer copy either, we ask the
-# Telethon (MTProto) bot session — already used by the uploader — to re-fetch
-# the message and read its reply link directly.
 
 _TELETHON_ENTITY_TYPES = {
     "bold": "bold",
@@ -440,7 +413,6 @@ def _telethon_sender_name(sender, sender_id):
 
 
 async def _build_reply_payload_from_telethon(message) -> dict:
-    """Build a `replyMessage` payload from a Telethon Message object."""
     text = (getattr(message, "message", None) or "").strip()
 
     if not text:
@@ -483,8 +455,6 @@ async def _build_reply_payload_from_telethon(message) -> dict:
 
 
 async def _reply_payload_with_fallback(message, chat_id: int) -> dict:
-    """Reply payload for `message`, falling back to an MTProto re-fetch when
-    the Bot API stripped the reply chain (nested replies)."""
     payload = _build_reply_payload(message)
     if payload:
         return payload
@@ -495,7 +465,7 @@ async def _reply_payload_with_fallback(message, chat_id: int) -> dict:
 
     try:
         from handlers.dl.mtproto_uploader import fetch_messages_raw
-    except Exception as exc:  # pragma: no cover - import guard
+    except Exception as exc:
         log.debug("MTProto reply fallback unavailable: %s", exc)
         return {}
 
@@ -515,7 +485,6 @@ async def _reply_payload_with_fallback(message, chat_id: int) -> dict:
 
 
 def _collect_reply_chain(start_message, count: int) -> list:
-    """Walk backward along explicit reply-to links."""
     items = []
     current = start_message
     seen_ids = set()
@@ -536,18 +505,6 @@ def _collect_reply_chain(start_message, count: int) -> list:
 def _resolve_source_messages(chat_id: int, target, count: int,
                               backwards: bool = False,
                               cmd_msg_id: int | None = None) -> list:
-    """Resolve up to `count` messages starting (default) or ending (backwards)
-    at `target`, following QuotLy semantics:
-
-    - default (forward): target is the FIRST of the range — e.g. reply to
-      message 100 with `/q 3` gives [100, 101, 102].
-    - backwards (`/q -3`): target is the LAST of the range —
-      e.g. reply to message 100 with `/q -3` gives [98, 99, 100].
-
-    Prefers the recent_messages buffer (natural conversation), then falls
-    back to the explicit reply_to_message chain. Guarantees target is
-    included in the result.
-    """
     if count <= 1:
         return [target]
 
@@ -566,22 +523,17 @@ def _resolve_source_messages(chat_id: int, target, count: int,
     else:
         chosen = _without_cmd(recent_messages.get_slice_after(chat_id, target_mid, count))
 
-    # Fall back to reply chain if the buffer did not yield enough
     if len(chosen) < count:
         chain = _collect_reply_chain(target, count)
         if backwards:
             if len(chain) > len(chosen):
                 chosen = chain
         elif not chosen:
-            # Forward chain from a single target has nothing to walk to,
-            # but a 1-chain is still better than nothing.
             chosen = chain
 
-    # Guarantee target is present
     if not chosen or all(getattr(m, "message_id", None) != target_mid for m in chosen):
         chosen = [target]
 
-    # Dedupe while preserving order
     seen = set()
     deduped = []
     for m in chosen:
@@ -597,25 +549,11 @@ def _resolve_source_messages(chat_id: int, target, count: int,
 
 
 def parse_quote_args(cmd_name: str, args: list[str]) -> tuple[int, bool, bool, str | None]:
-    """Parse count, direction, reply flag, and color/gradient.
-
-    Supports (QuotLy-style):
-      /q 3       → 3 messages, target is the FIRST (forward range)
-      /q -3      → 3 messages, target is the LAST (backward range)
-      /q3, /q-3  → same, glued form
-      /q r, /qr  → include reply-context block
-      /q3r       → count 3 + reply block
-      /qi2, /qs5 → same options for image / stories
-      colors: red, #ff0000, #111/#222, transparent, random, //#292232
-
-    Returns (count, backwards, include_reply, color_arg).
-    """
     count = 1
     backwards = False
     include_reply = False
     color_arg = None
 
-    # 1. Glued suffix from the command name: "q3", "qr", "q2r", "q-3", "qi2", "qs5"
     base_prefix = "q"
     for p in ("qi", "qs", "q"):
         if cmd_name.startswith(p):
@@ -633,13 +571,11 @@ def parse_quote_args(cmd_name: str, args: list[str]) -> tuple[int, bool, bool, s
     if "r" in suffix:
         include_reply = True
 
-    # 2. Arguments
     for raw in args or []:
         arg = (raw or "").strip().lower()
         if not arg:
             continue
 
-        # "3r", "r3", "-3r", "r-3"
         if re.fullmatch(r"[-+]?\d+r|r[-+]?\d+", arg):
             m = re.search(r"[-+]?\d+", arg)
             if m:
@@ -651,7 +587,6 @@ def parse_quote_args(cmd_name: str, args: list[str]) -> tuple[int, bool, bool, s
             include_reply = True
             continue
 
-        # Bare signed number
         if re.fullmatch(r"[-+]?\d+", arg):
             val = int(arg)
             if val < 0:
@@ -664,14 +599,12 @@ def parse_quote_args(cmd_name: str, args: list[str]) -> tuple[int, bool, bool, s
             include_reply = True
             continue
 
-        # Color, gradient, or hex
         color_arg = arg
 
     return count, backwards, include_reply, color_arg
 
 
 async def _generate_quote(session, bot_token: str, payload: dict, output_format: str):
-    """Call quote-api POST /generate.<format>?botToken=<token>"""
     endpoint = f"{QUOTE_API_URI.rstrip('/')}/generate.{output_format}?botToken={bot_token}"
 
     async with session.post(
@@ -686,10 +619,6 @@ async def _generate_quote(session, bot_token: str, payload: dict, output_format:
 
 
 async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_type: str, output_format: str):
-    """Base handler for quote generation.
-    
-    Immediately generates and sends sticker/photo without noisy progress text.
-    """
     msg = update.effective_message
     if not msg:
         return
@@ -699,13 +628,10 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
 
     target = msg.reply_to_message
     if target:
-        # Telegram Bot API strips the `reply_to_message` field from nested messages.
-        # So we try to find a richer version in our buffer.
         buf = recent_messages.get_window(msg.chat_id, target.message_id, count=1)
         if buf and buf[0].message_id == target.message_id and buf[0].reply_to_message:
             target = buf[0]
     else:
-        # Fall back to last message in buffer before the command
         buf = recent_messages.get_window(msg.chat_id, msg.message_id, count=10)
         candidates = [m for m in buf if getattr(m, "message_id", None) != msg.message_id]
         if candidates:
@@ -713,7 +639,6 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
         else:
             return await msg.reply_text("❌ Reply to the message you want to quote.")
 
-    # Determine command name
     raw_cmd = ""
     text = (msg.text or "").strip()
     if text.startswith("/"):
@@ -723,7 +648,6 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
     count, backwards, include_reply, color_arg = parse_quote_args(raw_cmd, context.args or [])
     background_color = _pick_color(color_arg)
 
-    # Also remember the target and command messages in rolling buffer
     recent_messages.remember(msg.chat_id, target)
     recent_messages.remember(msg.chat_id, msg)
 
@@ -735,14 +659,12 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
     if not messages:
         return await msg.reply_text("❌ Message not found.")
 
-    # Build payload messages
     api_messages = []
     for item in messages:
         text, entities = _get_message_text_and_entities(item)
         sender = _get_sender_obj(item)
         from_payload = _build_from_payload(sender)
 
-        # Root chatId controls same-sender grouping in quote-api
         sender_id = int(from_payload.get("id") or 0)
 
         msg_payload = {
@@ -753,13 +675,11 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
             "entities": _entities_to_quote(entities),
         }
 
-        # Include reply context when requested
         if include_reply:
             reply_data = await _reply_payload_with_fallback(item, msg.chat_id)
             if reply_data:
                 msg_payload["replyMessage"] = reply_data
 
-        # Add media (photo, sticker, animation, video) as array
         media_list, media_type, duration = _extract_media_list(item)
         if media_list:
             msg_payload["media"] = media_list
@@ -768,12 +688,10 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
             if duration is not None:
                 msg_payload["mediaDuration"] = duration
 
-        # Add voice waveform
         voice = _extract_voice(item)
         if voice:
             msg_payload["voice"] = voice
 
-        # Add document row
         doc = getattr(item, "document", None)
         if doc and not media_list:
             msg_payload["document"] = {
@@ -781,7 +699,6 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
                 "file_size": getattr(doc, "file_size", 0),
             }
 
-        # Add audio row
         audio = getattr(item, "audio", None)
         if audio:
             audio_obj = {
@@ -796,7 +713,6 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
 
         api_messages.append(msg_payload)
 
-    # Filter messages that have no renderable content
     valid_messages = [
         m for m in api_messages
         if m.get("text") or m.get("media") or m.get("voice") or m.get("document") or m.get("audio")
@@ -824,7 +740,6 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
             image_bytes = await _generate_quote(session, context.bot.token, payload, output_format)
 
             if quote_type == "quote":
-                # Send directly as sticker
                 sticker = io.BytesIO(image_bytes)
                 sticker.name = f"quote.{output_format}"
                 await context.bot.send_sticker(
@@ -834,7 +749,6 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
                     **kwargs,
                 )
             else:
-                # Send as photo (wallpaper / stories)
                 photo = io.BytesIO(image_bytes)
                 photo.name = f"quote.{output_format}"
                 await context.bot.send_photo(
@@ -850,15 +764,12 @@ async def _quote_base(update: Update, context: ContextTypes.DEFAULT_TYPE, quote_
 
 
 async def q_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate quote sticker (webp)."""
     await _quote_base(update, context, quote_type="quote", output_format="webp")
 
 
 async def qi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate quote image with wallpaper (png)."""
     await _quote_base(update, context, quote_type="image", output_format="png")
 
 
 async def qs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate quote for stories (720x1280 png)."""
     await _quote_base(update, context, quote_type="stories", output_format="png")

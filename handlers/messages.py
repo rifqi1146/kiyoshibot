@@ -36,15 +36,6 @@ AI_REPLY_FILTER = (
     & ~filters.COMMAND
 )
 
-# `/caca` yang dikirim sebagai CAPTION (foto/stiker/dokumen) tidak tertangkap
-# `CommandHandler` — PTB hanya mencocokkan `msg.text`, sedangkan caption ada di
-# `msg.caption`. Handler ini menutup celah itu supaya "foto + caption /caca ..."
-# tetap sampai ke Caca.
-#
-# PENTING: wajib memakai `Regex` di dalam filter. Tanpa itu, filter akan cocok
-# untuk SETIAP foto/stiker yang punya caption apa pun (mis. "Aman ko GK ada
-# kendala"), sehingga `caca_cmd` ikut jalan di grup dan memicu gate join channel
-# ke pesan yang sama sekali tidak berhubungan dengan Caca.
 CACA_CAPTION_FILTER = (
     filters.CAPTION
     & (filters.PHOTO | filters.Document.IMAGE | filters.Sticker.ALL)

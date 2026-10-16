@@ -6,7 +6,6 @@ from handlers.payment.buypremium import buypremium_pm_direct
 from handlers.caca.caca_billing import cacatopup_cmd
 from database.share_db import get_share
 
-# start command
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if context.args:

@@ -13,7 +13,6 @@ from database.asupan_db import (
 )
 
 
-
 __all__ = [
     "asupan_cmd",
     "asupan_callback",

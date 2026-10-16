@@ -1,12 +1,3 @@
-"""Downloader PunishWorld (punishworld.com).
-
-FLOW DOWNLOADER
----------------
-1. is_punishworld_url() memverifikasi domain.
-2. Scrape metadata + sources (ambil yang resolusinya highest).
-3. Jika MP3: download MP4, ekstrak audio, pasang thumb.
-4. Jika MP4: langsung kirim ke user (worker router.py yg upload).
-"""
 import os
 import uuid
 import shutil
@@ -26,7 +17,6 @@ def _import_extractor():
 
 
 def is_punishworld_url(url: str) -> bool:
-    """True jika url adalah punishworld.com"""
     try:
         parsed = urlparse((url or "").strip())
         host = (parsed.hostname or "").lower()

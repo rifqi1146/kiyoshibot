@@ -1,17 +1,3 @@
-"""Manajemen autentikasi / sesi login Drakor.id (drakorid.co).
-
-FLOW AUTH
----------
-1. Sesi disimpan di `data/drakorid_session.json` (gitignored, berisi cookies `jwtlogin`,
-   `login`, `PHPSESSID`, `device_id`).
-2. Sesi diperiksa berkala (`get_auth_cookies()`). Kalau belum ada atau basi
-   (>24 jam), bot auto-login via `POST /login` menggunakan kredensial yang
-   tersimpan (bisa dioverride lewat env `DRAKORID_EMAIL` / `DRAKORID_PASSWORD`).
-3. Sesi yang terautentikasi membebaskan bot dari:
-   - Batas guest ("hanya bisa download 1x sehari").
-   - Warning login di halaman `/download-streaming/`.
-   - Mengeluarkan direct link MP4 360p / 480p / 720p.
-"""
 import json
 import logging
 import os
@@ -27,8 +13,6 @@ SESSION_FILE = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data", "drakorid_session.json")
 )
 
-# Kredensial HANYA dari .env (gitignored). Jangan pernah hardcode nilai di sini —
-# repo ini publik. Kosong = jalan sebagai guest (batas 1x download/hari tetap ada).
 DEFAULT_EMAIL = os.getenv("DRAKORID_EMAIL", "")
 DEFAULT_PASSWORD = os.getenv("DRAKORID_PASSWORD", "")
 
@@ -57,7 +41,6 @@ def _save_session(data: dict) -> None:
 
 
 def login(email: str = "", password: str = "") -> dict:
-    """Melakukan login HTTP ke Drakor.id dan mengembalikan dict cookies."""
     em = email or DEFAULT_EMAIL or os.getenv("DRAKORID_EMAIL", "")
     pw = password or DEFAULT_PASSWORD or os.getenv("DRAKORID_PASSWORD", "")
     if not em or not pw:
@@ -105,7 +88,6 @@ def login(email: str = "", password: str = "") -> dict:
 
 
 def get_auth_cookies() -> dict:
-    """Mengembalikan dict cookies yang valid (cache memori -> file -> auto-login)."""
     global _IN_MEMORY_COOKIES, _LAST_CHECK
     now = time.time()
 
@@ -116,13 +98,11 @@ def get_auth_cookies() -> dict:
     stored_cookies = stored.get("cookies") or {}
     updated_at = float(stored.get("updated_at") or 0.0)
 
-    # Re-login jika sesi sudah lebih dari 2 hari atau belum ada
     if stored_cookies and (now - updated_at < 172800) and "jwtlogin" in stored_cookies:
         _IN_MEMORY_COOKIES = stored_cookies
         _LAST_CHECK = now
         return _IN_MEMORY_COOKIES
 
-    # Auto-login
     fresh_cookies = login()
     if fresh_cookies:
         _IN_MEMORY_COOKIES = fresh_cookies

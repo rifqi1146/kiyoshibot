@@ -1,19 +1,9 @@
-"""Cache in-memory untuk sesi browse explorer RetroTube (`/becekku`, `/lendirqu`).
-
-- `SESSION_CACHE`    : sesi hasil listing/detail (key: session_id 8 hex).
-- `CATEGORIES_CACHE` : daftar kategori per situs (TTL 1 jam).
-- `TAGS_CACHE`       : tag cloud per situs (TTL 1 jam).
-
-Semua cache dibatasi TTL + jumlah entri supaya RAM tidak membengkak.
-"""
 import time
 
 from .constants import CACHE_TTL, INDEX_TTL, MAX_CACHE_ENTRIES
 
-# session_id -> { site, title, query, results, page, user_id, chat_id, ts, details }
 SESSION_CACHE: dict[str, dict] = {}
 
-# { site_key: {"ts": float, "list": [...]} }
 CATEGORIES_CACHE: dict = {}
 TAGS_CACHE: dict = {}
 
@@ -35,7 +25,6 @@ def get_tags_cache(site_key: str) -> dict:
 
 
 def purge_expired_cache() -> None:
-    """Buang sesi basi + paksa batas jumlah entri."""
     now = time.time()
     for key in [k for k, v in list(SESSION_CACHE.items()) if now - v.get("ts", 0) > CACHE_TTL]:
         SESSION_CACHE.pop(key, None)

@@ -2,10 +2,6 @@ import re
 
 
 def chunk_markdown(doc_id: str, title: str, text: str, max_chunk_chars: int = 600) -> list[dict]:
-    """Split markdown document into coherent topic chunks by headers or paragraphs.
-
-    Returns a list of dicts: {"id": str, "title": str, "content": str}.
-    """
     lines = text.splitlines()
     sections = []
     current_title = title
@@ -65,7 +61,6 @@ def chunk_markdown(doc_id: str, title: str, text: str, max_chunk_chars: int = 60
 
 
 def chunk_text(text: str, max_size: int = 500) -> list[str]:
-    """Backward compatibility helper."""
     chunks = []
     buf = ""
     for line in text.splitlines():

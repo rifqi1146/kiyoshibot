@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-"""Resolve Instagram media URLs using the saved mobile-device session.
-
-This is the local replacement for the Neoxr fallback on age-gated posts: it
-loads ``data/ig_session.json`` (created by ``scripts/ig_login.py``) and calls the
-private mobile endpoint ``media/<pk>/info/`` which is NOT gated the way the
-logged-out web GraphQL is.
-
-Usage:
-    venv/bin/python scripts/ig_resolve.py <instagram-url-or-shortcode> [...]
-    venv/bin/python scripts/ig_resolve.py Dc6e1d1BHa8
-
-Exit codes:
-    0  at least one URL resolved
-    1  session file missing / not logged in
-    2  no URL could be resolved
-"""
 
 import sys
 from pathlib import Path
@@ -86,7 +69,7 @@ def main() -> int:
         try:
             pk = _pk_from_input(cl, raw)
             media = cl.media_info(pk)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"  FAILED: {type(exc).__name__}: {exc}")
             rc = 2
             continue

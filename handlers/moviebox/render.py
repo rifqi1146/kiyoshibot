@@ -1,4 +1,3 @@
-"""Bot API 10.3 Rich Message and HTML fallback renderer for MovieBox (/moviebox)."""
 import html
 import math
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,7 +14,6 @@ from .constants import (
 
 
 def menu_markup() -> InlineKeyboardMarkup:
-    """Build the main menu keyboard from `MENU_LAYOUT`."""
     rows = []
     for pair in MENU_LAYOUT:
         row = []
@@ -72,7 +70,6 @@ def build_menu_content() -> tuple[str, str]:
 
 
 def build_all_sections_content(page: int = 0) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Browser for all 30+ curated MovieBox sections."""
     keys = list(SECTIONS.keys())
     total = len(keys)
     max_page = max(1, math.ceil(total / SECTIONS_PER_PAGE))
@@ -169,7 +166,6 @@ def build_results_content(session_id: str, data: dict) -> tuple[str, str, Inline
     )
 
     separator = "─" * 24
-    # Ensure plain HTML never exceeds Telegram's 4096 character limit.
     plain_body = "\n\n".join(plain_blocks)
     if len(plain_body) > 3200:
         plain_body = plain_body[:3200].rsplit("\n\n", 1)[0] + "\n\n<i>... list truncated for display ...</i>"
@@ -182,7 +178,6 @@ def build_results_content(session_id: str, data: dict) -> tuple[str, str, Inline
     )
 
     keyboard = []
-    # Up to 50 numbered buttons in rows of 5
     for i in range(0, len(chunk), 5):
         row_slice = chunk[i : i + 5]
         keyboard.append([
@@ -286,7 +281,6 @@ def build_episodes_content(
     season_idx: int,
     page: int,
 ) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Grid episode picker with support for multiple seasons."""
     if not seasons:
         seasons = [{"season": 1, "max_ep": 1}]
     season_idx = max(0, min(season_idx, len(seasons) - 1))
@@ -353,7 +347,6 @@ def build_download_choice_content(
     episode: int,
     is_tv: bool,
 ) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Format picker: Video (Multi-quality) or Audio."""
     t_esc = html.escape(title)
     ep_label = f"Season {season} Episode {episode}" if is_tv else "Full Movie"
 

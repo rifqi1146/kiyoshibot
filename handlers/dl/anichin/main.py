@@ -1,24 +1,3 @@
-"""Downloader Anichin (anichin.moe) — Donghua Sub Indo.
-
-FLOW DOWNLOADER
----------------
-1. `is_anichin_url(url)`: host `anichin.moe` + path episode
-   (`/<slug>-episode-<N>-subtitle-indonesia/`).
-2. `probe_anichin(url)`: scrape halaman episode -> daftar mirror resolusi
-   (dari `div.soraurlx`) -> `res_list` untuk resolution picker. Di-cache
-   `_PROBE_CACHE` (TTL 5 menit) supaya callback resolusi memakai link yang sama.
-3. `anichin_download(...)`:
-   a. Ambil mirror sesuai `format_id` (label resolusi, mis. "720p").
-   b. Resolve chain: shortener -> `mirrored.to/multilinks` ->
-      `mirrored.to/files/<uid>/..._links` -> `/mirstats.php` -> POST `/out_url`
-      -> link file host asli (GoogleDrive/Buzzheavier/...).
-   c. Unduh:
-      - GoogleDrive -> `_download_gdrive` (endpoint `drive.usercontent.google.com`).
-      - Buzzheavier -> CDN langsung (`buzzheavier.com/<id>/download`).
-      - host lain -> streaming `curl_cffi` biasa dengan Referer host.
-   d. `fmt_key == "mp3"` -> ekstrak audio ffmpeg `libmp3lame -q:a 2`.
-4. Semua langkah MURNI HTTP (curl_cffi). TIDAK memakai yt-dlp.
-"""
 import asyncio
 import logging
 import os
@@ -42,10 +21,6 @@ _CACHE_TTL = 300.0
 
 
 def is_anichin_url(url: str) -> bool:
-    """Halaman episode Anichin: host anichin.moe + slug episode.
-
-    Halaman series (`/<slug>/`) juga diterima (diunduh lewat episode pertama).
-    """
     parsed = urlparse((url or "").strip())
     host = (parsed.hostname or "").lower()
     if host.startswith("www."):
@@ -55,7 +30,6 @@ def is_anichin_url(url: str) -> bool:
     path = (parsed.path or "").strip("/")
     if not path:
         return False
-    # Buang halaman non-video.
     if path.split("/")[0] in ("anime", "ongoing", "completed", "upcoming-donghua", "drop",
                               "genres", "az-lists", "schedule", "bookmark", "blog",
                               "privacy-policy-2", "riwayat-menonton", "anichin-vip", "anichin-cafe"):
@@ -70,7 +44,6 @@ def _prune_cache() -> None:
 
 
 def _has_stream(stream: dict | None) -> bool:
-    """Apakah objek stream memiliki video yang bisa diunduh (varian/segmen/direct)."""
     if not stream or not isinstance(stream, dict):
         return False
     return bool(stream.get("variants") or stream.get("segments") or stream.get("direct_url"))
@@ -92,11 +65,6 @@ def peek_probe(url: str) -> dict | None:
 
 
 def _scrape_series_latest_episode(url: str) -> dict | None:
-    """Halaman series -> episode TERBARU (`div.eplister ul li` pertama).
-
-    Dipakai `probe_anichin` supaya URL series tidak berakhir
-    "No valid resolutions available". -> {episode_url, title}
-    """
     import re as _re
     from bs4 import BeautifulSoup
 
@@ -124,7 +92,6 @@ def _scrape_series_latest_episode(url: str) -> dict | None:
 
 
 def probe_anichin(raw_url: str) -> dict:
-    """-> {title, thumbnail, mirrors, res_list}"""
     url = (raw_url or "").strip()
     cached = peek_probe(url)
     if cached:
@@ -133,9 +100,6 @@ def probe_anichin(raw_url: str) -> dict:
     post = extractor.scrape_post(url)
     mirrors = post.get("mirrors") or []
 
-    # Kalau user menempel URL SERIES (`/<slug>/`), halaman itu cuma daftar
-    # episode -> tidak ada mirror. Ambil episode TERBARU lalu probe itu,
-    # supaya "No valid resolutions available" tidak muncul untuk URL series.
     if not mirrors:
         try:
             detail = _scrape_series_latest_episode(url)
@@ -151,18 +115,12 @@ def probe_anichin(raw_url: str) -> dict:
                 post = ep_post
                 url = ep_url
 
-    # Server streaming — jalur cadangan paling andal (OK.ru, lalu VidHide/
-    # StreamWish). Di-resolve di sini supaya picker bisa memakai tinggi nyata dan
-    # download worker tidak fetch ulang.
     stream = {}
     try:
         stream = extractor.resolve_stream_source(post.get("servers") or [], url) or {}
     except Exception as e:
         log.debug("Anichin server stream probe failed | url=%s err=%r", url, e)
 
-    # Halaman tanpa mirror resolusi TIDAK langsung dianggap gagal: selama ada
-    # server streaming, halaman masih bisa diunduh (kualitas server yang mengisi
-    # picker). Ini yang mencegah "No valid resolutions available."
     if not mirrors and not _has_stream(stream):
         servers = post.get("servers") or []
         if servers:
@@ -183,9 +141,6 @@ def probe_anichin(raw_url: str) -> dict:
         label = (m.get("label") or "").strip()
         low = label.lower()
 
-        # Label "Multi": shortener-nya langsung menunjuk `mirrored.to/multilinks/<hash>`
-        # yang berisi BEBERAPA resolusi (1080p/720p/480p/360p). Expand jadi
-        # resolusi nyata supaya picker terisi; kalau gagal, fallback ke label asli.
         if low == "multi":
             try:
                 expanded = extractor.list_resolutions(m.get("url") or "", referer=url)
@@ -209,10 +164,8 @@ def probe_anichin(raw_url: str) -> dict:
                     })
                 continue
 
-        # "VIP" bukan resolusi (link Telegram promosi).
         if low in ("vip", ""):
             continue
-        # "4K" tidak punya digit tinggi -> map manual.
         if low in ("4k", "2160p"):
             height = 2160
         else:
@@ -236,15 +189,9 @@ def probe_anichin(raw_url: str) -> dict:
 
     res_list.sort(key=lambda x: x.get("height") or 0, reverse=True)
 
-    # Kalau halaman tidak punya mirror resolusi sama sekali, tawarkan kualitas
-    # server streaming supaya picker tidak kosong ("No valid resolutions
-    # available"). Kalau mirror ADA, server TIDAK ditambahkan ke picker (akan
-    # membanjiri daftar dengan tinggi "nyata" yang berbeda dari label nominal) —
-    # server tetap dipakai otomatis sebagai fallback saat semua host mirror gagal.
     if not res_list and (stream.get("variants") or stream.get("segments") or stream.get("direct_url")):
         variants = stream.get("variants") or []
         if not variants and (stream.get("segments") or stream.get("direct_url")):
-            # Sumber non-OK.ru (Rumble/VidHide): hanya satu kualitas yang diketahui.
             variants = [{"height": stream.get("height") or 0}]
         for v in reversed(variants):
             h = v.get("height") or 0
@@ -266,7 +213,6 @@ def probe_anichin(raw_url: str) -> dict:
             })
         res_list.sort(key=lambda x: x.get("height") or 0, reverse=True)
     elif not res_list and stream.get("segments"):
-        # Hanya ada jalur HLS (VidHide/StreamWish): satu opsi di tinggi tertinggi.
         h = stream.get("height") or 0
         res_list.append({
             "height": h or 720,
@@ -286,7 +232,6 @@ def probe_anichin(raw_url: str) -> dict:
         "servers": post.get("servers") or [],
         "res_list": res_list,
         "stream": stream,
-        # Kompatibilitas nama lama.
         "okru": stream if stream.get("kind") == "okru" else {},
     }
     log.info(
@@ -296,8 +241,6 @@ def probe_anichin(raw_url: str) -> dict:
         len(probe["servers"]),
     )
     cache_probe(url, probe)
-    # Kalau URL asli adalah halaman series, simpan juga di key URL series supaya
-    # probe kedua tidak resolve ulang (download worker memakai `raw_url` asli).
     if (raw_url or "").strip() != url:
         cache_probe((raw_url or "").strip(), probe)
     return probe
@@ -312,7 +255,6 @@ def _gdrive_id(url: str) -> str:
 
 
 def _download_gdrive(gid: str, out_path: str) -> int:
-    """Unduh dari Google Drive (endpoint `drive.usercontent.google.com`)."""
     import curl_cffi.requests as curl_requests
 
     h = {"User-Agent": UA}
@@ -357,14 +299,10 @@ def _download_gdrive(gid: str, out_path: str) -> int:
 
 
 def _download_stream(url: str, out_path: str, referer: str = "") -> int:
-    """Streaming HTTP biasa (host selain Google Drive)."""
     import curl_cffi.requests as curl_requests
 
     with_headers = {"User-Agent": UA}
     if referer:
-        # Nama file mirrored.to bisa memuat karakter Unicode (mis. `Ⅴ` U+2164);
-        # header Referer WAJIB ASCII/latin-1 atau curl_cffi melempar
-        # UnicodeEncodeError yang menyesatkan.
         with_headers["Referer"] = extractor._header_safe(referer)
     r = curl_requests.get(url, headers=with_headers, impersonate="chrome", timeout=120, stream=True)
     if r.status_code != 200:
@@ -390,7 +328,6 @@ def _download_stream(url: str, out_path: str, referer: str = "") -> int:
 
 
 def _est_bytes(duration, bandwidth) -> int:
-    """Estimasi total byte dari `duration × bandwidth / 8` (aman terhadap tipe)."""
     try:
         dur = float(duration or 0)
         bw = float(bandwidth or 0)
@@ -402,12 +339,6 @@ def _est_bytes(duration, bandwidth) -> int:
 
 
 def _byte_concat(paths: list[str], out_path: str) -> None:
-    """Gabungkan file biner (init + fragmen fMP4) berurutan jadi satu file.
-
-    Untuk HLS fMP4 hasilnya adalah MP4 fragmen valid: `init.mp4` (memuat
-    `ftyp`+`moov`) diikuti fragmen `moof`+`mdat`. Inilah satu-satunya cara yang
-    andal — `ffmpeg -f concat` tidak bisa menyambung fMP4 tanpa init.
-    """
     with open(out_path, "wb") as out:
         for p in paths:
             with open(p, "rb") as src:
@@ -427,19 +358,6 @@ async def _download_segments_parallel(
     est_total: int = 0,
     concurrency: int = 12,
 ) -> int:
-    """Unduh segmen HLS paralel lalu mux ke satu MP4.
-
-    Mendukung dua bentuk HLS:
-    - **MPEG-TS** (OK.ru, Rumble lama, VidHide): segmen `.ts` tanpa init ->
-      concat demuxer `-f concat` + `-bsf:a aac_adtstoasc` (fallback byte-concat).
-    - **fMP4** (Dailymotion sekarang, Rumble baru): `#EXT-X-MAP` init + fragmen
-      `.m4s`, dan audio sebagai **rendition terpisah**. Init WAJIB disambung di
-      depan, lalu track audio (kalau ada) di-mux terpisah.
-
-    Jauh lebih cepat dari ffmpeg serial (~1.1 MB/s): 12 koneksi paralel. Tiap
-    segmen ditulis ke file sendiri (bukan ditahan di RAM) supaya episode besar
-    tidak menghabiskan memori.
-    """
     import curl_cffi.requests as curl_requests
     from handlers.dl.progress import TransferStats
 
@@ -496,7 +414,6 @@ async def _download_segments_parallel(
                     log_interval=PROGRESS_INTERVAL, edit_interval=PROGRESS_INTERVAL,
                 )
 
-    # Susun daftar pekerjaan: (path tulis, url). Init selalu paling depan.
     jobs: list[tuple[str, str]] = []
     if init:
         jobs.append((os.path.join(vdir, "000000.init"), init))
@@ -530,13 +447,7 @@ async def _download_segments_parallel(
     video_paths = _collect(vdir, len(segments))
     stats.log_done("Anichin download", label="Anichin")
 
-    # PENTING: Gunakan `subprocess.run` via `asyncio.to_thread` — BUKAN
-    # `asyncio.create_subprocess_exec`! `uvloop.create_subprocess_exec` memanggil
-    # `fork()` yang rawan SIGSEGV di libc.so.6 (exit=-11) saat ada banyak C-thread
-    # aktif (curl_cffi / sqlite / patchright). `subprocess.run` memakai
-    # `posix_spawnp` (CLONE_VM | CLONE_VFORK) yang 100% aman.
     if init:
-        # ---- Jalur fMP4: byte-concat init + fragmen, mux track audio terpisah.
         v_mp4 = os.path.join(work_dir, "video.mp4")
         await asyncio.to_thread(_byte_concat, video_paths, v_mp4)
         cmd = ["ffmpeg", "-y", "-loglevel", "warning", "-i", v_mp4]
@@ -555,8 +466,6 @@ async def _download_segments_parallel(
         shutil.rmtree(work_dir, ignore_errors=True)
         return os.path.getsize(out_path)
 
-    # ---- Jalur MPEG-TS: concat demuxer (`-f concat -safe 0`), hemat I/O.
-    # `-bsf:a aac_adtstoasc` wajib saat muxing stream AAC dari MPEG-TS ke MP4.
     concat_list = os.path.join(work_dir, "concat.txt")
     with open(concat_list, "w", encoding="utf-8") as f:
         for p in video_paths:
@@ -572,7 +481,6 @@ async def _download_segments_parallel(
         subprocess.run, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
-    # Jika jalur 1 gagal, fallback ke jalur 2 (byte-concat lalu remux).
     if res1.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         err1 = (res1.stderr or b"").decode("utf-8", "replace").strip()[-300:]
         log.warning("ffmpeg -f concat failed (exit=%s: %s), trying byte-concat", res1.returncode, err1)
@@ -604,13 +512,6 @@ async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
                            bot=None, chat_id=None, status_msg_id=None,
                            title: str = "Anichin", notify: bool = False,
                            est_total: int = 0) -> None:
-    """Unduh HLS via ffmpeg (`-c copy` + faststart).
-
-    Progress dipantau dari ukuran file keluaran (ffmpeg menulis inkremental)
-    supaya UI Telegram tetap bergerak; `-loglevel error` menjaga stderr bersih
-    untuk pesan error. `est_total` = estimasi total byte (`duration × bandwidth/8`)
-    supaya bar punya penyebut.
-    """
     from handlers.dl.progress import TransferStats
 
     cmd = [
@@ -621,8 +522,6 @@ async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
         "-c", "copy", "-movflags", "+faststart",
         out_path,
     ]
-    # PENTING: Gunakan `subprocess.Popen` via background thread / posix_spawn,
-    # BUKAN `asyncio.create_subprocess_exec` (uvloop fork() SIGSEGV -11).
     proc = await asyncio.to_thread(
         subprocess.Popen,
         cmd,
@@ -633,10 +532,6 @@ async def _run_ffmpeg_hls(playlist_url: str, referer: str, out_path: str,
     stats = TransferStats(max(0, int(est_total or 0)))
 
     async def _drain():
-        # `communicate()` (di thread terpisah, karena Popen sinkron) menangani
-        # pembacaan stderr sekaligus menunggu proses, sehingga tidak ada race
-        # antara `stderr.read()` dan proses yang sudah keluar (yang bisa
-        # memblokir selamanya).
         _, err = await asyncio.to_thread(proc.communicate)
         return err or b""
 
@@ -689,12 +584,6 @@ async def anichin_server(
     known_size: int = 0,
     engine: str | None = None,
 ):
-    """Unduh dari server streaming Anichin (OK.ru) — jalur paling andal.
-
-    Dipakai `anichin_download` sebagai fallback setelah semua host mirror gagal,
-    dan oleh resolution picker (engine `anichin_server`) supaya user bisa memilih
-    server streaming secara eksplisit.
-    """
     del has_audio, known_size, engine
     url = (raw_url or "").strip()
 
@@ -724,7 +613,6 @@ async def anichin_server(
     if m:
         want = int(m.group(1))
 
-    # Siapkan daftar segmen + tinggi tergantung jenis sumber.
     segments: list[str] = []
     init = ""
     audio_init = ""
@@ -749,7 +637,6 @@ async def anichin_server(
             got = {}
         segments = got.get("segments") or []
         if not segments:
-            # Fallback: ffmpeg serial pada master playlist.
             variant_url = variant.get("url") or ""
             if not variant_url:
                 raise RuntimeError("OK.ru variant URL not found.")
@@ -825,7 +712,6 @@ async def anichin_server(
             "thumb": probe.get("thumbnail") or info.get("poster") or "",
             "width": width or 1280,
             "height": height or 720,
-            # ffmpeg sudah menulis MP4 faststart -> lewati remux kedua di pipeline.
             "remux_done": True,
         }
     finally:
@@ -844,11 +730,9 @@ async def anichin_download(
     known_size: int = 0,
     engine: str | None = None,
 ):
-    """Unduh episode Anichin. Lihat FLOW DOWNLOADER di docstring modul."""
     del has_audio, known_size
     url = (raw_url or "").strip()
 
-    # Engine eksplisit `anichin_server` -> langsung jalur server streaming (OK.ru).
     if (engine or "") == "anichin_server":
         return await anichin_server(
             raw_url, fmt_key, bot, chat_id, status_msg_id,
@@ -867,17 +751,12 @@ async def anichin_download(
         raise RuntimeError("No download links found on this page.")
 
     want = (format_id or "").strip().lower()
-    # Halaman tanpa mirror tapi punya server streaming: langsung ke jalur server.
     if not mirrors:
         log.info("Anichin no mirrors -> straight to streaming server | url=%s", url)
         return await anichin_server(
             raw_url, fmt_key, bot, chat_id, status_msg_id,
             format_id=format_id, metadata_ready=metadata_ready,
         )
-    # Ambil SEMUA provider untuk resolusi yang dipilih (mis. `Mirrored` +
-    # `Terabox`). Kalau provider pertama butuh captcha, provider kedua dicoba.
-    # Cocokkan toleran: format_id bisa "1080p" (label soraurlx) atau "1080"
-    # (tinggi OK.ru) sementara label mirror bisa "1080p" / "Multi".
     targets = [m for m in mirrors if (m.get("label") or "").strip().lower() == want]
     if not targets:
         wn = extractor.label_height(want)
@@ -896,10 +775,6 @@ async def anichin_download(
             f"<b>Resolving {target.get('label') or 'video'}...</b>", label="Anichin",
         )
 
-    # Kumpulkan kandidat dari SEMUA provider pada resolusi ini (mis. `Mirrored`,
-    # `Pixeldrain`, `Terabox`), bukan berhenti di provider pertama yang berhasil
-    # di-resolve. Provider pertama bisa resolve tapi gagal saat UNDUH; kandidat
-    # dari provider lain jadi fallback.
     candidates = []
     captcha_blocked = []
     seen_cand = set()
@@ -918,7 +793,6 @@ async def anichin_download(
             captcha_blocked.append(tgt.get("name") or tgt.get("url") or "")
 
     if not candidates:
-        # Fallback: server streaming (OK.ru / Rumble / VidHide-StreamWish) — tanpa captcha.
         if _has_stream(stream):
             reason = "all providers captcha" if captcha_blocked else "empty mirror"
             log.info(
@@ -975,8 +849,6 @@ async def anichin_download(
                 break
             except Exception as e:
                 last_err = e
-                # Kumpulkan supaya tidak membanjiri log dengan satu baris per host
-                # (14 host mati -> 14 warning). Ringkas jadi satu baris di akhir.
                 failed_hosts.append(f"{host}:{type(e).__name__}")
                 if os.path.exists(temp_video):
                     try:
@@ -987,7 +859,6 @@ async def anichin_download(
         else:
             if failed_hosts:
                 log.info("Anichin all mirror hosts failed | hosts=%s", failed_hosts)
-            # Semua host mirror gagal -> coba server streaming (OK.ru/Rumble/VidHide).
             if _has_stream(stream):
                 log.info(
                     "Anichin all mirror hosts failed -> fallback server streaming | url=%s kind=%s",

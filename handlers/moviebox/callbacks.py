@@ -1,20 +1,3 @@
-"""Callback query handler for MovieBox Explorer UI (`mb:` callbacks).
-
-Callback map (4 segments):
-  menu:0:0                     -> main menu
-  prompt:0:0                   -> search instruction screen
-  sections:<page>:0            -> all-sections browser
-  sec:<key>:<page>             -> open one section (trending/home/filter)
-  popular:0:0                  -> curated quick-search titles
-  popsearch:<index>            -> search one curated title
-  nav:<sid>:<page>             -> results pagination
-  back:<sid>:0                 -> back to results
-  view:<sid>:<idx>             -> detail view
-  seasons:<sid>:<idx>:<sidx>:<page>       -> episode picker
-  dlchoice:<sid>:<idx>:<season>:<episode> -> format picker
-  dl:<sid>:<idx>:<season>:<episode>:<fmt> -> start download
-  close:0:0                    -> delete message
-"""
 import asyncio
 import logging
 import time
@@ -51,7 +34,6 @@ def _make_session(data: dict, results: list[dict]) -> str:
 
 
 async def moviebox_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback query handler for MovieBox inline navigation."""
     q = update.callback_query
     if not q or not q.data or not q.data.startswith(f"{PREFIX}:"):
         return
@@ -168,7 +150,6 @@ async def moviebox_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # Operations requiring session_id
     if len(parts) < 3:
         return await q.answer()
 
@@ -184,8 +165,6 @@ async def moviebox_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
         results = data.get("results") or []
         max_page = max(1, (len(results) + PER_PAGE - 1) // PER_PAGE)
-        # Section browsing: lazily fetch the next API page when the user
-        # paginates past the currently loaded chunk.
         section = data.get("section")
         if section and target_page >= max_page and data.get("has_more"):
             await q.answer("Loading more...")

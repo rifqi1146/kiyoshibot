@@ -30,17 +30,14 @@ def _host_match(host: str, domain: str) -> bool:
 from .youtube.community import is_youtube_post_url, is_youtube_shorts_url
 
 def supports_ytdlp_resolution(url: str) -> bool:
-    # YouTube community posts bukan video -> tidak punya resolusi.
     if is_youtube_post_url(url):
         return False
-    # YouTube Shorts diunduh langsung best quality tanpa picker (video singkat).
     if is_youtube_shorts_url(url):
         return False
     host = _host(url)
     return any(_host_match(host, d) for d in YTDLP_RESOLUTION_DOMAINS)
 
 def supports_nekopoi_resolution(url: str) -> bool:
-    # Nekopoi punya picker resolusi sendiri (HLS).
     host = _host(url)
     return host in ("nekopoi.care", "nekopoi.best", "nekopoi.pw", "nekopoi.win")
 
@@ -310,15 +307,8 @@ async def get_resolutions(url: str, engine: str | None = None) -> list[dict]:
 
 
 async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple[list[dict], str | None]:
-    """Seperti `get_resolutions`, tapi juga mengembalikan alasan kalau kosong.
-
-    `router._show_resolution_picker` memakai alasan ini supaya user melihat
-    kenapa picker-nya tidak muncul (mis. post Nekopoi tanpa jalur yang
-    didukung) alih-alih "No valid resolutions available." yang tidak menjelaskan.
-    """
     chosen = (engine or "").strip().lower()
 
-    # Nekopoi: engine="nekopoi" dari router, atau deteksi otomatis via host.
     if chosen == "nekopoi" or (not chosen and supports_nekopoi_resolution(url)):
         try:
             from .nekopoi.main import probe_nekopoi
@@ -373,7 +363,6 @@ async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple
             log.warning("MovieBox probe failed | url=%s err=%r", url, e)
             return [], str(e)
 
-    # Jalur lama: engine ytdlp. Nekopoi tidak pernah lewat sini.
     if chosen and chosen != "ytdlp":
         log.warning("Unsupported resolution engine ignored | url=%s engine=%s", url, chosen)
     if not supports_ytdlp_resolution(url):

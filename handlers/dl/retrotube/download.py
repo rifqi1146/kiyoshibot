@@ -37,13 +37,11 @@ _DECOY_SEG_MARKERS = (
 
 
 def _is_decoy_seg(seg_url: str) -> bool:
-    """Segmen palsu: iklan/statis dari CDN iklan TikTok (URL ber-ekstensi .image)."""
     path = seg_url.split("?", 1)[0]
     return any(m in seg_url for m in _DECOY_SEG_MARKERS) or path.endswith(".image")
 
 
 def _is_decoy_playlist(text: str) -> bool:
-    """Playlist decoy = SEMUA baris datanya segmen palsu (bukan video asli)."""
     data = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
     if not data:
         return False
@@ -51,7 +49,6 @@ def _is_decoy_playlist(text: str) -> bool:
 
 
 def _fetch_segments(master_url: str, referer: str) -> list:
-    """Ambil daftar URL segmen .ts dari master -> variant playlist (kualitas terbaik)."""
     h = {"User-Agent": UA, "Referer": referer or master_url}
 
     def _get_playlist(url: str):
@@ -111,7 +108,6 @@ def _fetch_segments(master_url: str, referer: str) -> list:
         base = master_url
 
     if is_encrypted:
-        # Jika HLS terenkripsi (AES), kembalikan penanda khusus supaya download dilakukan via ffmpeg
         return ["__AES_HLS__", base]
 
     urls = []
@@ -174,9 +170,6 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
         stats.sample(total_bytes, now=now)
 
         if done > 0 and total > 0:
-            # Proyeksi total byte dari rata-rata segmen yang sudah selesai.
-            # Dijaga agar tidak pernah turun di bawah byte yang sudah terunduh
-            # (monoton naik), supaya bar/persentase tidak loncat-loncat atau >100%.
             est = int(total_bytes / done * total)
             stats.total = max(est, total_bytes, 1)
 
@@ -189,7 +182,6 @@ async def _download_segments(urls: list, referer: str, work_dir: str, bot, chat_
 
         last_edit = now
         if done >= total:
-            # Semua segmen selesai: angka final, jangan biarkan >100%.
             pct = 100.0 if total > 0 else 0.0
         else:
             pct = (done * 100.0 / total) if total > 0 else 0.0
@@ -264,7 +256,6 @@ def _download_direct(url: str, referer: str, out_path: str) -> int:
     h = {"User-Agent": UA, "Referer": referer}
     r = curl_requests.get(url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT, stream=True)
     
-    # Handle Google Drive virus scan confirmation
     if "drive.google.com" in url:
         ct = r.headers.get("content-type", "")
         if "text/html" in ct:
@@ -284,8 +275,6 @@ def _download_direct(url: str, referer: str, out_path: str) -> int:
     if r.status_code != 200:
         raise RuntimeError(f"Failed to download file ({r.status_code})")
     
-    # Pre-check ukuran via Content-Length sebelum menulis apa pun — hindari
-    # membakar bandwidth/disk untuk file > 2GB yang pasti ditolak nanti.
     try:
         _hdr_total = int(r.headers.get("Content-Length") or 0)
     except (TypeError, ValueError):
@@ -306,8 +295,6 @@ def _download_direct(url: str, referer: str, out_path: str) -> int:
                     if total > MAX_TG_SIZE:
                         raise FileSizeLimitExceeded("File melebihi batas 2GB")
     except BaseException:
-        # Hapus file parsial supaya tidak menunggu sweeper (dan tidak bikin
-        # disk penuh saat banyak kegagalan).
         try:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -320,17 +307,11 @@ def _download_direct(url: str, referer: str, out_path: str) -> int:
 
 
 def _download_gdrive(gid: str, out_path: str) -> int:
-    """Unduh video dari Google Drive lewat endpoint uc?export=download.
-
-    Dipakai untuk player yang mem-proxy Google Drive (mis. fbplay.vip /embed/video/<GDRIVE_ID>)
-    dan mengirim playlist HLS palsu (segmen PNG 1x1) saat streaming dari datacenter.
-    """
     url = f"https://drive.usercontent.google.com/download?id={gid}&export=download"
     h = {"User-Agent": UA}
     r = curl_requests.get(url, headers=h, impersonate="chrome", timeout=_HTTP_TIMEOUT, stream=True)
     ct = (r.headers.get("content-type") or "").lower()
 
-    # Halaman konfirmasi virus scan untuk file besar.
     if "text/html" in ct:
         text = r.content.decode("utf-8", "ignore")
         if "quota" in text.lower():

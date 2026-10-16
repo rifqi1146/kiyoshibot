@@ -1,19 +1,3 @@
-"""Callback query handler explorer RetroTube (`bq:` / `lq:` callbacks).
-
-FLOW CALLBACK
--------------
-1. `menu` / `close` — layar statis.
-2. `cats:<page>` / `tags:<page>` — picker kategori / tag cloud (cache 1 jam).
-3. `latest` / `viewed` / `cat:<slug>` / `tag:<slug>` — fetch listing lalu simpan
-   sesi (`SESSION_CACHE[sid]`) dan render listing.
-4. `nav:<sid>:<page>` / `back:<sid>` — pindah halaman / balik ke listing.
-5. `info:<sid>:<idx>` — fetch detail post (judul, views, tanggal, tag) +
-   tombol Download.
-6. `dl:<sid>:<idx>` — unduh lewat `_start_dl_task` (RetroTube tidak punya
-   resolution picker: `supports_resolution_picker()` False untuk host ini).
-
-Format callback: `prefix:action:arg1:arg2` (4 segmen, sama seperti versi lama).
-"""
 import asyncio
 import logging
 import time
@@ -65,8 +49,6 @@ def _new_session(site_key: str, user_id: int, chat_id: int, title: str, results:
         "ts": time.time(),
         "user_id": user_id,
         "chat_id": chat_id,
-        # Dari mana listing dibuka (`{"action": "tags"/"cats", "page": N}`), dipakai
-        # tombol Back supaya user balik ke daftar tag/kategori, bukan ke menu.
         "origin": origin or {},
     }
     return sid
@@ -94,7 +76,6 @@ def _handle_callback_for(site_key: str):
         chat_id = q.message.chat.id
         message_id = q.message.message_id
 
-        # ---------------- layar statis ----------------
         if action == "close":
             try:
                 await q.message.delete()
@@ -112,7 +93,6 @@ def _handle_callback_for(site_key: str):
             await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
             return await q.answer()
 
-        # ---------------- picker ----------------
         if action == "cats":
             page = int(arg1) if arg1.isdigit() else 0
             await q.answer("Loading categories...")
@@ -131,7 +111,6 @@ def _handle_callback_for(site_key: str):
             await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
             return
 
-        # ---------------- listing ----------------
         if action == "latest":
             await q.answer("Loading latest...")
             results = await asyncio.to_thread(fetch_latest, site, "latest", MAX_RESULTS)
@@ -188,13 +167,11 @@ def _handle_callback_for(site_key: str):
             await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
             return
 
-        # ---------------- operasi berbasis sesi ----------------
         session_id = arg1
         data = SESSION_CACHE.get(session_id)
         if not data:
             return await q.answer("Session expired. Please run the command again.", show_alert=True)
 
-        # Cache harus milik situs yang sama (tolak tombol silang antar situs).
         if data.get("site") != site_key:
             return await q.answer("Session expired. Please run the command again.", show_alert=True)
 
@@ -244,7 +221,6 @@ def _handle_callback_for(site_key: str):
             await q.answer("Downloading...")
             SESSION_CACHE.pop(session_id, None)
 
-            # Edit pesan listing/detail langsung jadi status download.
             try:
                 await q.edit_message_text(text=_metadata_status(url), parse_mode="HTML")
             except Exception as e:

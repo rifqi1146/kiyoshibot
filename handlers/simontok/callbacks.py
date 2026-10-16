@@ -1,19 +1,3 @@
-"""Callback query handler explorer Simontok (`sm:` callbacks).
-
-FLOW CALLBACK
--------------
-1. `menu` / `close` / `prompt` — layar statis.
-2. `cats:<page>` — picker kategori (cache 1 jam).
-3. `sec:<slug>` / `cat:<slug>:<ppage>` — fetch listing lalu simpan sesi
-   (`SESSION_CACHE[sid]`) dan render listing.
-4. `nav:<sid>:<page>` / `back:<sid>` — pindah halaman / balik ke listing.
-5. `info:<sid>:<idx>` — fetch detail post (judul, durasi, views, genre) +
-   tombol format `Video` / `Audio`.
-6. `dl:<sid>:<idx>:<fmt>` — unduh lewat `_start_dl_task` (Simontok tidak punya
-   resolution picker: `supports_resolution_picker()` False untuk host ini).
-
-Format callback: `sm:action:arg1:arg2[:arg3]`.
-"""
 import asyncio
 import logging
 import time
@@ -82,7 +66,6 @@ async def simontok_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
 
-    # ---------------- layar statis ----------------
     if action == "close":
         try:
             await q.message.delete()
@@ -100,7 +83,6 @@ async def simontok_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return await q.answer()
 
-    # ---------------- picker ----------------
     if action == "cats":
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await q.answer("Loading categories...")
@@ -109,7 +91,6 @@ async def simontok_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- listing ----------------
     if action == "sec":
         slug = parts[2] if len(parts) > 2 else ""
         if slug not in ("terbaru", "trending", "vip", "indo", "jav", "semi", "hentai"):
@@ -145,7 +126,6 @@ async def simontok_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- operasi berbasis sesi ----------------
     if len(parts) < 3:
         return await q.answer()
 

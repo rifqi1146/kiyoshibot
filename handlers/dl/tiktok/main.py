@@ -1,26 +1,3 @@
-"""Downloader TikTok (tiktok.com / vt.tiktok.com / douyin.com).
-
-FLOW DOWNLOADER TIKTOK
-----------------------
-1. URL Matching: `is_tiktok(url)` (dari extractor).
-
-2. Metadata (`_fetch_tiktok_metadata`, via extractor):
-   - Jalur cepat `_fetch_tiktok_govd_fast` (1 request) dulu bila TIKTOK_GOVD_FAST.
-   - Gagal -> `_fetch_tiktok_direct` (5x retry aiohttp + fallback Scrapling).
-   - PoW challenge TikTok diselesaikan `utils._solve_tt_challenge`.
-
-3. Download (downloader.py):
-   - engine TIKTOK_DOWNLOAD_ENGINE (aria2c/aiohttp, saling fallback),
-     progress TransferStats, batas 2GB.
-   - Video: coba semua kandidat `video_urls` berurutan.
-   - Album: paralel per gambar.
-   - Slideshow: pilihan gambar vs video (ffmpeg xfade) vs audio.
-
-4. Slideshow multi-gambar + fmt mp4 -> kirim `choice_required`
-   ("tiktok_slideshow") supaya router menampilkan picker.
-
-5. Gagal total -> fallback tikwm (`fallback._tikwm_result`).
-"""
 import logging
 
 from handlers.dl.utils import FileSizeLimitExceeded
@@ -33,8 +10,6 @@ from .fallback import _tikwm_result
 
 log = logging.getLogger(__name__)
 
-# Re-export: dipakai router (`from .tiktok.main import is_tiktok,tiktok_download`)
-# dan fallback (`from .main import _download_with_best_engine, ...`).
 is_tiktok = _ext.is_tiktok
 _download_with_best_engine = _dl._download_with_best_engine
 _download_album_images = _dl._download_album_images
@@ -48,7 +23,6 @@ __all__ = [
     "_download_with_best_engine",
     "_download_album_images",
 ]
-
 
 
 async def tiktok_scrape_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):

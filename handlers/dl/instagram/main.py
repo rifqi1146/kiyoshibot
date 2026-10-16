@@ -640,7 +640,6 @@ _VIDEO_EXTS=(".mp4",".mov",".m4v",".webm")
 _PHOTO_EXTS=(".jpg",".jpeg",".png",".webp")
 
 def detect_media_signature(header:bytes)->tuple[str,str]:
-    """Deteksi tipe media dari magic bytes; return ("", "") jika tidak dikenali."""
     if not header:
         return "",""
     if header[:3]==b"\xff\xd8\xff":
@@ -693,8 +692,6 @@ def _filter_urls_for_media(urls:list[str],fmt_key:str="video",meta_items:list[di
     if fmt_key=="mp3":
         return videos[:1] if videos else []
     wanted=_media_types_from_meta(meta_items or [])
-    # Carousel/campuran (mis. 2 video + 1 foto): samakan dengan urutan metadata asli
-    # supaya foto tidak ikut terbuang hanya karena ada video.
     if wanted and len(wanted)>1:
         selected=[]
         used=set()
@@ -1066,8 +1063,6 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
                 last_error = e
                 log.warning("Instagram media download failed | source=%s host=%s err=%r", source, urlparse(media_url).hostname, e)
     else:
-        # Carousel multi-slide: unduh paralel (sebelumnya serial 1-per-1).
-        # Hasil dikumpulkan per-index supaya urutan media tetap sesuai post.
         results: list = [None] * total_items
         lock = asyncio.Lock()
         sem = asyncio.Semaphore(max(1, IG_CAROUSEL_CONCURRENCY))

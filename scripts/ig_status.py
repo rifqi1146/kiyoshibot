@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""Check the saved Instagram mobile session in ``data/ig_session.json``.
-
-Usage:
-    venv/bin/python scripts/ig_status.py [shortcode]
-
-If a shortcode (e.g. ``Dc6e1d1BHa8``) is given, this script also tries to
-fetch that specific post via the private mobile endpoint
-(``media/<pk>/info/``) using the stored session, showing whether it unlocks
-age-gated media.
-"""
 
 import sys
 from pathlib import Path
@@ -38,7 +27,6 @@ def main() -> int:
         print(f"Failed to parse {SESSION_PATH}: {exc}")
         return 2
 
-    # Identify user from stored settings
     settings = cl.get_settings()
     auth_user = settings.get("authorization_data", {}).get("ds_user_id") or ""
     cookies = settings.get("cookies", {})
@@ -53,7 +41,6 @@ def main() -> int:
     print(f"Device UUID:  {settings.get('uuids', {}).get('android_device_id', '<unknown>')}")
     print(f"Has session:  {'yes' if has_session else 'no'}")
 
-    # Ping the private API to test if the session is alive
     print("\nPinging Instagram Private Mobile API...")
     try:
         info = cl.account_info()
@@ -64,7 +51,6 @@ def main() -> int:
         print("Re-run: venv/bin/python scripts/ig_login.py")
         return 3
 
-    # Optional shortcode probe
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:
         shortcode = args[0]

@@ -6,7 +6,6 @@ from typing import Sequence
 
 log = logging.getLogger(__name__)
 
-# Common Indonesian stopwords and particles that should not trigger RAG retrieval.
 INDONESIAN_STOPWORDS = {
     "ada", "adalah", "adanya", "agar", "aja", "akan", "aku", "anda", "antar", "antara",
     "apa", "apabila", "apakah", "apalagi", "arti", "artinya", "atas", "atau",
@@ -34,9 +33,6 @@ INDONESIAN_STOPWORDS = {
     "yang", "yg", "yuk",
 }
 
-# Specific keywords that signal a query is asking about the bot itself or its features.
-# Generic words ("cara", "gimana", "help") are intentionally excluded: they appear in
-# everyday questions ("cara masak nasi goreng") and would inject docs needlessly.
 BOT_INTENT_KEYWORDS = {
     "bot", "kiyoshi", "kiyoshibot", "fitur", "command", "perintah", "bantuan",
     "downloader", "download", "unduh", "premium", "buypremium", "qris", "bayar",
@@ -63,11 +59,6 @@ BOT_INTENT_KEYWORDS = {
     "quiz", "quoteanime", "game", "permainan",
 }
 
-# Multi-word intent phrases: matched as substrings of the raw lowercased query.
-# Handles identity questions ("kamu siapa", "kamu itu apa") and feature questions
-# whose keywords are ordinary Indonesian words ("game apa aja", "cara main asah
-# otak") that cannot be bare keywords without false positives ("cara" alone must
-# NOT trigger RAG — "cara masak nasi goreng" is not a bot question).
 BOT_INTENT_PHRASES = (
     "siapa kamu", "siapa lu", "siapa anda", "kamu siapa", "lu siapa", "anda siapa",
     "kamu itu siapa", "lu itu siapa", "kamu itu apa", "lu itu apa", "kamu apaan",
@@ -80,7 +71,7 @@ BOT_INTENT_PHRASES = (
 
 _FTS_DB: sqlite3.Connection | None = None
 _FTS_LOCK = asyncio.Lock()
-_BM25_THRESHOLD = -0.40  # In FTS5 BM25, lower is better. Results worse than this are discarded.
+_BM25_THRESHOLD = -0.40
 _CACHED_ROSTER = ""
 
 
@@ -103,7 +94,6 @@ def _get_fts_db() -> sqlite3.Connection:
 
 
 def index_documents(documents: Sequence[dict | str]) -> int:
-    """Populate or refresh the in-memory FTS5 search index with chunks."""
     global _CACHED_ROSTER
     db = _get_fts_db()
     db.execute("DELETE FROM rag_fts;")
@@ -140,7 +130,6 @@ def index_documents(documents: Sequence[dict | str]) -> int:
 
 
 def _clean_query_terms(query: str) -> list[str]:
-    """Extract informative non-stopword tokens from the query."""
     raw_tokens = re.findall(r"[\w/]+", (query or "").lower())
     terms = []
     for t in raw_tokens:
@@ -154,7 +143,6 @@ def _clean_query_terms(query: str) -> list[str]:
 
 
 def _has_bot_intent(query_lower: str, terms: list[str]) -> bool:
-    """True if the query explicitly mentions bot features, commands, or identity."""
     if re.search(r"\b/[a-z0-9_]+\b", query_lower):
         return True
     for t in terms:
@@ -167,7 +155,6 @@ def _has_bot_intent(query_lower: str, terms: list[str]) -> bool:
 
 
 def _identity_chunk(db: sqlite3.Connection, top_k: int) -> list[str]:
-    """Fetch the bot identity/about chunk for stopword-only identity questions."""
     try:
         cur = db.execute(
             """
@@ -189,23 +176,13 @@ def _identity_chunk(db: sqlite3.Connection, top_k: int) -> list[str]:
 
 
 def _search_fts(query: str, top_k: int = 2) -> list[str]:
-    """Return relevant context: a compact command roster + BM25-matched detail chunks.
-
-    The roster (~170 tokens) is cheap and always included on bot-intent queries so
-    the model knows every real command name. Detail chunks are added only when they
-    score strongly enough (strict relevance gate) so we never inject off-topic text.
-    """
     terms = _clean_query_terms(query)
     query_lower = (query or "").lower()
     has_intent = _has_bot_intent(query_lower, terms)
-    # Stopword-only queries ("kamu siapa?", "kamu itu apa?") lose every term, but
-    # they are still identity questions about the bot — keep the roster + best match.
     if not terms and not has_intent:
         log.info("[RAG] skip | q=%r reason=no_terms_no_intent (0 token)", query)
         return []
 
-    # If the user is chatting generally (math, cooking, coding) without any bot-related
-    # terms, bypass RAG completely. This saves tokens on 80%+ of chat interactions.
     if not has_intent:
         log.info("[RAG] skip | q=%r reason=general_query (0 token)", query)
         return []
@@ -218,8 +195,6 @@ def _search_fts(query: str, top_k: int = 2) -> list[str]:
     safe_terms = [re.sub(r"[^\w]", "", t) for t in terms]
     safe_terms = [t for t in safe_terms if len(t) >= 2]
     if not safe_terms:
-        # No searchable terms (e.g. "kamu siapa?"): fall back to the identity/about
-        # chunk so the model can answer who it is instead of hallucinating.
         fallback = _identity_chunk(db, top_k)
         results.extend(fallback)
         log.info(
@@ -246,8 +221,6 @@ def _search_fts(query: str, top_k: int = 2) -> list[str]:
         log.warning("RAG FTS5 query failed | expr=%r err=%r", fts_expression, e)
         return results
 
-    # Relevance gate: keep only chunks that clear the absolute threshold AND
-    # (for the 2nd+ chunk) sit close to the best score, so weak matches are dropped.
     best = rows[0][2] if rows else 0.0
     kept = 0
     picked: list[str] = []
@@ -285,16 +258,10 @@ async def retrieve_context(
     documents: Sequence[dict | str] | None = None,
     top_k: int = 2,
 ) -> list[str]:
-    """Retrieve relevant context chunks for a query using SQLite FTS5 (BM25).
-
-    Returns an empty list when the query is unrelated to the bot (saving tokens),
-    or up to ``top_k`` most relevant topic chunks when related.
-    """
     if not query or not query.strip():
         return []
 
     async with _FTS_LOCK:
-        # Auto-seed the index if not yet populated
         db = _get_fts_db()
         cur = db.execute("SELECT count(*) FROM rag_fts;")
         if cur.fetchone()[0] == 0:

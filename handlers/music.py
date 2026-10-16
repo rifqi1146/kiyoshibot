@@ -209,8 +209,6 @@ async def _edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_h
             warnings.simplefilter("ignore")
             return await bot.do_api_request("editMessageText", payload)
     except Exception as e:
-        # "not modified" = pesan sudah benar; fallback plain HTML justru
-        # menghilangkan rich message. Perlakukan sebagai no-op.
         if is_message_not_modified(e):
             log_music.debug("music editMessageText not modified, no-op")
             return None

@@ -1,4 +1,3 @@
-"""Helper, cookies, debugging, dan utilitas internal TikTok downloader."""
 import os
 import re
 import time
@@ -240,13 +239,6 @@ def _cookies_from_header(cookie_header: str) -> list[dict]:
 
 
 def _purge_tiktok_session_cookies(session):
-    """Hapus cookie TikTok dari cookie jar sesi bersama.
-
-    Cookie sesi (tt_chain_token, msToken, dll) membuat TikTok mengarahkan
-    permintaan media ke CDN `webapp-prime` yang menolak dengan HTTP 403.
-    Unduhan video/audio harus memakai jar bersih agar diarahkan ke CDN
-    `web-newkey` yang dapat diakses.
-    """
     try:
         jar = getattr(session, "cookie_jar", None)
         if jar is None:
@@ -279,8 +271,6 @@ def _duration_meta(*values) -> int:
 
 
 def _prioritize_video_urls(urls: list[str]) -> list[str]:
-    """Urutkan URL video: play/CDN biasanya bisa diakses; CDN `webapp-prime`
-    sering menolak (403) ketika cookie sesi TikTok ikut terkirim."""
     play = [u for u in urls if "aweme/v1/play" in u]
     cdn_ok = [u for u in urls if "aweme/v1/play" not in u and "tiktokcdn.com" in u]
     others = [u for u in urls if u not in play and u not in cdn_ok and "webapp-prime" not in u]

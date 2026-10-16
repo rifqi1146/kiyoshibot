@@ -1,13 +1,3 @@
-"""Downloader Drakor.id (drakorid.co)
-
-FLOW DOWNLOADER
----------------
-1. `is_drakorid_url(url)`: Cocokkan host drakorid.co dan path video.
-2. `probe_drakorid(url)`: Ekstrak resolusi untuk episode yang diminta dan
-   simpan ke `_PROBE_CACHE` (TTL 5 menit).
-3. `drakorid_download(...)`: Unduh resolusi pilihan (720p/480p/360p) via aria2c/curl_cffi.
-4. Mendukung konversi mp3 (`libmp3lame` via ffmpeg) jika `fmt_key == 'mp3'`.
-"""
 import os
 import time
 import uuid

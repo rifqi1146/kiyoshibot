@@ -241,14 +241,6 @@ def _best_video_variant(media:dict)->dict|None:
     return mp4[0]
 
 def _tweet_is_sensitive(tweet:dict)->bool:
-    """Deteksi konten dewasa dari flag resmi X.
-
-    Sumber (masing-masing bisa absen, jadi dicek berlapis):
-    1. `legacy.possibly_sensitive` — author menandai media sensitif.
-    2. `legacy.extended_entities.media[].ext_sensitive_media_warning` — warning
-       per media (mis. `{"adult_content": true, ...}`).
-    3. `legacy.extended_entities.media[].features.sensitive_media_warning`.
-    """
     flags=[tweet.get("possibly_sensitive"), tweet.get("possibly_sensitive_editable")]
     for media in _pick_media_entities(tweet):
         features=media.get("features") or {}

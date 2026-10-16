@@ -1,12 +1,3 @@
-"""Konstanta scraper Bunkr (bunkr.cr dll.)
-
-FLOW KONSTANTA
---------------
-1. UA & timeout untuk request HTTP (curl_cffi impersonate Chrome).
-2. Host Bunkr yang dikenal (rotasi TLD).
-3. Endpoint signing CDN.
-4. Interval progress.
-"""
 import os
 import re
 
@@ -16,22 +7,16 @@ UA = (
 )
 _HTTP_TIMEOUT = 45
 
-# Domain Bunkr sering rotasi TLD. Daftar ini mencakup host yang umum
-# dipakai; URL matching di `main.py` juga mendukung wildcard `bunkr.*`.
 BUNKR_KNOWN_HOSTS = (
     "bunkr.cr", "bunkr.ph", "bunkr.si", "bunkr.sk", "bunkr.black",
     "bunkr.media", "bunkr.ws", "bunkr.ac", "bunkr.fi", "bunkr.is",
     "bunkr.ru", "bunkrr.su", "bunkr.site", "bunkr.pk",
 )
 
-# Endpoint tanda tangan token CDN untuk akses stream langsung
 SIGN_URL = "https://glb-apisign.cdn.cr/sign"
 
-# Interval edit status progress (detik)
 BUNKR_PROGRESS_INTERVAL = float(os.getenv("BUNKR_PROGRESS_INTERVAL", "3"))
 
-# Jumlah media album yang diunduh paralel. Album besar (30+ file) sebelumnya
-# diunduh serial satu-per-satu -> ~2x waktu. Naikkan via env bila CDN izinkan.
 BUNKR_ALBUM_CONCURRENCY = int(os.getenv("BUNKR_ALBUM_CONCURRENCY", "6"))
 
 _VIDEO_EXT = (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".ts")

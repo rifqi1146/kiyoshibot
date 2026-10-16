@@ -1,4 +1,3 @@
-"""Konstanta untuk manga reader (`/manga`)."""
 import os
 import asyncio
 import logging
@@ -12,8 +11,6 @@ NH_API_URL = "https://nhentai.net/api/v2"
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
 
-# Batasi PDF generation yang berjalan bersamaan (tiap PDF menampung semua
-# halaman di RAM + build PDF in-memory).
 _PDF_SEM = asyncio.Semaphore(int(os.getenv("MANGA_PDF_CONCURRENCY", "2")))
 
 _MANGA_CACHE_TTL = float(os.getenv("MANGA_CACHE_TTL", "7200"))

@@ -1,10 +1,3 @@
-"""HTTP fetcher, helper gambar, dan render page untuk manga reader.
-
-- `fetch_json` / `fetch_image_bytes` / `fetch_html` : HTTP client (aiohttp session bersama).
-- `enforce_telegram_photo_limits` : resize Pillow agar lolos batas Telegram.
-- `safe_render_page` : edit/send foto halaman reader dengan lock kepemilikan.
-- `_escape` : HTML escape helper.
-"""
 import asyncio
 import html as html_lib
 import logging
@@ -61,8 +54,6 @@ async def fetch_html(url):
         async with session.get(url, headers=headers, timeout=10) as response:
             if response.status == 200:
                 raw = await response.read()
-                # Sebagian halaman Maid-Manga bukan UTF-8 valid; decode toleran
-                # supaya tidak menggagalkan seluruh request.
                 charset = response.charset or "utf-8"
                 try:
                     return raw.decode(charset, errors="replace")
@@ -175,12 +166,6 @@ async def safe_render_page(query, context, img_bytes, caption, keyboard, is_edit
 
 
 async def send_detail_view(context, chat_id, message_thread_id, rich_html, plain_html, keyboard, owner_id=None, reply_to_message_id=None):
-    """Kirim detail manga sebagai Rich Message (Bot API 10.3).
-
-    Cover sudah dibawa sebagai `<img src="..."/>` di dalam `rich_html` sehingga
-    tidak perlu upload foto terpisah. Fallback otomatis ke `sendMessage` plain HTML
-    bila server Bot API tidak mendukung `sendRichMessage`.
-    """
     from .rich import send_manga_rich
 
     try:

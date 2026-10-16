@@ -1,35 +1,3 @@
-"""Scraper AsianGirlPorn (asiangirl.porn).
-
-FLOW SCRAPER
-------------
-1. Terima URL post AsianGirlPorn -> `scrape_post(url)`.
-2. Ambil HTML post (curl_cffi, impersonate Chrome). HTTP 404 -> `FileNotFoundError`.
-3. Baca metadata:
-   - Judul: `<h1>` atau `<title>` (suffix `- AsianGirl.Porn - ...` dibuang).
-   - Poster: `<video poster="...">`.
-4. Ekstrak URL stream HLS dari HTML:
-   - Cari semua URL `.m3u8` di HTML.
-   - Buang yang `contents/videos_screenshots/` (itu preview gambar, bukan stream).
-   - Ambil yang pertama bukan preview (host CDN `*.cdnlab.live` / `*.ppp.porn`).
-5. `parse_hls(m3u8_url)`: fetch playlist media (bukan master), baca `EXT-X-KEY`
-   (AES-128: ambil kunci 16-byte + IV), ambil daftar absolute URL segmen `.ts`
-   + total durasi dari `#EXTINF`.
-
-FLOW DOWNLOADER
----------------
-1. Segmen diunduh **paralel** (`SEG_CONCURRENCY=12`) lalu **didekripsi AES-128-CBC
-   lokal** (`Cryptodome.Cipher.AES`, IV tetap dari `EXT-X-KEY` — dites: IV sama
-   untuk semua segmen). ffmpeg TIDAK dipakai untuk unduh: jalur ffmpeg serial
-   (~0.83 MB/s, 3-6 menit per video) vs paralel (~6.75 MB/s, ~1/10 waktu) —
-   diukur dari CDN asli.
-2. Progress pakai `TransferStats` + `render_progress_text` standar (proyeksi total
-   byte monoton naik, pct dari rasio segmen, dipaksa 100.0 saat selesai).
-3. Concat `ffmpeg -f concat -c copy -movflags +faststart` -> MP4 faststart.
-   Mode `mp3` -> `-vn -acodec libmp3lame`.
-4. Batas `MAX_TG_SIZE` (2GB) dicek saat streaming segmen.
-5. URL stream bertanda tangan (token `/<epoch>/` di path) — ambil ulang halaman
-   tiap unduh, JANGAN cache lama.
-"""
 
 import asyncio
 import logging
@@ -76,22 +44,17 @@ def _new_session() -> curl_requests.Session:
 
 
 def _is_preview_url(u: str) -> bool:
-    """`contents/videos_screenshots/.../preview.m3u8` bukan stream asli."""
     low = u.lower()
     return "contents/videos_screenshots" in low or "preview.m3u8" in low
 
 
 def _pick_stream_url(candidates: list[str]) -> str:
-    """Pilih stream URL yang bukan preview (gambar)."""
     for u in candidates:
         if not _is_preview_url(u):
             return u
     return ""
 
 
-# ---------------------------------------------------------------------------
-# SCRAPE
-# ---------------------------------------------------------------------------
 def scrape_post(url: str) -> dict:
     session = _new_session()
     resp = session.get(url, timeout=HTTP_TIMEOUT)
@@ -104,7 +67,6 @@ def scrape_post(url: str) -> dict:
     html_text = resp.text
     soup = BeautifulSoup(html_text, "html.parser")
 
-    # 1. Judul
     title = ""
     h1 = soup.find("h1")
     if h1:
@@ -113,7 +75,6 @@ def scrape_post(url: str) -> dict:
         title = _TITLE_SUFFIX_RE.sub("", soup.title.get_text(strip=True))
     title = sanitize_filename(title or "AsianGirlPorn Video", 100)
 
-    # 2. Poster
     poster = ""
     video_tag = soup.find("video")
     if video_tag and video_tag.get("poster"):
@@ -125,7 +86,6 @@ def scrape_post(url: str) -> dict:
         if m:
             poster = m.group(1).strip()
 
-    # 3. Stream HLS URL (bukan preview)
     all_m3u8 = list(dict.fromkeys(_M3U8_RE.findall(html_text)))
     stream_url = _pick_stream_url(all_m3u8)
     if not stream_url:
@@ -141,9 +101,6 @@ def scrape_post(url: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# HLS PARSE
-# ---------------------------------------------------------------------------
 def _resolve_segment_url(u: str, base: str) -> str:
     u = u.strip()
     if u.startswith("//"):
@@ -154,7 +111,6 @@ def _resolve_segment_url(u: str, base: str) -> str:
 
 
 def parse_hls(m3u8_url: str, session: curl_requests.Session) -> dict:
-    """Ambil playlist + kunci AES-128, kembalikan segmen absolute + durasi."""
     r = session.get(m3u8_url, timeout=HTTP_TIMEOUT)
     if r.status_code != 200:
         raise RuntimeError(
@@ -207,9 +163,6 @@ def parse_hls(m3u8_url: str, session: curl_requests.Session) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# PARALLEL DOWNLOAD + AES DECRYPT
-# ---------------------------------------------------------------------------
 def _fetch_segment(url: str, session: curl_requests.Session) -> bytes:
     last_err = None
     for attempt in range(SEG_RETRIES):
@@ -235,15 +188,6 @@ async def download_segments_aes(
     status_msg_id,
     title_text: str,
 ) -> list[str]:
-    """Unduh segmen paralel, dekripsi AES-128-CBC per-segmen, tulis .ts local.
-
-    IV tetap (`same_iv`) untuk semua segmen — diverifikasi pada 3 segmen di CDN
-    asli. Kalau playlist menyertakan IV atribut, pakai itu (fillem `IV=`).
-    """
-    # CBC mode: tiap segmen di-decrypt mandiri dengan IV yang sama (diverifikasi
-    # pada 3 segmen di CDN asli: `same_iv=True` untuk segmen 0, 5, 40). Objek
-    # cipher tidak boleh dipakai bersama antar-thread: state IV internal CBC
-    # akan saling silang antar segmen. Buat cipher baru per-segmen (murah).
     if iv is None:
         iv = (0).to_bytes(16, "big")
 
@@ -266,8 +210,6 @@ async def download_segments_aes(
             stats.log("AsianGirlPorn download", label=title_text)
         if not status_msg_id:
             return
-        # Interval adaptif + guard anti-spam 100% sudah ditangani `should_edit`.
-        # `force=True` (interval 0) memaksa edit di awal (0%) dan akhir (100%).
         if force:
             stats.should_edit(0, now=now)
         elif not stats.should_edit(now=now):
@@ -289,7 +231,6 @@ async def download_segments_aes(
         seg_path = os.path.join(work_dir, f"seg_{idx:05d}.ts")
         async with sem:
             raw = await asyncio.to_thread(_fetch_segment, seg_url, session)
-        # dekripsi di thread agar tidak memblok event loop (segmen 1-2MB)
         decrypted = await asyncio.to_thread(_decrypt_segment, key, iv, raw)
         with open(seg_path, "wb") as f:
             f.write(decrypted)
@@ -326,11 +267,7 @@ def _decrypt_segment(key: bytes, iv: bytes, raw: bytes) -> bytes:
     return cipher.decrypt(raw)
 
 
-# ---------------------------------------------------------------------------
-# CONCAT / AUDIO
-# ---------------------------------------------------------------------------
 def concat_segments(seg_files: list[str], out_path: str, work_dir: str) -> str:
-    """Gabung segmen .ts jadi satu mp4 (copy, tanpa re-encode)."""
     lst = os.path.join(work_dir, "concat.txt")
     with open(lst, "w", encoding="utf-8") as f:
         for p in seg_files:
@@ -355,7 +292,6 @@ def concat_segments(seg_files: list[str], out_path: str, work_dir: str) -> str:
 
 
 def extract_audio(src_path: str, out_path: str, title: str = "") -> str:
-    """Ekstrak audio ke MP3 (libmp3lame)."""
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-i", src_path,

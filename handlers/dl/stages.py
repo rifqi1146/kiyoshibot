@@ -1,15 +1,3 @@
-"""Lightweight monotonic stage timing for downloader end-to-end latency.
-
-Debug-only. Enable with DL_STAGE_LOG=1 (default off in production).
-One line per job so we can find the real bottleneck from code path + timing
-instead of guessing.
-
-Usage:
-    from .stages import stage, timed
-    with timed("download"):
-        ...
-    stage("total", t0)
-"""
 import os
 import time
 import logging
@@ -26,7 +14,6 @@ def stage(name: str, started: float, job: str = "") -> None:
 
 
 class timed:
-    """Context manager: measure a stage with monotonic clock, single log line."""
 
     __slots__ = ("name", "job", "_t0", "_enabled")
 

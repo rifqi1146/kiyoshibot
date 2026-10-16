@@ -1,14 +1,3 @@
-"""Grounding web via Firecrawl (Search + Scrape).
-
-- web_search(query): POST https://api.firecrawl.dev/v2/search — SERP cepat.
-  Tingkat detail diatur `SEARCH_DEPTH`:
-    "fast"    -> SERP polos (~1s), tanpa markdown. Model baca URL sendiri
-                 lewat read_page kalau perlu. Ini default (paling cepat).
-    "content" -> SERP + scrapeOptions (markdown tiap hasil, ~8s). Sekali
-                 panggil dapat isi halaman, tapi jauh lebih lambat.
-- read_url(url):     POST https://api.firecrawl.dev/v2/scrape — markdown (~0.6s).
-Butuh FIRECRAWL_API_KEY (utils.config).
-"""
 import json
 import logging
 
@@ -40,11 +29,6 @@ def _require_key():
 
 
 def _pick_results(data: dict) -> list[dict]:
-    """Ambil list hasil dari berbagai bentuk respons /v2/search.
-
-    Bentuk resmi: {"data": {"web": [...], "news": [...]}}. Dengan scrapeOptions
-    kadang {"data": [...]} flat. Keduanya ditangani.
-    """
     if not isinstance(data, dict):
         return []
     container = data.get("data")
@@ -61,7 +45,6 @@ def _pick_results(data: dict) -> list[dict]:
 
 
 async def web_search(query: str, max_results: int = 5) -> str:
-    """Search web via Firecrawl. Detail konten mengikuti SEARCH_DEPTH."""
     _require_key()
     query = (query or "").strip()
     if not query:
@@ -78,7 +61,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
         body["scrapeOptions"] = {"formats": ["markdown"], "onlyMainContent": True}
 
     session = await get_http_session()
-    # Timeout lebih longgar untuk mode content (scrape 5 halaman ~8s).
     total = 90 if deep else 30
     async with session.post(
         SEARCH_URL,
@@ -123,7 +105,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
 
 async def read_url(url: str, max_chars: int = 8000) -> str:
-    """Scrape halaman via Firecrawl, kembalikan markdown diringkas."""
     _require_key()
     url = (url or "").strip()
     if not url:
@@ -158,7 +139,6 @@ async def read_url(url: str, max_chars: int = 8000) -> str:
 
 
 def _search_depth() -> str:
-    """Kedalaman search Firecrawl: 'fast' (SERP polos, default) atau 'content'."""
     try:
         from handlers.proxy.client import get_search_depth
         return get_search_depth()

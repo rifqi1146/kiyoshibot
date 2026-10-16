@@ -1,12 +1,3 @@
-"""Downloader DarknessPorn (darknessporn.com)
-
-FLOW DOWNLOADER
----------------
-1. `is_darknessporn_url(url)`: Cocokkan host darknessporn.com dan slug post berdigit.
-2. `probe_darknessporn(url)`: Ekstrak resolusi dan simpan ke `_VARIANT_CACHE` (TTL 5 menit).
-3. `darknessporn_download(...)`: Unduh resolusi pilihan (high/low) atau format terbaik.
-4. Mendukung konversi mp3 (libmp3lame via ffmpeg) jika `fmt_key == 'mp3'`.
-"""
 import os
 import time
 import uuid
@@ -39,7 +30,6 @@ def is_darknessporn_url(url: str) -> bool:
     if host != "darknessporn.com":
         return False
     path = (parsed.path or "").strip("/")
-    # Slug format: digits-slug (misal 97891-evil-plays-with-prisoner-part-2)
     return bool(path and any(char.isdigit() for char in path.split("/")[0]))
 
 

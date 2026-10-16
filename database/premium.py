@@ -39,14 +39,6 @@ def _table_exists() -> bool:
         con.close()
 
 def init_if_needed():
-    """Pastikan `_PREMIUM_USERS` terisi dari DB.
-
-    Dipanggil di seluruh jalur cek premium sebagai jaring pengaman: `importlib.reload()`
-    (dipakai `/reload`) mereset SEMUA variabel level modul, termasuk `_PREMIUM_USERS`
-    menjadi `set()` kosong. Tanpa reload ulang di sini, seluruh user premium
-    (kecuali owner) mendadak dianggap non-premium sampai ada kode lain yang
-    memanggil `init_premium_db()` — gejala nyata: `/mode` ditolak "premium only".
-    """
     if not _PREMIUM_USERS:
         init_premium_db()
 

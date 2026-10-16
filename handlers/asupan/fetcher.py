@@ -19,45 +19,23 @@ TIKWM_SEARCH_API = "https://www.tikwm.com/api/feed/search"
 TIKWM_RESOLVE_API = "https://www.tikwm.com/api/"
 CF_COOKIE_FILE = os.path.join("data", "tikwm_cf.json")
 
-# cf_clearance umurnya terbatas. TTL ini cuma HINT (untuk log); cookie yang
-# lewat TTL tetap dicoba dulu via curl karena sering masih valid, dan browser
-# solve (~25s) baru dipakai kalau curl benar-benar ditolak Cloudflare.
 CF_COOKIE_TTL = 25 * 60
 
-# tikwm free API membalas code=-1 saat kena limit 1 req/detik. Itu BUKAN masalah
-# cookie Cloudflare, jadi jangan sampai memicu browser solve.
 _RATE_LIMITED = object()
 
 
 class _RateLimited(Exception):
-    """tikwm membalas code=-1 (limit 1 req/detik); sesi Cloudflare masih bagus."""
+    pass
 
-# Pool video DIPISAH per-keyword. Ini mencegah video hasil search keyword A
-# bocor/terpakai untuk keyword B (dulu pool-nya global sehingga campur).
 _VIDEO_POOLS: dict[str, list[dict]] = {}
-# Keyword default yang sedang aktif. Dipakai ulang sampai pool-nya habis supaya
-# 1x search melayani banyak video (tidak search 20 video tiap kali ganti asupan).
 _DEFAULT_KEYWORD: str | None = None
-# Keyword default khusus sumber SCRAPER (dipisah dari `_DEFAULT_KEYWORD` tikwm
-# supaya kedua jalur tidak saling menimpa pilihan keyword).
 _DEFAULT_KEYWORD_SCRAPER: str | None = None
-# Satu lock per keyword: keyword berbeda boleh search bergantian tanpa saling
-# menunggu selesai (jarak request tetap dijaga _api_gate), tapi keyword yang
-# sama tidak akan memicu search berkali-kali (thundering herd).
 _POOL_LOCKS: dict[str, asyncio.Lock] = {}
-# Lock khusus jalur default (tanpa keyword): semua user default memakai SATU
-# keyword aktif yang sama sampai pool-nya habis.
 _DEFAULT_META_LOCK = asyncio.Lock()
-# Cap pool keyword + lock: pool per keyword memuat ~20 dict video, jadi keyword
-# sembarang/typo user harus punya batas. Dibiarkan tanpa cap = menumpuk selama
-# umur proses. Lihat `_prune_pools`.
 _VIDEO_POOLS_MAX = int(os.getenv("ASUPAN_POOL_MAX", "64"))
 _POOL_LOCKS_MAX = int(os.getenv("ASUPAN_POOL_LOCKS_MAX", "64"))
-# Cache sesi Cloudflare (cookie cf_clearance + UA browser) untuk fast-path search.
 _CF_SESSION: dict | None = None
 
-# tikwm free API dibatasi "1 request/second". Semua request /api/ diserialkan
-# dengan jarak minimal 1.1s supaya tidak kena code=-1 (yang bikin fallback download).
 _API_LOCK = asyncio.Lock()
 _LAST_API_TS = 0.0
 API_MIN_INTERVAL = 1.1
@@ -65,11 +43,6 @@ API_MIN_INTERVAL = 1.1
 
 @asynccontextmanager
 async def _api_gate():
-    """Satu request tikwm /api/ dalam satu waktu, jarak minimal API_MIN_INTERVAL.
-
-    Lock DITAHAN sampai request selesai supaya request tidak tumpang-tindih:
-    tikwm free API menolak request yang berbarengan dengan code=-1 (hasil kosong).
-    """
     global _LAST_API_TS
     async with _API_LOCK:
         wait = API_MIN_INTERVAL - (time.monotonic() - _LAST_API_TS)
@@ -80,7 +53,6 @@ async def _api_gate():
 
 
 def _load_cf_session() -> dict | None:
-    """Ambil sesi Cloudflare dari memori/disk."""
     global _CF_SESSION
     if _CF_SESSION:
         return _CF_SESSION
@@ -96,7 +68,6 @@ def _load_cf_session() -> dict | None:
 
 
 def _save_cf_session(cookies: list[dict], ua: str) -> None:
-    """Simpan cookie cf_clearance + UA hasil solve browser untuk dipakai curl_cffi."""
     global _CF_SESSION
     jar = {
         c["name"]: c["value"]
@@ -126,7 +97,6 @@ def _cf_session_fresh(data: dict | None) -> bool:
 
 
 def _map_videos(data: dict) -> list[dict]:
-    """Normalisasi respons /api/feed/search jadi daftar video (buang foto/slideshow)."""
     if not data or data.get("code") != 0 or not data.get("data"):
         return []
     videos = data["data"].get("videos") or []
@@ -143,12 +113,6 @@ def _map_videos(data: dict) -> list[dict]:
 
 
 def _search_via_curl(query: str, cf: dict) -> list[dict] | None:
-    """Fast-path: keyword search pakai cf_clearance + impersonasi TLS Chrome.
-
-    Return list video kalau sukses, None kalau cookie ditolak/expired/error
-    (supaya pemanggil refresh lewat browser), atau raise _RateLimited kalau
-    tikwm cuma membalas limit 1 req/detik (cookie CF tetap valid).
-    """
     headers = {
         "User-Agent": cf["ua"],
         "X-Requested-With": "XMLHttpRequest",
@@ -177,7 +141,6 @@ def _search_via_curl(query: str, cf: dict) -> list[dict] | None:
     try:
         data = resp.json()
     except Exception as e:
-        # Bukan JSON -> hampir pasti halaman challenge Cloudflare.
         log.warning("Search via curl_cffi bukan JSON (kemungkinan challenge CF): %r", e)
         return None
 
@@ -188,7 +151,6 @@ def _search_via_curl(query: str, cf: dict) -> list[dict] | None:
 
 
 def _fetch_api_in_browser(query: str) -> list[dict]:
-    """Solve Cloudflare di browser, sekaligus ambil 20 video & refresh cookie cf_clearance."""
     result_container = []
 
     def page_action(page):
@@ -197,7 +159,6 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
         except Exception:
             time.sleep(2)
 
-        # Simpan cf_clearance + UA supaya request berikutnya bisa pakai curl_cffi (jauh lebih cepat).
         try:
             cookies = page.context.cookies()
             ua = page.evaluate("navigator.userAgent")
@@ -259,16 +220,6 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
 
 
 async def _search_keyword(query: str) -> list[dict]:
-    """Cari video via curl_cffi (cepat); browser solve hanya kalau terpaksa.
-
-    Optimasi bypass Cloudflare:
-    - cookie yang lewat TTL tetap dicoba dulu (TTL cuma estimasi) -> sering
-      menghemat satu browser solve ~25s;
-    - sesi dibaca ulang di dalam _api_gate supaya cookie yang baru di-refresh
-      request lain langsung terpakai (tidak browser solve berkali-kali);
-    - code=-1 (rate limit) diulang tanpa membuang waktu solve browser;
-    - error jaringan sesaat pun diulang dulu sebelum jatuh ke browser.
-    """
     for _ in range(3):
         cf = _load_cf_session()
         if cf is None:
@@ -277,7 +228,6 @@ async def _search_keyword(query: str) -> list[dict]:
             log.debug("Sesi Cloudflare lewat TTL, tetap dicoba via curl")
 
         async with _api_gate():
-            # Baca ulang: request lain mungkin baru saja me-refresh cookie.
             cf = _load_cf_session() or cf
             try:
                 items = await asyncio.to_thread(_search_via_curl, query, cf)
@@ -290,17 +240,14 @@ async def _search_keyword(query: str) -> list[dict]:
             continue
         if items is not None:
             return items
-        break  # cookie ditolak/expired -> refresh lewat browser
+        break
     else:
         log.warning("Search keyword=%r tetap rate-limited, lewati", query)
         return []
 
-    # Belum ada cookie / cookie ditolak -> solve Cloudflare lewat browser
-    # (sekaligus menyimpan cookie + mengembalikan hasil search).
     async with _api_gate():
         cf = _load_cf_session()
         if cf is not None:
-            # Request lain rupanya baru refresh cookie; cukup pakai curl.
             try:
                 items = await asyncio.to_thread(_search_via_curl, query, cf)
             except _RateLimited:
@@ -311,12 +258,6 @@ async def _search_keyword(query: str) -> list[dict]:
 
 
 async def _prime_and_get_url(video_item: dict) -> str | None:
-    """Resolve URL MP4 CDN langsung via /api/ (tanpa browser).
-
-    Hanya mengembalikan URL absolut (tiktokcdn). URL relatif tikwm-hosted TIDAK
-    dipakai karena Telegram tidak bisa mengambilnya -> kalau gagal, return None
-    supaya pemanggil mencoba video lain.
-    """
     target_url = f"https://www.tiktok.com/@{video_item['unique_id']}/video/{video_item['id']}"
 
     headers = {
@@ -350,14 +291,6 @@ async def _prime_and_get_url(video_item: dict) -> str | None:
 
 
 def _lock_busy(lock: asyncio.Lock) -> bool:
-    """True kalau lock sedang dipegang ATAU sedang ditunggu coroutine lain.
-
-    `Lock.locked()` hanya melihat yang sedang memegang; coroutine yang antre
-    tidak terlihat. `_waiters` dipakai untuk melihat antrean — `None` berarti
-    tidak pernah ada yang menantre (idle, aman dibuang), sedangkan deque
-    berisi antrian nyata. Kalau atributnya hilang sama sekali (API berubah),
-    dianggap sibuk supaya lock aktif tidak pernah dibuang paksa.
-    """
     if lock.locked():
         return True
     try:
@@ -373,7 +306,6 @@ def _lock_busy(lock: asyncio.Lock) -> bool:
 
 
 def _pop_pool(norm: str) -> dict | None:
-    """Ambil 1 video acak dari pool keyword. Hapus pool kalau sudah kosong."""
     pool = _VIDEO_POOLS.get(norm)
     if not pool:
         return None
@@ -384,14 +316,6 @@ def _pop_pool(norm: str) -> dict | None:
 
 
 def _prune_pools() -> None:
-    """Batas ukuran pool keyword & lock supaya tak tumbuh tanpa batas.
-
-    Pool tiap keyword menyimpan ~20 dict video. Kalau user memasukkan keyword
-    yang berbeda-beda (termasuk typo), kedua struktur menumpuk selamanya.
-    Kedua dict mempertahankan urutan insert, jadi buang dari kepala = yang
-    paling lama tidak dipakai. Entry yang masih di-PIN oleh lock aktif tidak
-    disentuh.
-    """
     if len(_VIDEO_POOLS) > _VIDEO_POOLS_MAX:
         for k in list(_VIDEO_POOLS)[: len(_VIDEO_POOLS) - _VIDEO_POOLS_MAX]:
             lk = _POOL_LOCKS.get(k)
@@ -410,14 +334,6 @@ def _prune_pools() -> None:
 
 
 async def _acquire_item(keyword: str | None) -> dict | None:
-    """Ambil 1 video dari pool; isi pool lewat search kalau kosong.
-
-    - Keyword eksplisit: dikunci per keyword, jadi keyword yang sama tidak
-      memicu search berkali-kali (thundering herd), sedangkan keyword berbeda
-      bisa berjalan berbarengan (jarak request tetap dijaga _api_gate).
-    - Tanpa keyword: dikunci satu lock global supaya semua user default memakai
-      SATU keyword aktif yang sama sampai pool-nya habis (tidak search per user).
-    """
     global _DEFAULT_KEYWORD
 
     if keyword and keyword.strip():
@@ -438,10 +354,6 @@ async def _acquire_item(keyword: str | None) -> dict | None:
                 log.info("Pool asupan keyword=%r terisi: %s video", q, len(new_videos))
                 return _pop_pool(norm)
         finally:
-            # Dijalankan SETELAH `async with` melepas kunci, dan hanya membuang
-            # saat benar-benar tidak ada pemakai lain (holder + antrean kosong).
-            # Kalau pool sudah habis, simpanan lock tidak lagi berguna — buang
-            # supaya keyword sembarang tidak menumpuk.
             if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
                 _POOL_LOCKS.pop(norm, None)
 
@@ -465,16 +377,6 @@ async def _acquire_item(keyword: str | None) -> dict | None:
 
 
 async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str | None]:
-    """Ambil 1 video dari pool SCRAPER (vendored); isi pool sekali per keyword.
-
-    Sama seperti `_acquire_item` (tikwm) tetapi sumbernya `tiktoksource`: satu
-    search mengembalikan ~20 video dan DISIMPAN di pool, sehingga 20 asupan
-    berikutnya memakai keyword yang sama tanpa search ulang.
-
-    Return `(video, keyword_used)`. `keyword_used` = keyword yang BENAR-BENAR
-    dipakai (berguna saat pemanggil meminta keyword=None tetapi pool memilih
-    keyword acak default) supaya log bisa menunjuk keyword aslinya.
-    """
     global _DEFAULT_KEYWORD_SCRAPER
 
     if keyword and keyword.strip():
@@ -498,7 +400,6 @@ async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str |
             if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
                 _POOL_LOCKS.pop(norm, None)
 
-    # Tanpa keyword: satu keyword default aktif sampai pool-nya habis.
     async with _DEFAULT_META_LOCK:
         if _DEFAULT_KEYWORD_SCRAPER:
             item = _pop_pool("scraper:" + _DEFAULT_KEYWORD_SCRAPER.lower())
@@ -519,16 +420,6 @@ async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str |
 
 
 async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
-    """Ambil 1 video asupan dan kembalikan URL CDN langsung (bukan file).
-
-    SUMBER UTAMA = library TikTok vendored (`tiktoksource` / `tiktokapi/`) untuk
-    PENCARIAN video (hasil ~20 video DISIMPAN di pool, jadi satu search melayani
-    banyak asupan); URL play di-resolve lewat tikwm `/api/` karena play_link
-    dari library menolak stream tanpa cookie/region yang cocok (HTTP 403).
-
-    Kalau sumber vendored tidak tersedia/gagal, seluruh alur jatuh ke tikwm penuh.
-    """
-    # ── Jalur utama: pool scraper (vendored) ────────────────────────────────
     if tiktoksource.configured():
         try:
             for _ in range(5):
@@ -543,7 +434,6 @@ async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
         except Exception as e:
             log.warning("[ASUPAN] source=scraper error (%r) -> fallback", e)
 
-    # ── Fallback: tikwm penuh (jalur lama) ──────────────────────────────────
     for _ in range(5):
         video_item = await _acquire_item(keyword)
         if not video_item:

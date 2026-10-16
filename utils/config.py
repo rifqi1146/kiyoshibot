@@ -22,20 +22,15 @@ def require_env_list(key: str) -> set[int]:
         if x.strip().isdigit()
     }
     
-# Bot token
 BOT_TOKEN = require_env("BOT_TOKEN")
 
-# owner id
 OWNER_ID = require_env_list("BOT_OWNER_ID")
 
-# log & asupan startup
 LOG_CHAT_ID = require_env("LOG_CHAT_ID", int)
 
-# force join
 SUPPORT_CHANNEL_ID = os.getenv("SUPPORT_CH_ID")
 SUPPORT_CHANNEL_LINK = os.getenv("SUPPORT_CH_LINK")
 
-# gsearch
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 JINA_API_KEY = os.getenv("JINA_API_KEY", "").strip()
@@ -43,7 +38,6 @@ FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
 SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "firecrawl").strip().lower()
 SEARCH_DEPTH = os.getenv("SEARCH_DEPTH", "fast").strip().lower()
 
-# groq & caca
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 GROQ_BASE = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
@@ -51,21 +45,16 @@ GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT", "30"))
 COOLDOWN = int(os.getenv("GROQ_COOLDOWN", "2"))
 
 
-# donate
 DONATE_URL = os.getenv("DONATE_URL")
 
-# Axiom Payment (QRIS gateway for /buypremium)
 AXIOM_BASE_URL = os.getenv("AXIOM_BASE_URL", "https://portal.axiomcreative.xyz").strip().rstrip("/")
 AXIOM_API_KEY = os.getenv("AXIOM_API_KEY", "").strip()
 AXIOM_PREMIUM_AMOUNT = int(os.getenv("AXIOM_PREMIUM_AMOUNT", "20000"))
 
-# fonts
 FONT_DIR = os.getenv("FONT_DIR")
 
-#Cloudflare
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
 CLOUDFLARE_AUTH_TOKEN = os.getenv("CLOUDFLARE_AUTH_TOKEN", "").strip()
 CLOUDFLARE_MODEL = "@cf/nvidia/nemotron-3-120b-a12b"
 
-#Neoxr api
 NEOXR_API_KEY = os.getenv("NEOXR_API_KEY")

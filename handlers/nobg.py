@@ -175,7 +175,6 @@ async def _call_gencipta_nobg(image_url:str,out_path:str):
         except Exception:
             raise RuntimeError(f"Unexpected response: {text[:400]}")
             
-        # Fallback jika API mengembalikan respons JSON berisi URL
         dl_url=""
         if isinstance(data,dict):
             for k in ("url","result","download_url","image","data"):

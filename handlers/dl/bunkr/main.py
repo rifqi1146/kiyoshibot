@@ -1,26 +1,3 @@
-"""Downloader Bunkr (bunkr.cr, bunkr.ph, bunkr.si, ...).
-
-FLOW DOWNLOADER BUNKR
----------------------
-1. URL Matching: `is_bunkr_url(url)` cocok host Bunkr wildcard (`bunkr.*`,
-   `bunkrr.*`) dengan path `/a/<id>` (album) atau `/f/<id>` (file tunggal).
-
-2. Album (`/a/<id>`):
-   - `extractor.scrape_album` -> daftar item (gambar + video).
-   - `extractor.download_album` mengunduh semuanya -> `{items:[{path,type}],title}`.
-   - Kalau `fmt_key == "mp3"`: cari video di album, unduh, ekstrak audio.
-
-3. File tunggal (`/f/<id>`):
-   - `extractor.resolve_file` -> URL CDN bertanda-tangan.
-   - Gambar (jpg/png/...) -> album Telegram satu item.
-   - Video -> unduh penuh + progress; MP4 dikirim apa adanya.
-
-4. Batas ukuran MAX_TG_SIZE (2GB) dijaga di `download_to_file`.
-5. `fmt_key == "mp3"` -> unduh video lalu `extract_audio` (ffmpeg libmp3lame)...
-
-Tidak ada fallback ke yt-dlp: rantai token CDN Bunkr hanya bisa dilewati lewat
-endpoint `api/_001_v2` + `glb-apisign.cdn.cr` yang dipakai scraper ini.
-"""
 import os
 import uuid
 import shutil
@@ -42,7 +19,6 @@ def _host_of(url: str) -> str:
 
 
 def _is_bunkr_host(host: str) -> bool:
-    """Host Bunkr dikenal, atau wildcard `bunkr.*` / `bunkrr.*`."""
     if not host:
         return False
     for known in BUNKR_KNOWN_HOSTS:
@@ -58,7 +34,6 @@ def _is_bunkr_host(host: str) -> bool:
 
 
 def is_bunkr_url(url: str) -> bool:
-    """Cocok untuk album (`/a/<id>`) atau file tunggal (`/f/<id>`) Bunkr."""
     p = urlsplit((url or "").strip())
     if not _is_bunkr_host((p.hostname or "").lower()):
         return False
@@ -86,7 +61,6 @@ async def bunkr_download(
     metadata_ready: bool = False,
     known_size: int = 0,
 ):
-    """Unduh album / file tunggal Bunkr. Lihat FLOW DOWNLOADER di atas."""
     del format_id, has_audio, known_size
 
     work_dir = os.path.join(TMP_DIR, f"bunkr_{uuid.uuid4().hex[:10]}")
@@ -98,7 +72,6 @@ async def bunkr_download(
                 bot, chat_id, status_msg_id, "<b>Scraping bunkr...</b>"
             )
 
-        # ---------- ALBUM ----------
         if _is_album_url(raw_url):
             album = await asyncio.to_thread(ext.scrape_album, raw_url)
             title = sanitize_filename(album.get("title") or "Bunkr", 100)
@@ -137,7 +110,6 @@ async def bunkr_download(
             )
             return result
 
-        # ---------- FILE TUNGGAL ----------
         info = await asyncio.to_thread(ext.resolve_file, raw_url)
         name = info.get("name") or "Bunkr"
         title = sanitize_filename(os.path.splitext(name)[0] or "Bunkr", 100)

@@ -1,13 +1,3 @@
-"""Downloader Simontok (simontok.study)
-
-FLOW DOWNLOADER
----------------
-1. `is_simontok_url(url)`: Cocokkan host simontok.study + slug post.
-2. `simontok_download(...)`: Scrape post → resolve HLS → unduh segmen paralel
-   dengan progress → remux mp4 → video meta (durasi dari #EXTINF).
-3. Mode `mp3`: audio diekstrak (libmp3lame). Draft pesan status ditangani
-   berurutan dengan standard progress downloader lain.
-"""
 import os
 import shutil
 import logging
@@ -25,7 +15,6 @@ log = logging.getLogger(__name__)
 
 
 def is_simontok_url(url: str) -> bool:
-    """True jika url adalah post simontok.study."""
     try:
         parsed = urlparse((url or "").strip())
         host = (parsed.hostname or "").lower()
@@ -96,8 +85,6 @@ async def simontok_download(
                 result["artist"] = title
             return result
 
-        # Codec video post ini tak dikenal ffmpeg (stream terbaca `bin_data`) ->
-        # remux audio-only. Tolak lebih dulu, jangan kirim file rusak diam-diam.
         if not await asyncio.to_thread(ext.has_video_stream, tmp_mp4):
             raise RuntimeError(
                 "This video post is broken or unsupported (the video stream uses a codec "

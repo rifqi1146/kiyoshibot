@@ -23,12 +23,7 @@ def mono(text: str) -> str:
 def link(label: str, url: str) -> str:
     return f'<a href="{html.escape(url)}">{html.escape(label)}</a>'
 
-#split
 def split_message(text: str, max_length: int = 4000) -> List[str]:
-    """
-    Splits a long text into chunks not exceeding max_length.
-    Tries to split by paragraphs/words first, falls back to char split.
-    """
     if len(text) <= max_length:
         return [text]
 
@@ -78,10 +73,8 @@ def split_message(text: str, max_length: int = 4000) -> List[str]:
 
     return final_chunks
 
-_PH = "\ue000"  # placeholder private-use, tidak match regex markdown apa pun
+_PH = "\ue000"
 
-# Tag HTML yang SAH dikirim Telegram — boleh lolos dari escape (model sering
-# meniru tag dari history/RAG yang sudah berupa HTML)
 _SAFE_TAG_RE = re.compile(
     r"</?(?:b|strong|i|em|u|s|strike|del|code|pre|blockquote|tg-spoiler)"
     r"(?:\s[^<>]*)?>|<a\s[^<>]*>|</a>",
@@ -90,7 +83,6 @@ _SAFE_TAG_RE = re.compile(
 
 
 def _balance_tags(text: str, tags: list[str]) -> str:
-    """Tutup tag whitelist yang tak seimbang agar Telegram tak membalas 400."""
     for raw in tags:
         m = re.match(r"</?([a-zA-Z0-9-]+)", raw)
         if not m:
@@ -107,13 +99,11 @@ def _balance_tags(text: str, tags: list[str]) -> str:
 
 
 def strip_tags_plain(text: str) -> str:
-    """Fallback darurat: buang semua tag HTML + unescape -> teks polos aman."""
     text = re.sub(r"</?[a-zA-Z][^<>]*>", "", text)
     return html.unescape(text)
 
 
 def _md_tables_to_bullets(text: str) -> str:
-    """Tabel markdown jadi bullet '- **kolom1**: nilai' (Telegram tak punya <table>)."""
     lines = text.split("\n")
     out: list[str] = []
     i = 0
@@ -145,18 +135,12 @@ def _md_tables_to_bullets(text: str) -> str:
 
 
 def sanitize_ai_output(text: str) -> str:
-    """Konversi markdown mentah model -> Telegram HTML (parse_mode='HTML').
-
-    Dulunya membuang semua **bold**/*italic* jadi teks polos dan merusak baris
-    tabel jadi artefak '• <b>label</b>'. Sekarang dirender beneran.
-    """
     if not text:
         return ""
 
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
 
-    # Sembunyikan code block dulu agar isinya tak tersentuh markdown parser
     blocks: list[str] = []
 
     def _save_fence(m: re.Match) -> str:
@@ -179,11 +163,8 @@ def sanitize_ai_output(text: str) -> str:
 
     text = _md_tables_to_bullets(text)
 
-    # 1) Normalisasi entitas dulu agar "&amp;amp;" atau "&amp; air" tidak double-escape
-    # Decode berkala sampai tak ada lagi entitas bertumpuk
     for _ in range(2):
         text = text.replace("&amp;amp;", "&amp;").replace("&amp;lt;", "&lt;").replace("&amp;gt;", "&gt;")
-    # Entitas kutip dan whitespace model dikembalikan ke literal
     text = (
         text.replace("&quot;", '"')
         .replace("&#x27;", "'")
@@ -191,8 +172,6 @@ def sanitize_ai_output(text: str) -> str:
         .replace("&nbsp;", " ")
     )
 
-    # 2) Model suka meniru tag HTML dari history (misal <b>Layar:</b> atau <i>teks</i>).
-    # Lindungi tag HTML yang sah dari escape, tapi buang/escape tag asing (<script>, <style>).
     saved_tags: list[str] = []
 
     def _save_safe_tag(m: re.Match) -> str:
@@ -203,16 +182,12 @@ def sanitize_ai_output(text: str) -> str:
 
     text = _SAFE_TAG_RE.sub(_save_safe_tag, text)
 
-    # 3) Escape karakter WAJIB yang tersisa (<, >, & yang bukan tag sah)
-    # Catatan: jika & diikuti entity name yang valid (&amp;, &lt;, &gt;) jangan di-escape ulang
     text = re.sub(r"&(?!amp;|lt;|gt;)", "&amp;", text)
     text = text.replace("<", "&lt;").replace(">", "&gt;")
 
-    # 4) Kembalikan tag aman
     for idx, tag in enumerate(saved_tags):
         text = text.replace(f"{_PH}t{idx}{_PH}", tag)
 
-    # Blockquote > ... (setelah escape jadi '&gt; ...')
     quoted: list[str] = []
     buf: list[str] = []
 
@@ -239,7 +214,6 @@ def sanitize_ai_output(text: str) -> str:
     text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
     text = re.sub(r"\[(.+?)\]\(((?:https?://|tg://)[^\s)]+)\)", r'<a href="\2">\1</a>', text)
 
-    # Bullet markdown -> bullet Telegram (di luar blockquote agar indentasi tetap)
     text = re.sub(r"(?m)^([ \t]*)[-*•◦▪‣·⁃]\s+", r"\1• ", text)
 
     for i, c in enumerate(codes):
@@ -247,7 +221,6 @@ def sanitize_ai_output(text: str) -> str:
     for i, b in enumerate(blocks):
         text = text.replace(f"{_PH}{i}{_PH}", b)
 
-    # Pastikan tag HTML seimbang agar Telegram tidak menolak (400 Bad Request)
     text = _balance_tags(text, saved_tags)
 
     text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
@@ -257,14 +230,6 @@ def sanitize_ai_output(text: str) -> str:
 
 
 def convert_bullets(text: str) -> str:
-    """Konversi bullet unicode (• ▪ ◦ dst) ke list markdown '-' / '1.'.
-
-    Model AI suka menulis bullet dengan karakter '•' + single newline. Di
-    Rich Markdown, '•' bukan penanda list dan single newline = softbreak
-    (spasi), sehingga seluruh isi melipat jadi satu baris. Dengan '-',
-    parser Telegram membloknya sebagai list yang benar.
-    Diabaikan di dalam code fence.
-    """
     out: list[str] = []
     in_fence = False
     for line in text.split("\n"):
@@ -280,11 +245,6 @@ def convert_bullets(text: str) -> str:
 
 
 def sanitize_markdown(text: str) -> str:
-    """Rapikan markdown mentah dari model untuk Rich Message (field markdown).
-
-    Tidak melakukan escaping HTML — Rich Markdown Telegram sudah menangani
-    entitas, tag inline, dan formatting yang belum lengkap saat streaming.
-    """
     if not text:
         return ""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -292,7 +252,6 @@ def sanitize_markdown(text: str) -> str:
     text = convert_bullets(text)
     text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
     text = re.sub(r"\n{4,}", "\n\n\n", text)
-    # Fence code block yang belum tertutup ditutup agar tetap ter-render rapi
     if text.count("```") % 2 == 1:
         text = text.rstrip() + "\n```"
     return text.strip()

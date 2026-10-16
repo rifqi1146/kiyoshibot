@@ -1,4 +1,3 @@
-"""Command handler `/firmware`."""
 import asyncio
 import html
 import logging
@@ -25,7 +24,6 @@ log = logging.getLogger(__name__)
 
 
 async def firmware_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main command handler for /firmware [codename / device name]."""
     if not await require_join_or_block(update, context):
         return
 
@@ -60,14 +58,12 @@ async def firmware_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     started = time.monotonic()
     codename, dev_name, matches = await asyncio.to_thread(resolve_device, query)
 
-    # 1. Ambigu (ada beberapa pilihan nama)
     if not codename and matches:
         log.info("Firmware multiple matches (%d) for query %r", len(matches), query)
         r_html, p_html, markup = build_matches_content(query, matches)
         await edit_rich(context.bot, status.chat.id, status.message_id, r_html, p_html, markup)
         return
 
-    # 2. Tidak ditemukan
     if not codename:
         log.info("Firmware device not found | q=%r", query)
         return await status.edit_text(
@@ -80,7 +76,6 @@ async def firmware_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # 3. Ditemukan persis -> ambil riwayat ROM lengkap (HyperOS + MIUI)
     await status.edit_text(
         f"Loading ROMs for <b>{html.escape(dev_name)}</b> (<code>{html.escape(codename)}</code>)...",
         parse_mode="HTML",
@@ -103,7 +98,6 @@ async def firmware_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     session_id = uuid.uuid4().hex[:8]
-    # Beri tahu setiap item session_id untuk callback
     for r in results:
         r["_session_id"] = session_id
         r["_codename"] = codename

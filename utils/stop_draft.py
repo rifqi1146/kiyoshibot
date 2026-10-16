@@ -3,11 +3,6 @@ from telegram.ext import ContextTypes
 
 
 async def stopped_generation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tangani update stopped_message_generation (Bot API 10.3).
-
-    PTB 22.8 belum mengenali field ini, jadi payload mentah ada di
-    update.api_kwargs["stopped_message_generation"].
-    """
     payload = None
     api_kwargs = getattr(update, "api_kwargs", None)
     get = getattr(api_kwargs, "get", None)

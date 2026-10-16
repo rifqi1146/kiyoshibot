@@ -17,11 +17,6 @@ def draft_thinking_md(hint: str | None = None) -> str:
 
 
 def draft_markdown(text: str, hint: str | None = None) -> str:
-    """Gabung teks stream (markdown mentah) dengan blok thinking.
-
-    Blok thinking tidak ditempel kalau jumlah fence ``` ganjil (code block
-    belum tertutup), supaya tidak masuk ke dalam code block.
-    """
     from utils.text import convert_bullets
     body = convert_bullets((text or "").strip())
     if not body:
@@ -67,13 +62,6 @@ async def stream_to_draft(
     stop_event: asyncio.Event | None = None,
     max_chars: int = MAX_DRAFT_CHARS,
 ) -> str:
-    """
-    Tampilkan thinking draft, lalu update draft tiap `interval` detik
-    dengan teks markdown terakumulasi. Return teks final (markdown mentah).
-
-    Raise RuntimeError jika draft tidak didukung di chat ini.
-    Exception dari text_iter (generator) diteruskan ke pemanggil.
-    """
     try:
         await send_draft(
             bot, chat_id, draft_id, draft_thinking_md(thinking_hint),
@@ -113,7 +101,6 @@ async def stream_to_draft(
 
 
 def _markup_to_dict(reply_markup):
-    """InlineKeyboardMarkup/dict -> dict format Bot API (None tetap None)."""
     if reply_markup is None:
         return None
     if hasattr(reply_markup, "to_dict"):
@@ -154,12 +141,6 @@ async def edit_rich_message(
     is_rtl: bool = False,
     reply_markup=None,
 ):
-    """Edit pesan jadi rich message.
-
-    Server API tidak punya endpoint edit khusus rich message, tapi
-    editMessageText menerima field `rich_message` dan mempertahankan
-    tampilan rich (terverifikasi via tes API).
-    """
     rich_message: dict = {"markdown": rich_markdown}
     if is_rtl:
         rich_message["is_rtl"] = True
@@ -174,15 +155,12 @@ async def edit_rich_message(
     try:
         return await bot.do_api_request("editMessageText", payload)
     except Exception as e:
-        # "message is not modified" = konten sudah identik; biarkan (no-op).
-        # Kalau dilempar ke pemanggil, draft stream bisa dianggap gagal.
         if is_message_not_modified(e):
             return None
         raise
 
 
 def is_rich_message(message) -> bool:
-    """True jika pesan hasil sendRichMessage (field rich_message di api_kwargs)."""
     api_kwargs = getattr(message, "api_kwargs", None) or {}
     return "rich_message" in api_kwargs
 
@@ -191,20 +169,6 @@ DEFAULT_CAPTION_SUMMARY = "Show Caption"
 
 
 def _caption_block(caption: str, summary: str | None = None, collapsible: bool = True) -> dict:
-    """Blok caption di bawah slideshow.
-
-    collapsible=True  -> `details` (Bot API >= 10.3): blok dengan toggle
-                         buka-tutup berjudul `summary` (default "Show Caption").
-                         Selalu bisa di-expand, tidak bergantung panjang teks.
-    collapsible=False -> `blockquote` biasa (Bot API >= 10.1), tampil penuh.
-
-    Catatan field (sesuai telegram-bot-api Client.cpp):
-      details  : {type, summary, blocks, is_open}
-      blockquote: {type, blocks, credit}
-
-    Credit TIDAK dimasukkan ke sini; dikirim sebagai block `footer` terpisah
-    di bawah caption agar tidak ikut terlipat di dalamnya.
-    """
     if collapsible:
         return {
             "type": "details",
@@ -230,18 +194,6 @@ async def send_rich_slideshow(
     reply_to_message_id: int | None = None,
     reply_markup=None,
 ):
-    """Kirim rich message slideshow: foto swipe horizontal + caption di bawah.
-
-    photos: list str — file path lokal ATAU file_id Telegram (boleh campur).
-    File lokal diupload via multipart form (attach://field) ke server Bot API;
-    file_id dikirim langsung sebagai string.
-
-    Caption dibungkus block `details` bertulisan `summary` (default "Show Caption")
-    sehingga selalu punya tombol toggle buka-tutup yang konsisten.
-    Credit dikirim via block `footer` terpisah di bawahnya.
-
-    Raise RuntimeError jika API menolak.
-    """
     import json as _json
     import os as _os
 
@@ -306,8 +258,6 @@ async def send_rich_slideshow(
             raise RuntimeError(data.get("description") or "sendRichMessage failed")
         return data.get("result")
 
-    # Coba details block dulu (Bot API >= 10.3); kalau server lama menolak,
-    # ulangi sekali dengan blockquote biasa (Bot API >= 10.1).
     try:
         return await post(build_payload(build_blocks(collapsible=bool(caption))))
     except Exception as e:

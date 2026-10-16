@@ -1,12 +1,3 @@
-"""Penyimpanan status keanggotaan channel support (SQLite).
-
-Status di-update secara realtime oleh ``ChatMemberHandler`` sehingga saat
-user keluar dari channel, barisnya langsung ditandai ``left`` dan akses bot
-dicabut pada detik itu juga.
-
-Baris tidak pernah dihapus: baca lewat PRIMARY KEY index O(log n), jadi
-menyimpan seluruh riwayat user tidak berpengaruh ke performa.
-"""
 
 import time
 import logging
@@ -34,10 +25,6 @@ def _init(con):
 
 
 def set_member_status(user_id: int, status: str) -> bool:
-    """Simpan status keanggotaan terbaru user.
-
-    Return ``True`` jika user dianggap member channel.
-    """
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
@@ -67,7 +54,6 @@ def set_member_status(user_id: int, status: str) -> bool:
 
 
 def get_member_status(user_id: int):
-    """Ambil ``(status, is_member)`` tersimpan, atau ``(None, None)`` bila belum ada."""
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
@@ -88,7 +74,6 @@ def get_member_status(user_id: int):
 
 
 def get_updated_at(user_id: int):
-    """Ambil timestamp update terakhir user, atau ``None`` bila tidak ada."""
     try:
         uid = int(user_id)
     except (TypeError, ValueError):

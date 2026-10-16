@@ -27,13 +27,6 @@ def _log_background_result(task:asyncio.Task,name:str):
         log.exception("%s failed | err=%r",name,e)
 
 def _create_background_task(app,coro,name:str):
-    # `app.create_task()` di PTB mem-warn ("Tasks created via Application.create_task
-    # while the application is not running won't be automatically awaited") bila
-    # dipanggil saat application belum running — yang memang terjadi karena ini
-    # dijadwalkan dari post_init. Task ini berumur panjang (selama proses hidup),
-    # jadi pakai loop task biasa supaya tidak memicu warning dan tetap di-await
-    # lewat done_callback. Bila app sudah running, tetap pakai app.create_task
-    # agar task ikut dilacak & dibatalkan rapi saat shutdown.
     if getattr(app, "running", False):
         task=app.create_task(coro)
     else:
@@ -125,13 +118,10 @@ async def startup_tasks(app):
         log.exception("Auto backup init failed")
     _create_background_task(app,_startup_asupan(app),"Startup asupan")
     _create_background_task(app,start_downloads_sweeper(),"Downloads sweeper")
-    # Warmup browser stealth di background agar launch pertama tidak
-    # membebani user pertama yang minta download VOE/Nekopoi/Asupan.
     async def _warmup():
         await asyncio.to_thread(scrapling_browser.warmup_browser)
         log.info("✓ Scrapling browser warmed up")
     _create_background_task(app,_warmup(),"Scrapling warmup")
-    # Warmup sumber pencarian TikTok vendored (asupan utama).
     async def _warmup_tiktokapi():
         from handlers.asupan import tiktoksource
         if not tiktoksource.configured():

@@ -92,7 +92,6 @@ def normalize_url(text: str) -> str:
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 
 def extract_all_urls(text: str, limit: int = 8) -> list[str]:
-    """Ambil seluruh URL di dalam teks (untuk batch / multi-link download)."""
     raw = (text or "").replace("\u200b", "")
     found: list[str] = []
     seen: set[str] = set()
@@ -135,33 +134,18 @@ class FileSizeLimitExceeded(RuntimeError):
     pass
 
 class AdultContentNotAllowed(RuntimeError):
-    """Konten dewasa dari platform media sosial diblokir untuk user ini.
-
-    `reason` salah satu konstanta di `handlers.dl.adult_gate`; router memakai
-    itu untuk memilih teks pesan premium / NSFW.
-    """
     def __init__(self, message: str, reason: str = ""):
         super().__init__(message)
         self.reason = reason
 
 def is_media_content_type(content_type: str | None) -> bool:
-    """True kalau Content-Type adalah media nyata (bukan JSON, HTML, atau teks error).
-
-    Dipakai di probe HEAD/Range sebelum mempercayai Content-Length: CDN seperti
-    TikTok `aweme/v1/play/` membalas HEAD dengan HTTP 200 `Content-Type: application/json`
-    berukuran 108 B, padahal videonya di-stream lewat Range/GET berukuran megabyte.
-    Mempercayai Content-Length dari response non-media menyebabkan total ukuran
-    salah dibaca menjadi ~108 byte.
-    """
     ct = (content_type or "").strip().lower().split(";")[0].strip()
     if not ct:
-        # Header tidak ada -> jangan tolak buta, biarkan lolos
         return True
     if ct.startswith(("video/", "audio/", "image/", "application/octet-stream", "binary/octet-stream")):
         return True
     if ct in ("application/x-mpegurl", "application/vnd.apple.mpegurl"):
         return True
-    # JSON / HTML / text / xml jelas bukan media
     return False
 
 

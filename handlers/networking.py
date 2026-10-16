@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 _NET_CACHE = {}
 _NET_CACHE_TTL = 300
 
-#whois
 def fmt_date(d):
     if isinstance(d, list):
         return str(d[0]) if d else "Not available"
@@ -102,7 +101,6 @@ async def whoisdomain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         
-#cmd ip
 async def ip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return await update.message.reply_text(
@@ -189,9 +187,6 @@ async def ip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
 
 async def domain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /domain example.com
-    """
     msg = update.effective_message
 
     if not context.args:
@@ -304,8 +299,6 @@ def _cache_get(key: str):
 def _cache_set(key: str, val):
     _cache_cleanup()
     _NET_CACHE[key] = (time.time(), val)
-
-
 
 
 def _split_tg(text: str, limit: int = 4096):
@@ -644,8 +637,6 @@ async def net_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rich_html, plain_html = rep.build()
 
-    # Rich message punya batas ~32k char; kalau plain fallback kepanjangan,
-    # pecah seperti semula (plain), tapi kirim rich kalau masih muat.
     if len(plain_html) > 4096:
         parts = _split_tg(plain_html, 4096)
         try:

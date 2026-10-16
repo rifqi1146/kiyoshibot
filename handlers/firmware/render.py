@@ -1,13 +1,3 @@
-"""Bot API 10.3 Rich Message and HTML fallback renderer for Xiaomi Firmware (/firmware).
-
-Dua layar utama:
-1. `build_results_content`  -> daftar ROM (HyperOS + MIUI, semua region).
-2. `build_mirrors_content`  -> pemilih mirror CDN (BigOTA, CDN Org, Aliyun SG,
-   HugeOTA, BN) + tombol Incremental OTA bila tersedia.
-
-Gaya UI mengikuti `/moviebox` & `/nekopoi`: emote HANYA di heading `<h1>`,
-seluruh label tombol inline dan teks body bersih tanpa emote.
-"""
 import html
 import math
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -26,7 +16,6 @@ def _filter_items(items: list[dict], region_key: str | None, type_key: str | Non
 
 
 def _short_version(version: str) -> str:
-    """Pendekkan versi agar muat di tombol, mis. OS1.0.8.0.ULMIDXM -> OS1.0.8.0."""
     v = (version or "").strip()
     if not v:
         return "N/A"
@@ -40,7 +29,6 @@ def _rom_flavour(version: str) -> str:
 
 
 def menu_markup() -> InlineKeyboardMarkup:
-    """Keyboard menu utama: device populer + pintasan pencarian (tanpa emote)."""
     rows = []
     pop_row = []
     for codename, name in POPULAR_DEVICES[:8]:
@@ -118,7 +106,6 @@ def build_search_prompt_content() -> tuple[str, str, InlineKeyboardMarkup]:
 
 
 def build_matches_content(query: str, matches: list[tuple[str, str]]) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Daftar device yang cocok ketika pencarian user ambigu (>1 device)."""
     total = len(matches)
     rows_table = []
     for i, (codename, name) in enumerate(matches, start=1):
@@ -168,7 +155,6 @@ def build_matches_content(query: str, matches: list[tuple[str, str]]) -> tuple[s
 
 
 def build_results_content(session_id: str, data: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Halaman daftar ROM: rich table + tombol angka menuju pemilih mirror."""
     items = _filter_items(
         data.get("results") or [],
         data.get("region_filter"),
@@ -267,7 +253,6 @@ def build_results_content(session_id: str, data: dict) -> tuple[str, str, Inline
         f"{plain_body}\n\n{separator}\n<i>{page_info}</i>"
     )
 
-    # Tombol angka -> buka pemilih mirror (5 per baris).
     keyboard = []
     for i in range(0, len(chunk), 5):
         row_items = chunk[i : i + 5]
@@ -292,7 +277,6 @@ def build_results_content(session_id: str, data: dict) -> tuple[str, str, Inline
 
 
 def build_region_picker_content(session_id: str, data: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Layar filter region untuk session ROM yang aktif."""
     device_name = data.get("device_name") or "Device"
     codename = data.get("codename") or "-"
     current = data.get("region_filter")
@@ -335,7 +319,6 @@ def build_region_picker_content(session_id: str, data: dict) -> tuple[str, str, 
     return rich_html, plain_html, InlineKeyboardMarkup(rows)
 
 
-# Nama ramah host mirror Xiaomi (key -> nama tampil, tanpa emote).
 MIRROR_NAMES = {
     "cdnorg.d.miui.com": "CDN Org",
     "bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com": "Aliyun SG",
@@ -351,7 +334,6 @@ def _mirror_label(index: int, host: str) -> str:
 
 
 def build_mirrors_content(item: dict, blocks: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Layar pemilih mirror CDN untuk satu paket ROM."""
     device_name = html.escape(item.get("device_name") or "-")
     version = html.escape(item.get("version") or "-")
     region = html.escape(item.get("region") or "-")

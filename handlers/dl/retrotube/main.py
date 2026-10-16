@@ -75,9 +75,6 @@ async def retrotube_download(
                 t, thumb, cands = await asyncio.to_thread(_scrape_post, page_url)
             except Exception as e:
                 _dbg("scrape failed | %s %r", page_url, e)
-                # Main post is flaky (becekku host sometimes times out once): retry
-                # once before jumping to the mirror, so it does not end up with
-                # "0 candidates" even though the post page is valid.
                 if idx == 0 and not candidate_pairs:
                     _dbg("retrying main post scrape | %s", page_url)
                     try:
@@ -105,23 +102,18 @@ async def retrotube_download(
 
         title = sanitize_filename(title or "Video", 100)
 
-        # Loop over each embed candidate until a valid (non-decoy) stream is obtained
         downloaded = False
         last_error = None
         
-        # Add fallback candidates to try without the gdrive bypass if gdrive hits a quota limit
         expanded_candidates = []
         for cand, refers in candidate_pairs:
-            expanded_candidates.append((cand, refers, True))  # try gdrive bypass
+            expanded_candidates.append((cand, refers, True))
             if "db.fbplay.vip" in cand:
-                expanded_candidates.append((cand, refers, False))  # fallback to tiktokcdn HLS
+                expanded_candidates.append((cand, refers, False))
                 
         for cand, refers, prefer_gdrive in expanded_candidates:
             try:
                 k, mu, th = await asyncio.to_thread(_resolve_embed, cand, refers, prefer_gdrive)
-                # VOE cold start is flaky (the DDoS-Guard browser spin can drop a
-                # single attempt). A second resolve almost always succeeds in ~5s
-                # because the first spin already stored the clearance cookies.
                 if not mu and _is_voe_candidate(cand):
                     _dbg("VOE first resolve empty, retrying once | %s", cand)
                     k, mu, th = await asyncio.to_thread(_resolve_embed, cand, refers, prefer_gdrive)
@@ -140,7 +132,6 @@ async def retrotube_download(
                 elif k == "hls":
                     segments = await asyncio.to_thread(_fetch_segments, mu, cand)
                     if segments and segments[0] == "__AES_HLS__":
-                        # HLS AES fallback path
                         from handlers.dl.remux import download_hls_aes_ffmpeg
                         from handlers.dl.retrotube.constants import UA
                         variant_url = segments[1]
@@ -177,7 +168,6 @@ async def retrotube_download(
             except Exception as e:
                 _dbg("candidate %s failed (prefer_gdrive=%s): %r", cand, prefer_gdrive, e)
                 last_error = e
-                # Clean up working files before trying the next candidate.
                 for item in os.listdir(work_dir):
                     item_path = os.path.join(work_dir, item)
                     try:

@@ -1,12 +1,3 @@
-"""Helper Rich Message (Bot API 10.3) untuk manga detail view dan search.
-
-Menyediakan:
-- `build_nh_detail_rich`      : nHentai detail (Heading + Cover Img + Table + Aside).
-- `build_mangadex_detail_rich`: MangaDex detail (Heading + Cover Img + Table + Details + Aside).
-- `build_maid_detail_rich`    : Maid-Manga detail (Heading + Cover Img + Table + Details + Aside).
-- `send_manga_rich`           : Pengiriman via `sendRichMessage` dengan fallback plain HTML.
-- `edit_manga_rich`           : Edit pesan via `editMessageText` dengan fallback plain HTML.
-"""
 import html
 import logging
 import warnings
@@ -19,7 +10,6 @@ log = logging.getLogger(__name__)
 
 
 def build_nh_detail_rich(data: dict, cover_url: str = "") -> tuple[str, str]:
-    """-> (rich_html, plain_html) untuk nHentai detail view."""
     raw_title = data.get("title", {}).get("pretty") or data.get("title", {}).get("english") or "Unknown Doujin"
     title = html.escape(raw_title)
     code = html.escape(str(data.get("id") or ""))
@@ -59,7 +49,6 @@ def build_nh_detail_rich(data: dict, cover_url: str = "") -> tuple[str, str]:
 
 
 def build_mangadex_detail_rich(manga: dict, cover_url: str = "") -> tuple[str, str]:
-    """-> (rich_html, plain_html) untuk MangaDex detail view."""
     attrs = manga.get("attributes") or {}
     titles = attrs.get("title") or {}
     raw_title = titles.get("en") or titles.get("ja-ro") or next(iter(titles.values()), "Unknown Manga")
@@ -102,7 +91,6 @@ def build_mangadex_detail_rich(manga: dict, cover_url: str = "") -> tuple[str, s
 
 
 def build_maid_detail_rich(title: str, desc: str, offset: int, total_ch: int, cover_url: str = "") -> tuple[str, str]:
-    """-> (rich_html, plain_html) untuk Maid-Manga detail view."""
     title_esc = html.escape(title or "Unknown Manga")
     desc_clean = (desc or "No description available.")[:280] + "…" if len(desc or "") > 280 else (desc or "")
     desc_esc = html.escape(desc_clean)
@@ -149,7 +137,6 @@ async def send_manga_rich(
     reply_to_message_id: int | None = None,
     message_thread_id: int | None = None,
 ):
-    """Kirim rich message manga; fallback ke sendMessage plain HTML."""
     payload: dict = {"chat_id": chat_id, "rich_message": {"html": rich_html}}
     if reply_to_message_id:
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
@@ -184,7 +171,6 @@ async def edit_manga_rich(
     plain_html: str,
     markup: InlineKeyboardMarkup | None = None,
 ):
-    """Edit pesan jadi rich message; fallback ke editMessageText plain HTML."""
     payload: dict = {
         "chat_id": chat_id,
         "message_id": message_id,

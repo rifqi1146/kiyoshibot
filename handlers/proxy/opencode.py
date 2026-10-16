@@ -1,37 +1,3 @@
-#!/usr/bin/env python3
-# language: Python 3.12, file: opencode.py, target: Linux (stdlib only)
-"""
-OpenCode free tier -> OpenAI-compatible proxy.
-
-Menyajikan endpoint /v1/models dan /v1/chat/completions (stream & non-stream)
-yang di-backing opencode.ai free tier (Bearer public, tanpa API key).
-
-KONTRAK REQUEST (v2, berlaku sejak 2026-10-14) — semua ini WAJIB, meleset satu
-saja dibalas 403 FreeTierError:
-  1. Endpoint   : /inference/v1/chat/completions  (BUKAN /zen/v1 lagi)
-  2. User-Agent : opencode/<channel>/<version>/<client>, mis. opencode/latest/2.0.26/cli
-                  Bentuk v1 ("opencode/1.18.31") DITOLAK.
-  3. Session    : x-opencode-session DAN x-opencode-session-id (+ x-session-affinity,
-                  x-session-id). Salah satu saja DITOLAK. Format kanonik:
-                  ses_ + 12 hex + 14 base62, prefix = ~(timeMs * 0x1000 + counter)
-                  dengan counter kecil (0-16 lolos, >=100 ditolak).
-  4. Request id : header x-opencode-request TIDAK BOLEH ADA (v1 dulu wajib, kini ditolak).
-  5. Tools      : definisi `read` dan `shell` milik OpenCode, deskripsi + parameter
-                  PERSIS. Stub/rename DITOLAK. `tool_choice: "none"` DITOLAK.
-  6. Streaming  : upstream hanya melayani stream:true. Kontrak ini selalu memaksa
-                  stream ke upstream lalu meng-agregasi sendiri untuk klien non-stream.
-  7. Kuota      : dihitung per session. Satu session kanonik dipakai ulang sampai TTL;
-                  menerbitkan session baru tiap request memicu 429 FreeUsageLimitError.
-
-Lane (model -> endpoint upstream):
-  - chat      : /inference/v1/chat/completions  (default)
-  - responses : /inference/v1/responses         (muse-spark-*-contributor-free)
-  - excluded  : jev-* (systemone)               -> 400, bukan lane chat
-
-Pemakaian:
-  python3 opencode.py                 # 127.0.0.1:20130
-  python3 opencode.py --port 8080 --host 0.0.0.0
-"""
 import argparse
 import json
 import logging
@@ -53,13 +19,12 @@ CHAT_URL = UPSTREAM + "/inference/v1/chat/completions"
 RESPONSES_URL = UPSTREAM + "/inference/v1/responses"
 MODELS_URL = UPSTREAM + "/zen/v1/models"
 
-# UA v2: opencode/<channel>/<version>/<client>. Bentuk v1 ditolak upstream.
 OPENCODE_VERSION = os.getenv("OPENCODE_VERSION", "2.0.26").strip() or "2.0.26"
 UA = f"opencode/latest/{OPENCODE_VERSION}/cli"
 UA_V2_RE = re.compile(r"^opencode/[a-z0-9-]+/(\d+)\.\d+\.\d+/[a-z0-9-]+$", re.I)
 
-FREE_EXPLICIT = {"big-pickle"}  # model gratis tanpa akhiran -free
-EXCLUDE_PREFIX = ("jev-",)      # kind systemone, bukan lane chat
+FREE_EXPLICIT = {"big-pickle"}
+EXCLUDE_PREFIX = ("jev-",)
 
 BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 SSL_CTX = ssl.create_default_context()
@@ -85,8 +50,6 @@ def lane_for(mid):
     return "chat"
 
 
-# ── Definisi tool fingerprint (verbatim OpenCode v2.0.26) ─────────────────────
-# Upstream membandingkan deskripsi & parameter, jadi JANGAN diubah kata-katanya.
 FINGERPRINT_TOOL_DEFINITIONS = [
     {
         "name": "read",
@@ -171,7 +134,6 @@ PLACEHOLDER_NOTE = (
 
 
 def _fingerprint_tools(flat=False):
-    """Bangun definisi tool fingerprint sesuai bentuk lane (chat vs responses)."""
     out = []
     for spec in FINGERPRINT_TOOL_DEFINITIONS:
         if flat:
@@ -205,7 +167,6 @@ def _tool_name(tool):
 
 
 def _is_verbatim_fingerprint(tool, name):
-    """True kalau tool sudah memakai definisi fingerprint persis milik OpenCode."""
     spec = next((s for s in FINGERPRINT_TOOL_DEFINITIONS if s["name"] == name), None)
     if spec is None:
         return False
@@ -221,13 +182,6 @@ def _is_verbatim_fingerprint(tool, name):
 
 
 def apply_fingerprint_chat(body):
-    """Pasang fingerprint tool untuk lane chat. Return rename map.
-
-    Aturan upstream: `read`/`shell` harus ada dengan definisi verbatim. Kalau
-    klien sudah mendeklarasikan nama itu dengan definisi berbeda, pindahkan ke
-    alias `<name>_client` supaya tidak bentrok, lalu pulihkan di response.
-    `tool_choice: "none"` DITOLAK, jadi dibuang bila ada.
-    """
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
     rename = {}
     out = []
@@ -243,7 +197,7 @@ def apply_fingerprint_chat(body):
             out.append(tool)
             continue
         if name in seen:
-            continue  # duplikat nama fingerprint ditolak upstream
+            continue
         seen.add(name)
         if _is_verbatim_fingerprint(tool, name):
             out.append(tool)
@@ -262,7 +216,6 @@ def apply_fingerprint_chat(body):
             clone["name"] = alias
         out.append(clone)
 
-    # Tambahkan fingerprint yang belum ada
     for spec in FINGERPRINT_TOOL_DEFINITIONS:
         if spec["name"] in seen:
             continue
@@ -278,7 +231,6 @@ def apply_fingerprint_chat(body):
 
     body["tools"] = out
 
-    # tool_choice "none" ditolak; hapus agar upstream memakai default.
     if body.get("tool_choice") == "none":
         body.pop("tool_choice", None)
     choice = body.get("tool_choice")
@@ -290,19 +242,16 @@ def apply_fingerprint_chat(body):
             if inner in rename:
                 choice["function"]["name"] = rename[inner]
 
-    # Beri tahu model bahwa tool fingerprint hanyalah placeholder, supaya ia
-    # tidak memanggilnya. Tanpa catatan ini model benar-benar memanggil `read`.
     _inject_placeholder_note(body)
     return rename
 
 
 def _inject_placeholder_note(body):
-    """Sisipkan catatan placeholder ke system message (chat shape)."""
     msgs = body.get("messages")
     if not isinstance(msgs, list):
         return
     if body.get("system") is not None:
-        return  # bentuk Claude memakai field `system`
+        return
     if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system" \
             and isinstance(msgs[0].get("content"), str):
         first = dict(msgs[0])
@@ -313,7 +262,6 @@ def _inject_placeholder_note(body):
 
 
 def apply_fingerprint_flat(body):
-    """Pasang fingerprint tool untuk lane Responses (bentuk flat {name})."""
     tools = body.get("tools") if isinstance(body.get("tools"), list) else []
     body["tools"] = [t for t in tools if isinstance(t, dict)]
     seen = {_tool_name(t) for t in body["tools"]}
@@ -326,13 +274,11 @@ def apply_fingerprint_flat(body):
             "description": spec["description"],
             "parameters": spec["parameters"],
         })
-    # Responses: default eksplisit "auto", jangan pernah "none".
     if body.get("tool_choice") == "none" or not body.get("tool_choice"):
         body["tool_choice"] = "auto"
 
 
 def restore_tool_names(payload, rename):
-    """Balikin nama tool ke ejaan asli klien (response chat)."""
     if not rename or not isinstance(payload, dict):
         return payload
     choices = payload.get("choices")
@@ -379,7 +325,6 @@ def last_user_text(body):
     return ""
 
 
-# ── Chat -> Responses conversion (lane responses) ────────────────────────────
 def chat_to_responses(body):
     out = {"model": body["model"], "stream": True, "store": False}
     for key in ("temperature", "top_p", "stop", "seed"):
@@ -439,7 +384,6 @@ def chat_to_responses(body):
     return out
 
 
-# ── Session store (stabil per klien; kuota upstream dihitung per sesi) ────────
 SESSIONS = {}
 SESSIONS_LOCK = threading.Lock()
 SESSION_TTL = 6 * 3600
@@ -449,11 +393,6 @@ _counter_lock = threading.Lock()
 
 
 def generate_session_id():
-    """ses_ + 12 hex (prefix kanonik) + 14 base62.
-
-    Prefix = ~(timeMs * 0x1000 + counter). Upstream men-decode ini dan menolak
-    counter yang tidak kecil (>=100) dengan 403 FreeTierError.
-    """
     ts = now_ms()
     with _counter_lock:
         if ts != _counter["ts"]:
@@ -481,12 +420,7 @@ def session_for(identity):
         return sid
 
 
-# ── Upstream call ─────────────────────────────────────────────────────────────
 def upstream_headers(session_id, accept):
-    """Header v2. CATATAN: `x-opencode-request` sengaja TIDAK dikirim.
-
-    Upstream menolak header itu (warisan v1) dengan 403 FreeTierError.
-    """
     return {
         "Authorization": "Bearer public",
         "User-Agent": UA,
@@ -518,7 +452,6 @@ def uuid_hex():
     return secrets.token_hex(12)
 
 
-# ── Handler ───────────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "OpenCodeV1/2.0"
@@ -613,11 +546,9 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(502, {"error": {"message": str(e), "type": "upstream_error"}})
 
-    # lane: chat completions ---------------------------------------------------
     def _handle_chat(self, model, body, session_id):
         payload = dict(body)
         payload["model"] = model
-        # Upstream hanya melayani stream:true; non-stream diagregasi di sini.
         payload["stream"] = True
         rename = apply_fingerprint_chat(payload)
         want_stream = bool(body.get("stream"))
@@ -676,7 +607,6 @@ class Handler(BaseHTTPRequestHandler):
             }
             return self._json(200, out)
 
-        # streaming: relay chunk apa adanya, pulihkan nama tool
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -702,7 +632,6 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             resp.close()
 
-    # lane: responses ----------------------------------------------------------
     def _handle_responses(self, model, body, session_id):
         payload = chat_to_responses(body)
         want_stream = bool(body.get("stream"))
@@ -752,7 +681,6 @@ class Handler(BaseHTTPRequestHandler):
             }
             return self._json(200, out)
 
-        # stream responses -> chunk chat.completion
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -808,11 +736,6 @@ _SERVER_LOCK = threading.Lock()
 
 
 def start_proxy_thread(host="127.0.0.1", port=20130):
-    """Jalankan proxy di thread daemon (dipanggil saat bot.py start).
-
-    Idempoten: jika server sudah hidup di port ini, kembalikan instance lama.
-    Jika port sudah dipakai proses lain (misal proxy standalone), skip halus.
-    """
     global _SERVER_INSTANCE
     with _SERVER_LOCK:
         if _SERVER_INSTANCE is not None:

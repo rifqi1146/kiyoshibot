@@ -1,20 +1,3 @@
-"""Axiom Payment invoice store (SQLite).
-
-FLOW DB:
-1. `init_db()` creates `payments` (idempotent, safe at import/startup).
-2. `save_invoice(...)` stores the invoice returned by POST /create-qris with a
-   short_id used for Telegram callback_data (64-byte limit) and a local
-   `deadline` = created_at + 5 minutes (bot-side payment window, stricter than
-   the provider `expires_at`).
-3. `set_message_id` records the Telegram payment card message so the 15s poll
-   job and the manual refresh button edit the same message.
-4. `active_for_user` returns the newest PENDING invoice still inside its
-   deadline, so repeated /buypremium calls reuse one invoice instead of
-   creating extra bills (provider warns against blind re-creation).
-5. `mark_paid` / `set_status` are terminal and idempotent.
-
-All connections use WAL + synchronous=NORMAL + busy_timeout=30000.
-"""
 
 import os
 import sqlite3
@@ -143,7 +126,6 @@ def get_by_qris(qris_id: str) -> dict | None:
 
 
 def active_for_user(user_id: int) -> dict | None:
-    """Newest PENDING invoice for this user that is still inside its deadline."""
     con = _db()
     try:
         con.row_factory = sqlite3.Row

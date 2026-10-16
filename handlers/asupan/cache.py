@@ -4,16 +4,10 @@ from .constants import ASUPAN_PREFETCH_SIZE, log
 from .fetcher import fetch_asupan_tikwm
 from . import state
 
-# Berapa kali coba video lain kalau Telegram gagal mengambil URL-nya.
 SEND_ATTEMPTS = 5
 
 
 async def _send_next_asupan(bot, keyword):
-    """Ambil 1 video asupan & kirim lewat URL (Telegram yang fetch).
-
-    Kalau Telegram gagal mengambil URL-nya, video itu DIBUANG dan langsung coba
-    video berikutnya dari pool keyword yang sama. Tidak ada download ke VPS.
-    """
     if not LOG_CHAT_ID:
         raise RuntimeError("LOG_CHAT_ID kosong")
 
@@ -62,7 +56,7 @@ async def warm_keyword_asupan_cache(bot, keyword: str):
                 await asyncio.sleep(1.1)
             except Exception as e:
                 log.warning(f"[ASUPAN KEYWORD PREFETCH] {kw}: {e}")
-                break  # Kalo limit/error, break loop biar gak spamming API
+                break
     finally:
         state.ASUPAN_KEYWORD_FETCHING.discard(kw)
 

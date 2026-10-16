@@ -7,7 +7,6 @@ from utils.text import sanitize_ai_output
 
 
 async def _send_help(bot, chat, text_md: str, keyboard, reply_to=None):
-    """Send help: try rich message first (DM & supergroup), fallback to HTML."""
     try:
         return await send_rich_message(
             bot, chat.id, text_md, reply_markup=keyboard,
@@ -26,7 +25,6 @@ async def _send_help(bot, chat, text_md: str, keyboard, reply_to=None):
 
 
 async def _edit_help(q, text_md: str, keyboard):
-    """Update menu: keep rich message, fallback to HTML if unsupported."""
     msg = q.message
     if is_rich_message(msg):
         try:

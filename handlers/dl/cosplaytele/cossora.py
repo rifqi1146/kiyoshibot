@@ -1,12 +1,3 @@
-"""FLOW RESOLVER Cossora (cossora.stream)
-1. Post Cosplaytele memuat video di <iframe src="https://cossora.stream/embed/<uuid>">.
-2. Halaman embed berisi dua string base64 terenkripsi (videoURL, portadaURL) dan
-   satu kunci AES heksadesimal 32 karakter di dalam script.
-3. Dekripsi AES-256-CBC (PKCS7, IV = 16 byte pertama) menghasilkan URL master
-   playlist `index.m3u8?token=...` plus poster.
-4. Playlist master -> varian resolusi tertinggi -> playlist media -> daftar segmen
-   `.ts` + total durasi dari `#EXTINF`.
-"""
 import base64
 import logging
 import re
@@ -34,7 +25,6 @@ _STREAM_INF_RE = re.compile(r"#EXT-X-STREAM-INF:.*?RESOLUTION=(\d+)x(\d+).*?\n(.
 
 
 def find_embed(html: str) -> str:
-    """Ambil iframe embed cossora.stream dari HTML post Cosplaytele."""
     m = EMBED_RE.search(html or "")
     return m.group(0) if m else ""
 
@@ -53,7 +43,6 @@ def _decrypt(enc: str, key: str) -> str:
 
 
 def _best_variant(playlist: str, base_url: str) -> str:
-    """Pilih varian resolusi tertinggi dari master playlist."""
     lines = [line.strip() for line in playlist.splitlines() if line.strip()]
     best = None
     i = 0
@@ -74,7 +63,6 @@ def _best_variant(playlist: str, base_url: str) -> str:
         i += 1
     if best:
         return best[1]
-    # Playlist media langsung (tanpa STREAM-INF): pakai URL apa adanya.
     return base_url
 
 
@@ -99,10 +87,6 @@ def _parse_media(playlist: str, base_url: str) -> dict:
 
 
 def resolve_embed(embed_url: str) -> dict:
-    """Buka halaman embed -> URL playlist master Cossora + poster.
-
-    Blocking (~1s, 2 request HTTP). Panggil lewat `asyncio.to_thread`.
-    """
     last_err = None
     for attempt in range(2):
         try:
@@ -140,7 +124,6 @@ def resolve_embed(embed_url: str) -> dict:
 
 
 def probe_stream(playlist_url: str, referer: str) -> dict:
-    """Master playlist -> playlist media (varian terbaik) -> segmen + durasi."""
     r = curl_requests.get(
         playlist_url,
         headers={"User-Agent": UA, "Referer": referer,
@@ -172,7 +155,6 @@ def probe_stream(playlist_url: str, referer: str) -> dict:
 
 
 def download_segment(url: str, referer: str, out_path: str, retries: int = 3) -> int:
-    """Unduh satu segmen .ts dengan retry. Blocking, panggil via to_thread."""
     headers = {"User-Agent": UA, "Referer": referer}
     last_err = None
     for attempt in range(retries):

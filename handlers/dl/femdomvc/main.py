@@ -1,12 +1,3 @@
-"""Downloader FemdomVC (femdomvc.com)
-
-FLOW DOWNLOADER
----------------
-1. `is_femdomvc_url(url)`: Cocokkan host femdomvc.com dan path /video/<id>/...
-2. `probe_femdomvc(url)`: Ekstrak metadata (title, duration, thumbnail, download_url) dan simpan ke cache.
-3. `femdomvc_download(...)`: Unduh direct MP4.
-4. Mendukung konversi mp3 (libmp3lame via ffmpeg) jika `fmt_key == 'mp3'`.
-"""
 import os
 import time
 import uuid
@@ -38,7 +29,6 @@ def is_femdomvc_url(url: str) -> bool:
     if host != "femdomvc.com":
         return False
     path = (parsed.path or "").strip("/")
-    # Format: video/<digits>/<slug>
     parts = path.split("/")
     if len(parts) >= 2 and parts[0].lower() == "video" and any(char.isdigit() for char in parts[1]):
         return True
@@ -125,7 +115,6 @@ async def femdomvc_download(
 
         final_path = res["path"]
 
-        # Jika mode audio / mp3
         if fmt_key == "mp3":
             mp3_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp3")
             ffmpeg_cmd = [
@@ -149,7 +138,6 @@ async def femdomvc_download(
                 "artist": "FemdomVC",
             }
 
-        # Pindahkan file ke TMP_DIR agar tidak ikut terhapus di finally
         out_video = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp4")
         shutil.move(final_path, out_video)
         return {

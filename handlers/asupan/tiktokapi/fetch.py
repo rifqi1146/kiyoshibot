@@ -1,69 +1,3 @@
-"""TikTok transport: plain curl_cffi with browser-impersonated TLS through
-sticky residential exits. No browser, no login.
-
-Validated 2026-10-05 through US / GB / DE residential exits. TikTok is not
-reachable from direct Indian egress at all (TCP timeout), and the pod's own
-US datacenter egress is untested — config.TIKTOK_USE_PROXY keeps everything
-on residential exits.
-
-Upstream surfaces:
-
-  * WEB API   GET https://www.tiktok.com/api/<group>/<action>/
-    The web app's own JSON. Every call carries the app's fixed query params
-    (aid=1988, app_name=tiktok_web, device_id, region ...). Most endpoints
-    are SIGNED: the page's webmssdk appends X-Dynosaur, msToken, X-Bogus=1
-    and X-Gnarly, reproduced in pure python by signer.py. An unsigned (or
-    badly signed) call to a signed endpoint is NOT an error: HTTP 200, a
-    0-byte body and the header `tt_orcas_res: 1`. The same silent empty body
-    is how TikTok refuses anything else it dislikes, so it is the one block
-    signal here (TikTokBlocked):
-      - the FIRST signed call of a session is often empty and the retry on
-        the same session answers -> a fresh session gets one free retry;
-      - endpoints differ by exit REGION: /api/user/detail and
-        /api/search/user answer on EU exits and are always empty on US ones;
-        /api/search/item is the reverse. Callers pass `countries`, the exit
-        order to try;
-      - /api/post/item_list goes empty after ~17-27 calls per exit IP (a
-        new ttwid on the same IP does not help, a new exit works at once)
-        -> `budget=` retires a session for that endpoint after
-        config.TIKTOK_POSTS_CALLS_PER_EXIT calls.
-    A few endpoints need no signature (creator/item_list, repost/item_list,
-    user/list, user/playlist, mix/item_list, explore/item_list,
-    search/general/preview) and are sent bare.
-    Search answers `status_code 2483 "Please login"` to a session with no
-    cookies: `boot=True` first loads one profile page, which sets ttwid /
-    tt_csrf_token / tt_chain_token and yields the page's own device id.
-    msToken is taken from the session's cookie jar when TikTok has issued
-    one and sent empty otherwise — a made-up token is refused.
-
-  * PAGES     GET https://www.tiktok.com/@<user>
-    Server-rendered rehydration JSON (`__UNIVERSAL_DATA_FOR_REHYDRATION__`),
-    used to boot a session and as the profile fallback.
-
-  * WEBCAST   GET https://webcast.tiktok.com/webcast/room/info/ — live rooms,
-    unsigned.
-
-  * ADS LIBRARY  https://library.tiktok.com/api/v1/* — no cookies, but a
-    per-exit handshake: GET /location, then GET /support-regions whose
-    `config_str` rides every later call as the X-CCL-STR header. Skip either
-    step and the answer is HTTP 421 with the plain text "system busy".
-
-  * CREATIVE CENTER  https://ads.tiktok.com/creative_radar_api/v1/top_ads/*
-    — headers anonymous-user-id (any uuid) + timestamp + user-sign (an md5
-    fold, creative_center()). The other creative_radar lists answer
-    "deprecated" since 2026 and are not used.
-
-FALLBACK if the signer stops working (every signed call empty on every
-exit): the patchright pattern — warm a headed Chrome on www.tiktok.com and
-run these same GETs through the page's own fetch, which webmssdk signs.
-Not built: dead code while the port works.
-
-Failure taxonomy (scraper_errors, mapped to HTTP by route_glue):
-  TikTokUpstreamError  transport failure / 5xx / unexpected status code — retryable
-  TikTokBlocked        silent empty body, 403 / 429, login wall          — retryable on a new exit
-  TikTokBadRequest     upstream rejected the params                       — never retried
-  TikTokNotFound       unknown user / video / hashtag / sound ...         — never retried
-"""
 import hashlib
 import json
 import os
@@ -89,18 +23,16 @@ ADS_LIBRARY = "https://library.tiktok.com"
 CREATIVE_CENTER = "https://ads.tiktok.com"
 IMPERSONATE = "chrome"
 
-# The signer seals the User-Agent into X-Gnarly, so the header, the
-# browser_version param and the signer input must be this same string.
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 API_TIMEOUT = 30
 PAGE_TIMEOUT = 45
 FANOUT_WORKERS = 4
-SESSIONS_PER_COUNTRY = 2       # fresh exits tried per country before moving on
-BOOT_PATH = "/@tiktok"         # any profile page sets the session cookies
+SESSIONS_PER_COUNTRY = 2
+BOOT_PATH = "/@tiktok"
 
-LOGIN_WALL_STATUS = 2483       # "Please login your account first" (search without cookies)
+LOGIN_WALL_STATUS = 2483
 
 PAGE_HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -115,19 +47,19 @@ _UNIVERSAL_RE = re.compile(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]
 
 
 class TikTokUpstreamError(UpstreamError):
-    """Transport failure, 5xx or an unexpected upstream status — retryable."""
+    pass
 
 
 class TikTokBlocked(TikTokUpstreamError, Blocked):
-    """Silent empty body, 403 / 429 or a login wall — retryable on a new exit."""
+    pass
 
 
 class TikTokBadRequest(BadRequest):
-    """Upstream rejected the params — never retried."""
+    pass
 
 
 class TikTokNotFound(NotFound):
-    """The user / video / hashtag / sound ... does not exist — never retried."""
+    pass
 
 
 def default_country():
@@ -139,7 +71,6 @@ def eu_country():
 
 
 def country_order(country, *fallbacks):
-    """`country` (or the default) first, then the fallbacks, de-duplicated."""
     order = []
     for code in (country or default_country(),) + fallbacks:
         code = (code or "").lower()
@@ -147,11 +78,6 @@ def country_order(country, *fallbacks):
             order.append(code)
     return tuple(order)
 
-
-# ---- sessions --------------------------------------------------------------------
-# A client = one curl session on one sticky exit, with its own device id and
-# cookie jar. Clients are pooled per exit country and checked out by one
-# request thread at a time (a curl handle must not be shared across threads).
 
 class _Client:
     __slots__ = ("session", "country", "device_id", "born", "booted", "answered", "spent", "ccl")
@@ -167,9 +93,9 @@ class _Client:
         self.device_id = str(random.randint(7250000000000000000, 7351147085025500000))
         self.born = time.time()
         self.booted = False
-        self.answered = False      # has a signed call ever answered on this session
-        self.spent = {}            # budget key -> calls served
-        self.ccl = None            # ads library (config_str, regions, expires)
+        self.answered = False
+        self.spent = {}
+        self.ccl = None
 
     def close(self):
         try:
@@ -179,12 +105,10 @@ class _Client:
 
 
 _pool_lock = threading.Lock()
-_idle = {}                         # country -> [clients], most recently used last
+_idle = {}
 
 
 def _acquire(country, budget=None):
-    """An idle client for `country` that still has `budget` left, else a new
-    one on a fresh exit."""
     now = time.time()
     with _pool_lock:
         clients = _idle.setdefault(country, [])
@@ -201,10 +125,6 @@ def _acquire(country, budget=None):
 
 
 def _release(client):
-    """Return a client to its country's idle pool, most recently used last.
-    A full pool evicts its least recently used client, so sessions that have
-    spent their budget for an endpoint drift out instead of pinning the pool
-    and forcing every later call of that endpoint onto a fresh exit."""
     evicted = None
     with _pool_lock:
         clients = _idle.setdefault(client.country, [])
@@ -216,7 +136,6 @@ def _release(client):
 
 
 def dump_debug(name, text):
-    """Write a raw response to $TIKTOK_DEBUG_DIR/<name>.txt."""
     dbg = os.environ.get("TIKTOK_DEBUG_DIR", "")
     if dbg and text:
         try:
@@ -228,7 +147,6 @@ def dump_debug(name, text):
 
 
 def universal_data(html):
-    """The page's `__DEFAULT_SCOPE__` rehydration dict, or None."""
     match = _UNIVERSAL_RE.search(html or "")
     if not match:
         return None
@@ -240,8 +158,6 @@ def universal_data(html):
 
 
 def _load_page(client, path):
-    """GET one www page on `client` -> its rehydration scope. Also adopts
-    the page's own device id, so a page load doubles as the session boot."""
     try:
         resp = client.session.get(WWW + path, headers=PAGE_HEADERS, timeout=PAGE_TIMEOUT, allow_redirects=True)
     except Exception as e:
@@ -253,7 +169,6 @@ def _load_page(client, path):
         raise TikTokUpstreamError(f"HTTP {status} on {path}")
     scope = universal_data(resp.text)
     if scope is None:
-        # ~1 page in 25 arrives without its rehydration script; a new exit fixes it
         dump_debug("page_no_data", resp.text)
         raise TikTokBlocked(f"{path} came back without page data")
     wid = (scope.get("webapp.app-context") or {}).get("wid")
@@ -264,7 +179,6 @@ def _load_page(client, path):
 
 
 def _base_params(client, region):
-    """The web app's fixed query params, in the app's own order."""
     return {
         "WebIdLastTime": str(int(client.born)),
         "aid": "1988",
@@ -299,8 +213,6 @@ def _base_params(client, region):
 
 
 def status_of(payload):
-    """The upstream status code of a JSON answer (0 = ok). The web API
-    spells it statusCode, status_code or code depending on the service."""
     for key in ("statusCode", "status_code", "code"):
         value = payload.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
@@ -351,27 +263,12 @@ def _api_once(client, path, params, *, signed, base, host, referer):
 
 def api(path, params, *, country=None, countries=None, signed=True, boot=False, base=True, host=WWW,
         budget=None, referer=None, not_found=(), bad_request=(), ok=(0,), label=None):
-    """One web API call -> the parsed JSON dict.
-
-    countries    exit countries to try in order (default: `country` or the
-                 configured default). Each gets SESSIONS_PER_COUNTRY exits.
-    signed       seal the query with signer.py (False for the bare endpoints)
-    boot         load one page on the session first (search needs cookies)
-    base         send the web app's fixed params (False for other services)
-    budget       (key, max calls) — a session serves at most that many calls
-                 under `key`, then a fresh exit is used
-    not_found    upstream status codes that mean the entity does not exist
-    bad_request  upstream status codes that mean the params were refused
-    ok           status codes returned to the caller as-is; any other code is
-                 an upstream error naming the code
-    """
     order = countries or country_order(country)
     what = label or path
     last = None
     for code in order:
         for _ in range(SESSIONS_PER_COUNTRY):
             client = _acquire(code, budget)
-            # a session often drops its FIRST signed call; unsigned calls never need the retry
             tries = 2 if signed and not client.answered else 1
             payload = None
             try:
@@ -409,7 +306,6 @@ def api(path, params, *, country=None, countries=None, signed=True, boot=False, 
 
 
 def get_page(path, *, country=None, countries=None):
-    """GET one www.tiktok.com page -> its rehydration scope dict."""
     last = None
     for code in countries or country_order(country):
         for _ in range(SESSIONS_PER_COUNTRY):
@@ -426,8 +322,6 @@ def get_page(path, *, country=None, countries=None):
 
 
 def resolve_redirect(url, *, country=None):
-    """Where a short link (vm.tiktok.com/…, tiktok.com/t/…) points — the
-    final URL after redirects. TikTokNotFound when it leads nowhere."""
     last = None
     for _ in range(SESSIONS_PER_COUNTRY + 1):
         client = _acquire((country or default_country()).lower())
@@ -445,7 +339,6 @@ def resolve_redirect(url, *, country=None):
 
 
 def get_text(url, *, country=None):
-    """GET a signed CDN file (a WebVTT subtitle) -> its text."""
     last = None
     for _ in range(SESSIONS_PER_COUNTRY + 1):
         client = _acquire((country or default_country()).lower())
@@ -461,8 +354,6 @@ def get_text(url, *, country=None):
         last = TikTokUpstreamError(f"HTTP {resp.status_code} on a media file")
     raise last
 
-
-# ---- ads library ---------------------------------------------------------------------
 
 CCL_TTL = 1800
 
@@ -488,7 +379,7 @@ def _ads_library_once(client, method, path, *, params=None, body=None, config_st
     except Exception:
         text = (resp.text or "").strip()
         if status in (421, 425) and len(text) < 200:
-            return status, {"err_msg": text}       # "system busy" / "params error" arrive as plain text
+            return status, {"err_msg": text}
         dump_debug("ads_library_nonjson", text)
         raise TikTokBlocked(f"{path} returned a non-JSON body (HTTP {status})")
     if not isinstance(payload, dict):
@@ -497,13 +388,9 @@ def _ads_library_once(client, method, path, *, params=None, body=None, config_st
 
 
 def _ads_library_regions(client):
-    """(config_str, regions) from /support-regions. The handshake is bound
-    to the exit that made it, so it lives on the client."""
     cached = client.ccl
     if cached and cached[2] > time.time():
         return cached[0], cached[1]
-    # /location first: without it every later call from this exit is answered
-    # 421 "system busy", config string or not (the service keys on the IP)
     _ads_library_once(client, "GET", "/api/v1/location")
     _, payload = _ads_library_once(client, "GET", "/api/v1/support-regions", params={"lang": "en"})
     value = payload.get("config_str")
@@ -514,11 +401,6 @@ def _ads_library_regions(client):
 
 
 def ads_library(method, path, *, params=None, body=None, not_found=None):
-    """One Commercial Content Library call -> JSON dict. HTTP 421 is the
-    service's catch-all refusal: "system busy" for a stale / foreign
-    X-CCL-STR (retried on a fresh session) and "params error" for a
-    rejected body; HTTP 425 is its answer to params it cannot serve
-    (`not_found` names the entity when that means a missing ad)."""
     last = None
     for _ in range(config.MAX_RETRIES):
         client = _acquire(default_country())
@@ -530,8 +412,6 @@ def ads_library(method, path, *, params=None, body=None, not_found=None):
             client.close()
             continue
         if status == 425:
-            # the service's answer to params it cannot serve: an unknown ad
-            # id, a region it does not cover, a page without its search id
             _release(client)
             if not_found:
                 raise TikTokNotFound(f"{not_found} not found")
@@ -550,7 +430,6 @@ def ads_library(method, path, *, params=None, body=None, not_found=None):
 
 
 def ads_library_regions():
-    """The countries the Commercial Content Library covers: [{code, name}]."""
     last = None
     for _ in range(config.MAX_RETRIES):
         client = _acquire(default_country())
@@ -565,8 +444,6 @@ def ads_library_regions():
     raise last
 
 
-# ---- creative center ----------------------------------------------------------------
-
 _CC_SALT = "A7B&9z#1G6$2K@8M!3"
 
 
@@ -576,7 +453,6 @@ def _creative_center_sign(user_id, timestamp):
 
 
 def creative_center(path, params, *, not_found=()):
-    """One Creative Center radar call -> its `data` object."""
     last = None
     for _ in range(config.MAX_RETRIES):
         client = _acquire(default_country())
@@ -612,11 +488,7 @@ def creative_center(path, params, *, not_found=()):
     raise last
 
 
-# ---- fan-out -------------------------------------------------------------------------
-
 def run_parallel(fns):
-    """Run zero-arg callables in parallel; results align with `fns`.
-    Exceptions propagate from the first failing call."""
     if not fns:
         return []
     if len(fns) == 1:
@@ -627,7 +499,6 @@ def run_parallel(fns):
 
 
 if __name__ == "__main__":
-    # Smoke test: python -m tiktok.fetch [username]
     who = sys.argv[1] if len(sys.argv) > 1 else "nasa"
     data = api("/api/user/detail/", {"uniqueId": who, "secUid": ""}, countries=(eu_country(),))
     info = data.get("userInfo") or {}

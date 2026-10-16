@@ -1,40 +1,3 @@
-"""Downloader Pawchive (pawchive.pw)
-
-FLOW DOWNLOADER PAWCHIVE
-------------------------
-1. URL Matching:
-   - `is_pawchive_url(url)` mencocokkan host pawchive.pw dan memastikan path mengandung '/post/'.
-
-2. Status & Inisialisasi:
-   - Buat direktori sementara kerja (work_dir di TMP_DIR).
-   - Tampilkan status Telegram 'Scraping pawchive.pw...'.
-
-3. Ekstraksi Metadata & Daftar Media:
-   - Panggil `extractor.scrape_post(raw_url)` di thread pool.
-   - Ambil judul, creator, daftar video, dan daftar gambar/lampiran.
-   - Bersihkan dan sanitasi judul dengan `sanitize_filename(title, 100)`.
-
-4. Pemilihan Media (Video vs Album Gambar):
-   - Jika post TIDAK memiliki video tetapi memiliki gambar:
-     Panggil `extractor.download_album` untuk mengunduh semua gambar menjadi album Telegram.
-   - Jika post memiliki video:
-     Pilih resolusi terbaik dengan `extractor.pick_best_video(videos)` (prioritas 1080p > 720p > normal).
-     Cek batas ukuran MAX_TG_SIZE (2GB).
-
-5. Unduh & Konversi:
-   - Mode MP3 (`fmt_key == "mp3"`):
-     Unduh source video lalu ekstrak trek audio dengan ffmpeg libmp3lame ke format .mp3.
-     Cover album diambil dari thumbnail post (`download_thumb`), diisi ke `thumb` + `artist`.
-   - Mode Video:
-     Unduh stream langsung dari file.pawchive.pw ke final_path.
-     Progress di-throttle 3s sekali (PAWCHIVE_PROGRESS_INTERVAL) + speed/ETA dinamis,
-     plus backoff RetryAfter supaya tidak kena flood control Telegram.
-
-6. Return Payload & Cleanup:
-   - Kembalikan dict `{"path": final_path, "title": title, ...}` siap kirim.
-   - Blok `finally` memastikan direktori kerja sementara selalu dibersihkan (shutil.rmtree).
-     Album gambar sengaja ditulis ke TMP_DIR (bukan work_dir) karena work_dir dihapus di sini.
-"""
 import os
 import uuid
 import shutil
@@ -47,8 +10,6 @@ from handlers.dl.utils import sanitize_filename, FileSizeLimitExceeded
 
 
 def _import_extractor():
-    """Import modul extractor secara lazy supaya package tetap bisa di-import
-    walau dependensi (curl_cffi/bs4) belum tersedia saat import awal."""
     from . import extractor
     return extractor
 
@@ -57,8 +18,6 @@ log = logging.getLogger(__name__)
 
 
 def is_pawchive_url(url: str) -> bool:
-    """Cocok untuk halaman post Pawchive (mirip Kemono), mis.
-    https://pawchive.pw/patreon/user/97687196/post/142646269"""
     path = urlparse((url or "").strip())
     host = (path.hostname or "").lower()
     if host != "pawchive.pw" and not host.endswith(".pawchive.pw"):
@@ -77,15 +36,6 @@ async def pawchive_download(
     metadata_ready: bool = False,
     known_size: int = 0,
 ):
-    """Unduh post Pawchive (arsip Patreon).
-
-    Alur:
-      1. Ambil metadata + daftar media lewat extractor (API).
-      2. Pilih video terbaik (1080p > resolusi tertinggi > lainnya).
-      3. Unduh langsung dari file.pawchive.pw ke TMP_DIR (batas 2GB).
-      4. Kalau tidak ada video (post gambar): kirim album gambar.
-      5. fmt_key == "mp3" -> ekstrak audio via ffmpeg.
-    """
     del format_id, has_audio, known_size
 
     ext = _import_extractor()
@@ -103,7 +53,6 @@ async def pawchive_download(
         images = post.get("images") or []
 
         if fmt_key != "mp3":
-            # Persiapkan list media gabungan
             final_videos = ext.resolve_videos(videos) if videos else []
             all_media = []
             for v in final_videos:
@@ -112,7 +61,6 @@ async def pawchive_download(
                 all_media.append({"url": img["url"], "name": img.get("name"), "type": "photo"})
 
             if len(all_media) > 1:
-                # Jika ada lebih dari 1 media, kirim sebagai album campuran
                 album_tag = uuid.uuid4().hex[:8]
                 return await ext.download_album(
                     all_media, title, bot, chat_id, status_msg_id, TMP_DIR, album_tag,
@@ -120,7 +68,6 @@ async def pawchive_download(
                 )
 
         if not videos and images:
-            # Fallback jika cuma ada 1 gambar
             album_tag = uuid.uuid4().hex[:8]
             return await ext.download_album(
                 images, title, bot, chat_id, status_msg_id, TMP_DIR, album_tag

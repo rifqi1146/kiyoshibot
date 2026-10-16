@@ -1,14 +1,10 @@
-"""In-memory cache for Xiaomi Firmware Explorer sessions and metadata."""
 import time
 from .constants import CACHE_TTL, DETAIL_TTL
 
-# session_id -> { title, codename, device_name, results, filtered_results, region_filter, type_filter, page, user_id, chat_id, ts }
 FIRMWARE_CACHE: dict[str, dict] = {}
 
-# detail_path -> { "ts": float, "blocks": { "recovery": {...}, "fastboot": {...} } }
 MIRRORS_CACHE: dict[str, dict] = {}
 
-# Cache daftar 300+ device Xiaomi: { "ts": float, "map": {codename: full_name} }
 DEVICES_CACHE: dict = {"ts": 0.0, "map": {}, "lower_map": {}}
 
 MAX_CACHE_ENTRIES = 120

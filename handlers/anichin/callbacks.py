@@ -1,17 +1,3 @@
-"""Callback query handler explorer Anichin (`ac:` callbacks).
-
-FLOW CALLBACK
--------------
-1. `menu` / `prompt` / `close` — layar statis.
-2. `genres:<page>` / `az:<page>` — picker genre / huruf A-Z (cache 1 jam).
-3. `schedule:<day_index>` — jadwal per hari.
-4. `list:<key>:<page>` / `genre:<slug>:<page>` / `azl:<letter>:<page>` —
-   listing; sesi menyimpan `origin` supaya tombol Back balik ke picker asal.
-5. `nav` / `back` — pindah halaman / balik ke listing.
-6. `view:<sid>:<idx>` — fetch detail: series -> episode picker, episode -> format.
-7. `eps` / `pick` / `dl` / `epdl` — unduh lewat `_process_choice` supaya
-   resolution picker Anichin muncul (engine `anichin`).
-"""
 import asyncio
 import logging
 import time
@@ -89,7 +75,6 @@ async def anichin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
 
-    # ---------------- layar statis ----------------
     if action == "close":
         try:
             await q.message.delete()
@@ -107,7 +92,6 @@ async def anichin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return await q.answer()
 
-    # ---------------- picker ----------------
     if action == "genres":
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await q.answer("Loading genres...")
@@ -135,7 +119,6 @@ async def anichin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- listing ----------------
     if action == "list":
         key = parts[2] if len(parts) > 2 else "list"
         page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
@@ -185,7 +168,6 @@ async def anichin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- operasi berbasis sesi ----------------
     if len(parts) < 3:
         return await q.answer()
 

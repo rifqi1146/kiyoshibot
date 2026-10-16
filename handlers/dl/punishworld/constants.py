@@ -1,11 +1,3 @@
-"""Konstanta untuk Downloader PunishWorld (punishworld.com).
-
-FLOW KONSTANTA:
----------------
-1. PUNISHWORLD_DOMAINS: Domain yang didukung.
-2. UA: User agent Chrome yang valid untuk bypass filter Cloudflare/anti-bot.
-3. TIMEOUT: Batas waktu koneksi/download.
-"""
 
 PUNISHWORLD_DOMAINS = (
     "punishworld.com",

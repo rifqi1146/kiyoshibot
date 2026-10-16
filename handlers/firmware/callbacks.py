@@ -1,16 +1,3 @@
-"""Callback query handler for Xiaomi Firmware & ROM Explorer (`fw:` callbacks).
-
-Callback map:
-  menu:0:0             -> main menu
-  prompt:0:0           -> search instruction screen
-  open:<codename>:0    -> load and display ROM list for a codename
-  nav:<sid>:<page>     -> paginate ROM results (20/page)
-  regions:<sid>:0      -> region filter picker
-  regf:<sid>:<key>     -> apply region filter (indonesia, global, china, all, ...)
-  mirrors:<sid>:<idx>  -> open mirror selection screen for a specific ROM
-  list:<sid>:0         -> back to results list from mirror selection
-  close:0:0            -> delete message
-"""
 import asyncio
 import logging
 import time
@@ -37,12 +24,10 @@ log = logging.getLogger(__name__)
 
 
 async def firmware_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback query handler for Xiaomi Firmware Explorer inline buttons."""
     q = update.callback_query
     if not q or not q.data or not q.data.startswith(f"{PREFIX}:"):
         return
 
-    # Mandatori: kunci tombol ke user yang memicu command
     if not await guard_callback_owner(q):
         return
 
@@ -167,7 +152,6 @@ async def firmware_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not data:
             return await q.answer("Session expired. Please search again.", show_alert=True)
 
-        # Cari item sesuai filter yang sedang aktif
         from .render import _filter_items
         filtered = _filter_items(data.get("results") or [], data.get("region_filter"), data.get("type_filter"))
         if not (0 <= idx < len(filtered)):

@@ -110,8 +110,6 @@ async def gsearch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     _, a, b = parts
 
-    # Cek kepemilikan DULU: klik dari user lain ditolak alert tanpa
-    # mem-broadcast pesan gate join channel ke grup.
     data = GSEARCH_CACHE.get(b if a == "close" else a)
     if data and q.from_user.id != data.get("user"):
         return await q.answer(

@@ -1,39 +1,3 @@
-"""Scraper BDSMLust (bdsmlust.com)
-
-FLOW SCRAPER
-------------
-1. Terima URL post -> `scrape_post(url)`.
-2. Ambil HTML post (curl_cffi impersonate Chrome). HTTP 404 -> `FileNotFoundError`.
-3. Baca metadata:
-   - Judul: `<h1>` -> fallback `og:title` -> `<title>`. Buang suffix
-     ` - BDSM Tube BDSMLust` dan prefix `Watch `.
-   - Durasi: `<meta itemprop="duration" content="P0DT0H42M27S">` (ISO 8601)
-     -> detik. Fallback JSON-LD `"duration":"PT42M27S"`.
-   - Thumbnail: `og:image`.
-4. Temukan iframe embed di HTML:
-   Jalur A (bdsmstreak.com/embed/<id>):
-     - GET halaman embed (Referer = post).
-     - Ambil `<source src>` (biasanya `https://cdn1.mespeaks.com/<id>.mp4`).
-     - Poster dari `<video poster>`.
-   Jalur B (vid-bx.com/embed/<id> atau bdsmx.tube/embed/<id>):
-     - Ekstrak `<id>` dari path embed.
-     - GET `https://bdsmx.tube/api/videofile.php?video_id=<id>`.
-     - JSON array; ambil `video_url` (string base64 obfuscate dengan homoglyph
-       Cyrillic). Decode -> path relatif `/get_file/1/<hash>/.../<id>_sd.mp4/?...`
-     - URL final = `https://bdsmx.tube` + path.
-5. HEAD request (allow_redirects=True) untuk verifikasi `Content-Length`.
-6. Return dict `{title, duration, thumbnail, width, height, download_url,
-   filesize}`.
-
-FLOW DOWNLOADER
----------------
-1. `download_video(url, out_path, ...)` -> `scrape_post` dapat `download_url`.
-2. Coba aria2c paralel (`BDSMLUST_ARIA2_CONNS=16`); aria2c mengikuti redirect
-   302 ke CDN ahcdn otomatis.
-3. Fallback: streaming `curl_cffi` chunk 512KB jika aria2c gagal.
-4. `TransferStats` untuk progress bar Telegram + speed/ETA + batas `MAX_TG_SIZE`.
-5. Return dict `{"path", "title"}`; pemanggil (`main.py`) menangani mp3.
-"""
 import asyncio
 import base64
 import html as html_mod
@@ -58,9 +22,6 @@ from .constants import (
 
 log = logging.getLogger(__name__)
 
-# Tabel homoglyph Cyrillic -> ASCII untuk decode `video_url` KVS.
-# Base64 alphabet A-Z a-z 0-9 + / ; situs menyisipkan karakter Cyrillic yang
-# mirip huruf Latin untuk mengaburkan decoder sederhana.
 _HOMOGLYPH_MAP = {
     "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041a": "K",
     "\u041c": "M", "\u041d": "H", "\u041e": "O", "\u0420": "P",
@@ -80,9 +41,7 @@ _DURATION_RE = re.compile(
 
 
 def _decode_video_url(raw: str) -> str:
-    """Decode `video_url` dari API bdsmx.tube (base64 + homoglyph)."""
     norm = "".join(_HOMOGLYPH_MAP.get(ch, ch) for ch in raw)
-    # ',' dan '~' adalah obfuscation tambahan; kembalikan ke bentuk b64 valid
     clean = norm.replace(",", "/").replace("~", "")
     pad = (-len(clean)) % 4
     b = base64.b64decode(clean + "=" * pad)
@@ -90,7 +49,6 @@ def _decode_video_url(raw: str) -> str:
 
 
 def _parse_iso8601_duration(s: str) -> int:
-    """Parse `P0DT0H42M27S` -> detik (int)."""
     m = _DURATION_RE.match(s.strip())
     if not m:
         return 0
@@ -106,7 +64,6 @@ def _parse_iso8601_duration(s: str) -> int:
 
 
 def _probe_direct_size(url: str, referer: str, session: curl_requests.Session) -> int:
-    """Ukuran file via HEAD (allow_redirects) atau Range fallback."""
     headers = {"User-Agent": UA, "Referer": referer} if referer else {"User-Agent": UA}
     try:
         resp = session.head(url, headers=headers, timeout=HTTP_TIMEOUT, allow_redirects=True)
@@ -140,7 +97,6 @@ def _resolve_embed_streak(
     post_url: str,
     session: curl_requests.Session,
 ) -> dict:
-    """Jalur A: bdsmstreak.com/embed/<id> -> <source src> langsung."""
     url = iframe_src if iframe_src.startswith("http") else "https:" + iframe_src
     resp = session.get(url, headers={"Referer": post_url}, timeout=HTTP_TIMEOUT)
     if resp.status_code != 200:
@@ -170,10 +126,8 @@ def _resolve_embed_bdsmx(
     post_url: str,
     session: curl_requests.Session,
 ) -> dict:
-    """Jalur B: vid-bx.com / bdsmx.tube embed -> API videofile -> get_file."""
     url = iframe_src if iframe_src.startswith("http") else "https:" + iframe_src
 
-    # `vid-bx.com` me-redirect ke `bdsmx.tube`; ambil video_id dari path.
     m = re.search(r"/embed/(\d+)", url)
     if not m:
         raise RuntimeError(f"Video ID not found in embed: {url}")
@@ -209,7 +163,6 @@ def _resolve_embed_bdsmx(
 
 
 def scrape_post(url: str) -> dict:
-    """Scrape metadata + download URL dari post bdsmlust.com."""
     session = curl_requests.Session(impersonate="chrome", headers={"User-Agent": UA})
     resp = session.get(url, timeout=HTTP_TIMEOUT)
 
@@ -220,7 +173,6 @@ def scrape_post(url: str) -> dict:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # 1. Judul
     title = ""
     h1 = soup.find("h1")
     if h1:
@@ -236,7 +188,6 @@ def scrape_post(url: str) -> dict:
     title = re.sub(r"^Watch\s+", "", title, flags=re.I).strip()
     title = sanitize_filename(title, 100)
 
-    # 2. Durasi (detik)
     duration = 0
     dur_meta = soup.find("meta", attrs={"itemprop": "duration"})
     if dur_meta and dur_meta.get("content"):
@@ -246,16 +197,13 @@ def scrape_post(url: str) -> dict:
         if m:
             duration = _parse_iso8601_duration(m.group(1))
 
-    # 3. Thumbnail
     thumbnail = ""
     img_meta = soup.find("meta", property="og:image")
     if img_meta and img_meta.get("content"):
         thumbnail = img_meta.get("content").strip()
 
-    # 4. Dimensi (bdsmlust tidak ekspos; default 1280x720)
     width, height = 1280, 720
 
-    # 5. Cari iframe embed
     iframe_srcs = []
     for ifr in soup.find_all("iframe"):
         src = ifr.get("data-src") or ifr.get("src") or ""
@@ -283,7 +231,6 @@ def scrape_post(url: str) -> dict:
             embed_type = "bdsmx"
             break
 
-    # Fallback: tag <video><source> langsung di halaman post
     if not download_url:
         for video in soup.find_all("video"):
             for source in video.find_all("source"):
@@ -302,7 +249,6 @@ def scrape_post(url: str) -> dict:
             "The post may have been deleted or uses an unsupported host."
         )
 
-    # 6. HEAD probe ukuran
     filesize = _probe_direct_size(download_url, referer, session)
 
     return {
@@ -329,7 +275,6 @@ async def _download_aria2c(
     title: str,
     notify: bool,
 ) -> bool:
-    """Download paralel multi-koneksi via aria2c."""
     from handlers.dl.aria2 import _resolve_aria2
     aria2 = _resolve_aria2()
     if not aria2:
@@ -440,7 +385,6 @@ async def download_video(
             f"File exceeds 2GB limit ({total / 1024 ** 3:.2f} GB). Download canceled."
         )
 
-    # 1. aria2c paralel
     try:
         ok = await _download_aria2c(
             dl_url=dl_url,
@@ -460,7 +404,6 @@ async def download_video(
     except Exception as e:
         log.warning("BDSMLust aria2c exception, fallback ke streaming | err=%r", e)
 
-    # 2. Fallback streaming curl_cffi
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer

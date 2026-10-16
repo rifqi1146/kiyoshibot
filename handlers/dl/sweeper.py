@@ -10,23 +10,9 @@ log = logging.getLogger(__name__)
 
 DOWNLOADS_TTL_SEC = int(os.getenv("DOWNLOADS_TTL_SEC", "3600"))
 DOWNLOADS_SWEEP_INTERVAL_SEC = int(os.getenv("DOWNLOADS_SWEEP_INTERVAL_SEC", "600"))
-# Grace period: jangan sapu file yang baru saja tersentuh walau TTL di-set rendah,
-# supaya download yang masih jalan tidak dihapus. mtime file progresif berubah,
-# jadi ini hanya pengaman ekstra di atas fd-guard.
 DOWNLOADS_GRACE_SEC = int(os.getenv("DOWNLOADS_GRACE_SEC", "300"))
 
-# Profil browser sementara milik scrapling/camoufox ikut menumpuk di /tmp
-# (folder besar, di luar TMP_DIR). Jatuhnya kalau browser crash / tidak ditutup
-# rapi, folder profilnya tertinggal. Pembersihannya harus KONSERVATIF:
-#   - hanya prefix profil browser automation (whitelist), TIDAK PERNAH prefix
-#     kerja manual — sekarang runtime bot TIDAK membuat workdir di /tmp sistem
-#     (semua pakai TMP_DIR = folder downloads), jadi membereskan /tmp sengaja
-#     dibatasi ke sampah library saja supaya riset manual Manuel di /tmp aman.
-#   - harus lebih tua dari SAFE_TTL (4 jam) supaya browser yang masih hidup aman
-#   - hanya direktori, tidak pernah file, tidak pernah symlink
 TMP_BROWSER_TTL_SEC = int(os.getenv("TMP_BROWSER_TTL_SEC", str(4 * 3600)))
-# Prefix ini disengaja pendek: `firefox_` DIBUANG — profil Firefox desktop juga
-# memakai nama serupa, jadi bisa menghapus sesi browser aktif milik user.
 _TMP_BROWSER_PREFIXES = tuple(
     p for p in os.getenv(
         "TMP_BROWSER_PREFIXES",
@@ -53,9 +39,6 @@ def sweep_downloads_once(ttl_sec: int | None = None) -> int:
             age = now - os.path.getmtime(path)
             if age < ttl:
                 continue
-            # Guard: jangan hapus bila masih dipakai proses hidup (mirror
-            # _in_use untuk profil /tmp). Worker download bisa menahan file
-            # lebih lama dari TTL pada transfer besar.
             if _in_use(path):
                 continue
             if os.path.isdir(path):
@@ -71,14 +54,6 @@ def sweep_downloads_once(ttl_sec: int | None = None) -> int:
 
 
 def _in_use(path: str) -> bool:
-    """True kalau ada proses hidup yang memakai `path` (cwd atau fd terbuka).
-
-    Profil browser bisa telihat "lama" dari sisi mtime padahal masih dipakai:
-    dir mtime hanya berubah kalau entri baru dibuat di root profil, sedangkan
-    browser yang idle menulis ke file yang sudah ada (prefs.js) sehingga tidak
-    menyentuh mtime dir. Guard ini memindai /proc khusus untuk kandidat yang
-    SUDAH cocok whitelist + TTL — jumlahnya kecil, jadi ongkosnya murah.
-    """
     try:
         base = os.path.realpath(path)
     except OSError:
@@ -111,12 +86,6 @@ def _in_use(path: str) -> bool:
 
 
 def sweep_tmp_profiles_once(ttl_sec: int | None = None) -> int:
-    """Sapu folder sementara lama di luar TMP_DIR (khususnya /tmp).
-
-    Hanya membuang entri yang namanya cocok whitelist prefix DAN sudah lebih tua
-    dari `ttl_sec`. Whitelist membuat operasi ini aman dijalankan di server yang
-    dipakai proses lain.
-    """
     ttl = TMP_BROWSER_TTL_SEC if ttl_sec is None else ttl_sec
     prefixes = _TMP_BROWSER_PREFIXES
     if not prefixes or ttl <= 0:
@@ -133,15 +102,10 @@ def sweep_tmp_profiles_once(ttl_sec: int | None = None) -> int:
             continue
         path = os.path.join(_TMP_DIR, name)
         try:
-            # HANYA direktori yang disapu: sisa browser profil & workdir selalu
-            # direktori, sedangkan file biasa (mis. script .py di /tmp) tidak
-            # pernah disentuh walau namanya kebetulan berprefix sama.
             if os.path.islink(path) or not os.path.isdir(path):
                 continue
             if now - os.path.getmtime(path) < ttl:
                 continue
-            # Jangan hapus yang masih dipakai proses hidup (browser proyek lain
-            # / sesi idle yang mtime dir-nya tak tersentuh).
             if _in_use(path):
                 continue
             shutil.rmtree(path)

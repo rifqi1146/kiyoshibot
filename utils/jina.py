@@ -1,10 +1,3 @@
-"""Grounding web via Jina AI (Search + Reader).
-
-- web_search(query):  https://s.jina.ai?q=...  — SERP + snippet halaman
-- read_url(url):      https://r.jina.ai/<url>  — konten halaman jadi markdown
-Butuh JINA_API_KEY (utils.config). Tanpa key, modul menolak dengan jelas
-kecuali dipakai versi gratis yang rate-limit-nya ketat.
-"""
 import json
 import logging
 
@@ -26,7 +19,6 @@ def _headers() -> dict:
         "Accept": "application/json",
         "X-Retain-Images": "none",
         "X-With-Links-Summary": "false",
-        # locale bikin hasil search relevan buat user Indonesia
         "X-Locale": "id-ID",
     }
 
@@ -37,7 +29,6 @@ def _require_key():
 
 
 async def web_search(query: str, max_results: int = 5) -> str:
-    """Search web via s.jina.ai, kembalikan SERP ringkas (judul+url+snippet)."""
     _require_key()
     query = (query or "").strip()
     if not query:
@@ -57,7 +48,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
     try:
         data = json.loads(raw)
     except ValueError:
-        # s.jina.ai balas markdown/teks polos kalau Accept tidak dihormati
         text = raw.strip()
         return text[:6000] if text else "No search results."
 
@@ -77,7 +67,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
 
 async def read_url(url: str, max_chars: int = 8000) -> str:
-    """Baca halaman via r.jina.ai, kembalikan markdown diringkas."""
     _require_key()
     url = (url or "").strip()
     if not url:
@@ -103,7 +92,6 @@ async def read_url(url: str, max_chars: int = 8000) -> str:
 
 
 def extract_urls(text: str) -> list[str]:
-    """Ambil URL http(s) yang disebut user di prompt (buat dibaca langsung)."""
     import re
 
     found = re.findall(r"https?://[^\s<>\]\)\"']+", text or "")

@@ -1,9 +1,3 @@
-"""Command handler `/manga <source> <query/code>`.
-
-Search manga memakai Rich Message (Bot API 10.3) yang seragam dengan `/simontok`,
-`/punish`, dan `/nekopoi` (lihat `search.py`). Klik tombol nomor -> pesan hasil
-search dihapus, lalu detail dikirim sebagai foto cover + caption.
-"""
 import logging
 
 from telegram import Update
@@ -81,7 +75,6 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     register_message_owner(status.chat_id, status.message_id, user.id if user else 0)
 
-    # nHentai: input kode numerik -> langsung buka detail Rich Message.
     if source == "nh" and full_query.isdigit():
         await status.edit_text("⏳ Loading details...", parse_mode="HTML")
         rich_html, plain_html, markup, cover_url = await nh_fetch_detail_view(full_query)

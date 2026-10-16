@@ -1,19 +1,3 @@
-"""Callback query handler explorer PunishWorld (`pw:` callbacks).
-
-FLOW CALLBACK
--------------
-1. `menu` / `close` / `prompt` — layar statis.
-2. `cats:<page>` / `tags:<page>` — picker kategori (126) / tag (900+) (cache 1 jam).
-3. `latest` / `cat:<id_slug>:<ppage>` / `tag:<slug>:<ppage>` — fetch listing lalu
-   simpan sesi (`SESSION_CACHE[sid]`) dan render listing.
-4. `nav:<sid>:<page>` / `back:<sid>` — pindah halaman / balik ke listing.
-5. `info:<sid>:<idx>` — fetch detail post (judul, durasi, views, rating, kategori,
-   tag) + tombol format `Video` / `Audio`.
-6. `dl:<sid>:<idx>:<fmt>` — unduh lewat `_start_dl_task` (PunishWorld tidak punya
-   resolution picker: `supports_resolution_picker()` False untuk host ini).
-
-Format callback: `pw:action:arg1:arg2[:arg3]`.
-"""
 import asyncio
 import logging
 import time
@@ -84,7 +68,6 @@ async def punish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
 
-    # ---------------- layar statis ----------------
     if action == "close":
         try:
             await q.message.delete()
@@ -102,7 +85,6 @@ async def punish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return await q.answer()
 
-    # ---------------- picker ----------------
     if action == "cats":
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await q.answer("Loading categories...")
@@ -121,7 +103,6 @@ async def punish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- listing ----------------
     if action == "latest":
         await q.answer("Loading latest...")
         results = await asyncio.to_thread(fetch_latest, MAX_RESULTS)
@@ -169,7 +150,6 @@ async def punish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- operasi berbasis sesi ----------------
     if len(parts) < 3:
         return await q.answer()
 

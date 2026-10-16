@@ -1,12 +1,3 @@
-"""Command handler `/nekopoi` — explorer (browse, genre, A-Z, jadwal, search).
-
-FLOW COMMAND
-------------
-1. Gate premium + NSFW via `_premium_link_allowed(GATE_URL, ...)`.
-2. Tanpa argumen -> menu Explorer (Rich Message).
-3. Dengan argumen -> search `/search/<q>` (maks `MAX_RESULTS`), tampil sebagai
-   listing Rich Message + tombol angka (pola sama dengan command lain).
-"""
 import asyncio
 import html
 import logging
@@ -33,7 +24,6 @@ EXAMPLE = "/nekopoi elaina"
 
 
 async def nekopoi_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main command handler for /nekopoi."""
     if not await require_join_or_block(update, context):
         return
 

@@ -1,36 +1,3 @@
-"""Scraper Drakor.id (drakorid.co) — metadata drama + daftar episode + varian video.
-
-FLOW SCRAPER
-------------
-1. `scrape_post(url)`:
-   - Parse `slug` + nomor episode dari URL (`/nonton/<slug>/`, `/nonton/<slug>/<ep>`,
-     `/download-streaming/<slug>/<ep>`, `/watch-streaming/<slug>/<ep>`).
-   - GET `/nonton/<slug>/` -> metadata: judul, poster, jumlah episode, genres,
-     network, release date, synopsis.
-   - Baca daftar episode dari `[data-episode]` / `.episode-pick-num`
-     (mis. 7 episode untuk `a-love-other-than-yours-2026`).
-2. `resolve_episode(slug, episode)`:
-   - GET `/download-streaming/<slug>/<ep>` -> bila tersedia, keruk anchor
-     `href="https://vod<NN>.drakor.cc/download/.../drakor.id.<N>p.<slug>-episode-<N>.mp4"`
-     (varian 360p/480p/720p sekaligus, tanpa login).
-   - Kalau halaman membalas blokir guest ("belum login ... hanya bisa download 1x"),
-     fallback API: baca `var token` + `var mId` -> `POST /myapi/episode_detail.php`
-     -> `streaming` = id file -> `GET http://admin.drakor.la/go/files/<id>`
-     (302) -> Location `http://<node>.drakor.cc/files/<hash>.mp4`.
-   - Node yang sama juga melayani `/480p/` dan `/360p/` dari nama file identik;
-     varian yang benar-benar ada diprobe lewat `Range: bytes=0-0`.
-3. Setiap varian diprobe `Content-Range` untuk ukuran total, lalu di-cache
-   (`_VARIANT_CACHE`, TTL 300s). URL unduh selalu di-resolve ulang saat unduh
-   karena token/id stream bertanggal.
-
-FLOW DOWNLOADER
----------------
-1. `download_video(url, format_id, out_path, ...)` -> resolve ulang episode,
-   pilih varian sesuai `format_id`, lalu aria2c 16-koneksi (fallback streaming
-   `curl_cffi` chunk 512KB).
-2. `TransferStats` untuk progress Telegram + speed/ETA + batas `MAX_TG_SIZE`.
-3. Return dict `{"path", "title"}`; `main.py` menangani konversi mp3.
-"""
 import os
 import re
 import json
@@ -78,7 +45,6 @@ def _new_session() -> curl_requests.Session:
 
 
 def parse_url(url: str) -> tuple[str, int]:
-    """`(slug, episode)` dari URL Drakor.id mana pun. Default episode = 1."""
     m = _URL_RE.search(url or "")
     if not m:
         return "", 1
@@ -135,7 +101,6 @@ def _parse_episodes(soup: BeautifulSoup) -> list[int]:
 
 
 def _probe_size(url: str, session: curl_requests.Session) -> int:
-    """Ukuran total via `Range: bytes=0-0` (`Content-Range`). 0 kalau gagal."""
     try:
         resp = session.get(
             url,
@@ -156,7 +121,6 @@ def _probe_size(url: str, session: curl_requests.Session) -> int:
 
 
 def scrape_post(url: str) -> dict:
-    """Metadata drama + daftar episode + (opsional) varian episode dari URL."""
     slug, ep = parse_url(url)
     if not slug:
         raise RuntimeError("Invalid Drakor.id URL.")
@@ -232,7 +196,6 @@ def scrape_post(url: str) -> dict:
 
 
 def _episode_from_direct_links(html_text: str) -> list[dict]:
-    """Varian dari anchor direct MP4 di halaman `/download-streaming/`."""
     variants = []
     seen = set()
     for link in _DIRECT_LINK_RE.findall(html_text or ""):
@@ -256,7 +219,6 @@ def _episode_from_direct_links(html_text: str) -> list[dict]:
 
 
 def _token_and_id(html_text: str, session: curl_requests.Session, slug: str) -> tuple[str, str]:
-    """`(token, mId)` dari halaman mana pun; fallback ambil halaman `/nonton/`."""
     tok = re.search(r'var token\s*=\s*"([^"]+)"', html_text or "")
     mid = re.search(r'var mId\s*=\s*"?(\d+)"?', html_text or "")
     if tok and mid:
@@ -273,7 +235,6 @@ def _token_and_id(html_text: str, session: curl_requests.Session, slug: str) -> 
 
 
 def _resolve_via_api(slug: str, episode: int, session: curl_requests.Session) -> list[dict]:
-    """Fallback API saat halaman unduh memblokir guest (batas 1x/hari)."""
     dl_page = f"{BASE_URL}/download-streaming/{slug}/{episode}"
     resp = session.get(dl_page, timeout=HTTP_TIMEOUT, headers={"Referer": f"{BASE_URL}/nonton/{slug}/"})
     token, mid = _token_and_id(resp.text, session, slug)
@@ -314,7 +275,6 @@ def _resolve_via_api(slug: str, episode: int, session: curl_requests.Session) ->
     if not location:
         return []
 
-    # location: http://<node>.drakor.cc/files/<hash>.mp4
     parsed = urlparse(location)
     node = f"{parsed.scheme}://{parsed.netloc}"
     path = parsed.path or ""
@@ -329,8 +289,6 @@ def _resolve_via_api(slug: str, episode: int, session: curl_requests.Session) ->
         size = _probe_size(cand, session)
         if size <= 0:
             continue
-        # `files/` = master 720p (diverifikasi ffprobe 1280x720). Folder `720p`
-        # terpisah kadang tidak ada; `files/` selalu ada sebagai varian tertinggi.
         if quality == "files":
             height = 720
             label = "720p"
@@ -350,8 +308,6 @@ def _resolve_via_api(slug: str, episode: int, session: curl_requests.Session) ->
             "total_size": size,
         })
 
-    # Buang duplikat tinggi (mis. `720p` folder + `files/` sama-sama 720p);
-    # ambil ukuran terbesar untuk tinggi yang sama.
     dedup: dict[int, dict] = {}
     for v in variants:
         prev = dedup.get(v["height"])
@@ -364,7 +320,6 @@ def _resolve_via_api(slug: str, episode: int, session: curl_requests.Session) ->
 
 
 def resolve_episode(slug: str, episode: int, session: curl_requests.Session | None = None) -> list[dict]:
-    """Varian unduh untuk satu episode (halaman direct dulu, fallback API)."""
     key = f"{slug}:{episode}"
     cached = peek_variants(key)
     if cached:

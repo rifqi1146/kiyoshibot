@@ -1,13 +1,3 @@
-"""Konstanta explorer Simontok (`/simontok`).
-
-FLOW KONSTANTA
---------------
-1. Label, prefix callback `sm`, base URL dan gate URL.
-2. `SECTIONS`: seksi kurasi (Latest, Trending, VIP, Indo, JAV, Semi, Hentai).
-3. `FALLBACK_CATEGORIES`: 16 kategori unggulan beranda simontok.study.
-4. Paginasi: `PER_PAGE=5`, `CATS_PER_PAGE=10`, `TAGS_PER_PAGE=20`.
-5. Cache TTL & limits.
-"""
 
 LABEL = "Simontok"
 PREFIX = "sm"

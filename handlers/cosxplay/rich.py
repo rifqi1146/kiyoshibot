@@ -1,9 +1,3 @@
-"""Pengiriman Rich Message (Bot API 10.3) dengan fallback plain HTML untuk explorer CosXplay.
-
-- `send_rich(bot, ...)`  -> `sendRichMessage`, fallback `bot.send_message`.
-- `edit_rich(bot, ...)`  -> `editMessageText` + `rich_message`, fallback
-  `bot.edit_message_text` (plain HTML).
-"""
 import logging
 import warnings
 

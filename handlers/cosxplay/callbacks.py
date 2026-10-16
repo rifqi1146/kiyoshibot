@@ -1,21 +1,3 @@
-"""Callback query handler explorer CosXplay (`cx:` callbacks).
-
-FLOW CALLBACK
--------------
-1. `menu` / `close` / `prompt` — layar statis.
-2. `cats:<page>` / `tags:<page>` / `actors:<page>` — picker kategori (176),
-   tag (900+), cosplay models (cache 1 jam).
-3. `latest` / `cat:<path>:<ppage>` / `tag:<slug>:<ppage>` / `actor:<slug>:<ppage>`
-   — fetch listing lalu simpan sesi (`SESSION_CACHE[sid]`) dan render listing.
-4. `nav:<sid>:<page>` / `back:<sid>` — pindah halaman / balik ke listing.
-5. `info:<sid>:<idx>` — fetch detail post (judul, durasi, views, rating,
-   kategori, tag) + tombol format `Video` / `Audio`.
-6. `dl:<sid>:<idx>:<fmt>` — unduh lewat `_process_choice` supaya resolution
-   picker CosXplay muncul (JANGAN `_start_dl_task` langsung: itu diam-diam
-   memilih resolusi tertinggi).
-
-Format callback: `cx:action:arg1:arg2[:arg3]`.
-"""
 import asyncio
 import logging
 import time
@@ -90,7 +72,6 @@ async def cosxplay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
 
-    # ---------------- layar statis ----------------
     if action == "close":
         try:
             await q.message.delete()
@@ -108,7 +89,6 @@ async def cosxplay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return await q.answer()
 
-    # ---------------- picker ----------------
     if action == "cats":
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await q.answer("Loading categories...")
@@ -137,7 +117,6 @@ async def cosxplay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- listing ----------------
     if action == "latest":
         await q.answer("Loading latest...")
         results = await asyncio.to_thread(fetch_latest, MAX_RESULTS)
@@ -204,7 +183,6 @@ async def cosxplay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- operasi berbasis sesi ----------------
     if len(parts) < 3:
         return await q.answer()
 

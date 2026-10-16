@@ -1,9 +1,3 @@
-"""Helper unduh paralel multi-koneksi lewat aria2c.
-
-Dipakai scraper yang CDN-nya men-throttle koneksi tunggal (mis. FemdomVC
-~250 KB/s per socket). Dengan 16 koneksi paralel, throughput naik 10-20x.
-Selalu ada fallback ke streaming `curl_cffi` bila aria2c tidak ada / gagal.
-"""
 import os
 import sys
 import shutil
@@ -15,18 +9,12 @@ from .progress import TransferStats
 
 log = logging.getLogger(__name__)
 
-# Jumlah koneksi paralel per unduhan. Bisa dioverride per-situs via env
-# `ARIA2_CONNS=<n>` (global) atau argumen `conns=`.
 DEFAULT_CONNS = int(os.getenv("ARIA2_CONNS", "16"))
 
 _ARIA2_PATH: str | None = None
 
 
 def _resolve_aria2() -> str | None:
-    """Cari `aria2c` (delegasi ke `handlers.dl.proc.resolve_aria2`).
-
-    PATH bot sering tidak memuat `venv/bin`, jadi helper terpusat itu juga
-    memeriksa direktori bin interpreter dan site-packages."""
     from .proc import resolve_aria2
     found = resolve_aria2()
     global _ARIA2_PATH
@@ -61,14 +49,6 @@ async def download_aria2(
     edit_interval: float = 2.5,
     timeout: float = 0,
 ) -> bool:
-    """Unduh `url` -> `out_path` via aria2c multi-koneksi.
-
-    Return True kalau sukses (file ada & tidak kosong). Return False kalau
-    aria2c tidak tersedia atau gagal supaya pemanggil bisa fallback.
-
-    Menghormati batas `MAX_TG_SIZE` (2GB) dan memancarkan progress ke Telegram
-    + terminal lewat `TransferStats` selama unduhan berjalan.
-    """
     aria2 = _resolve_aria2()
     if not aria2:
         return False
@@ -100,7 +80,6 @@ async def download_aria2(
 
     async def _run_once(conns: int) -> tuple[int, bytes]:
         c = list(cmd)
-        # ganti jumlah koneksi pada percobaan retry (lebih konservatif)
         for i, a in enumerate(c):
             if a.startswith("--max-connection-per-server="):
                 c[i] = f"--max-connection-per-server={conns}"
@@ -141,9 +120,6 @@ async def download_aria2(
                             kind=kind, label=label,
                             log_interval=log_interval, edit_interval=edit_interval,
                         )
-                    # File sudah penuh: aria2c tinggal menutup koneksi / exit.
-                    # Stop polling supaya tidak terus sample+emit (progress 100%
-                    # dan speed sisa dikit yang spam edit di log).
                     if total_size > 0 and cur >= total_size:
                         return
                 await asyncio.sleep(0.5)
@@ -159,8 +135,6 @@ async def download_aria2(
 
     stats = TransferStats(total_size)
 
-    # aria2c sesekali crash (SIGSEGV / exit code negatif) pada unduhan 16-koneksi.
-    # Coba sekali lagi dengan koneksi lebih sedikit sebelum menyerah ke streaming.
     rc, stderr_b = await _run_once(n)
     if rc != 0 and rc < 0 and n > 4:
         log.info("aria2c crash (signal %s), retry koneksi=8 | url=%s", -rc, url[:80])
@@ -176,8 +150,6 @@ async def download_aria2(
     if rc != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
         err = stderr_b.decode("utf-8", errors="ignore").strip()
         log.warning("aria2c failed, falling back to streaming | code=%s err=%s", rc, err[:200])
-        # Bersihkan file parsial + control file (.aria2) supaya fallback streaming
-        # mulai dari awal dengan file kosong (bukan menimpa sisa parsial).
         for p in (out_path, out_path + ".aria2"):
             try:
                 if os.path.exists(p):

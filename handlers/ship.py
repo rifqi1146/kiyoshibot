@@ -15,7 +15,7 @@ from database.ship_db import (
     _ship_db_init,
 )
 
-SHIP_COOLDOWN = 60 * 60 * 24  # 24 jam
+SHIP_COOLDOWN = 60 * 60 * 24
 
 SHIP_MESSAGES = [
     "🥰 You two look comfortable with each other",
@@ -73,8 +73,6 @@ async def _is_chat_member(bot, chat_id: int, user_id: int) -> bool:
     except Exception:
         ok = False
     if len(_MEMBER_CACHE) > _MAX_MEMBER_CACHE:
-        # LRU-ish eviction: buang entri tertua (insertion order) alih-alih .clear()
-        # total yang memicu cache stampede setelah flush.
         overflow = len(_MEMBER_CACHE) - _MAX_MEMBER_CACHE
         for k in list(_MEMBER_CACHE.keys())[: max(1, overflow + _MAX_MEMBER_CACHE // 10)]:
             _MEMBER_CACHE.pop(k, None)

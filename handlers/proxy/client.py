@@ -1,17 +1,3 @@
-"""Bot-side client untuk proxy OpenCode (`handlers/proxy/opencode.py`).
-
-Proxy berjalan sebagai HTTP server lokal (default 127.0.0.1:20130) dengan
-endpoint OpenAI-compatible:
-  - GET  /v1/models
-  - POST /v1/chat/completions
-Tanpa API key (Bearer public).
-
-Modul ini menyediakan:
-  - proxy_models()      -> list[str] id model gratis dari upstream
-  - proxy_chat()        -> non-stream, balikin teks jawaban
-  - proxy_chat_stream() -> async generator delta teks
-  - get_model/set_model -> model aktif yang dipakai /ask (persist di JSON)
-"""
 import json
 import logging
 import os
@@ -26,8 +12,6 @@ PROXY_BASE = os.getenv("OPENCODE_PROXY_BASE", "http://127.0.0.1:20130").rstrip("
 MODEL_FILE = os.path.join("data", "opencode_model.json")
 SETTINGS_FILE = os.path.join("data", "opencode_settings.json")
 DEFAULT_MODEL = os.getenv("OPENCODE_MODEL", "").strip()
-# Thinking reasoning model reasoning: biaya token + latency. Default off
-# supaya respons cepat; owner bisa nyalakan via /thinking on.
 _DEFAULT_THINKING = os.getenv("OPENCODE_THINKING", "off").strip().lower() not in (
     "", "0", "false", "no", "off", "disabled",
 )
@@ -54,7 +38,6 @@ def _write_settings(data: dict) -> None:
 
 
 def is_thinking_enabled() -> bool:
-    """Apakah reasoning/thinking model aktif. Default OFF (respons cepat)."""
     val = _read_settings().get("thinking")
     if isinstance(val, bool):
         return val
@@ -72,7 +55,6 @@ _DEPTHS = ("fast", "content")
 
 
 def get_search_engine() -> str:
-    """Engine search aktif: 'firecrawl' (default) atau 'jina'."""
     val = str(_read_settings().get("search_engine") or "").strip().lower()
     if val in _ENGINES:
         return val
@@ -90,7 +72,6 @@ def set_search_engine(engine: str) -> None:
 
 
 def get_search_depth() -> str:
-    """Kedalaman Firecrawl: 'fast' (SERP polos, default) atau 'content'."""
     val = str(_read_settings().get("search_depth") or "").strip().lower()
     if val in _DEPTHS:
         return val
@@ -108,7 +89,6 @@ def set_search_depth(depth: str) -> None:
 
 
 def get_model() -> str:
-    """Model aktif (dari file) atau default env, atau string kosong."""
     try:
         with open(MODEL_FILE, "r", encoding="utf-8") as f:
             saved = (json.load(f).get("model") or "").strip()
@@ -162,9 +142,6 @@ def _payload(messages: list[dict], model: str, stream: bool, tools: list[dict] |
     if tools:
         body["tools"] = tools
         body.setdefault("tool_choice", "auto")
-    # Thinking: ketika OFF, kirim thinking=disabled (terverifikasi menghapus
-    # reasoning di upstream). Provider yang menolak field ini akan gagal ->
-    # caller melakukan retry tanpa field (lihat _post_chat).
     if not is_thinking_enabled():
         body["thinking"] = {"type": "disabled"}
     return body
@@ -186,11 +163,6 @@ async def proxy_chat_raw(
     timeout: int = 180,
     tools: list[dict] | None = None,
 ) -> tuple[dict, str]:
-    """Non-stream, kembalikan (message mentah, model dipakai).
-
-    message mentah berbentuk OpenAI chat: {"role","content","tool_calls",...}.
-    Dipakai jalur agentic (ask.py) yang butuh tool_calls.
-    """
     use_model = await _resolve_model(model)
     payload = _payload(messages, use_model, False, tools)
     session = await get_http_session()
@@ -200,8 +172,6 @@ async def proxy_chat_raw(
         timeout=aiohttp.ClientTimeout(total=timeout),
     ) as resp:
         data = await resp.json(content_type=None)
-        # Jika upstream menolak parameter thinking (mis. model non-reasoning),
-        # retry sekali tanpa field itu.
         if resp.status == 400 and "thinking" in payload:
             payload.pop("thinking", None)
             async with session.post(
@@ -225,13 +195,11 @@ async def proxy_chat_raw(
 
 
 async def proxy_chat(messages: list[dict], model: str | None = None, timeout: int = 180) -> str:
-    """Non-stream chat completion. Balikin teks jawaban model."""
     message, _ = await proxy_chat_raw(messages, model=model, timeout=timeout)
     return (message.get("content") or "").strip()
 
 
 async def proxy_chat_stream(messages: list[dict], model: str | None = None, timeout: int = 300):
-    """Async generator delta teks dari SSE proxy. Raise RuntimeError saat error."""
     use_model = await _resolve_model(model)
 
     session = await get_http_session()
@@ -241,7 +209,6 @@ async def proxy_chat_stream(messages: list[dict], model: str | None = None, time
         json=payload,
         timeout=aiohttp.ClientTimeout(total=timeout),
     ) as resp:
-        # Retry sekali tanpa parameter thinking kalau ditolak (model non-reasoning).
         if resp.status == 400 and "thinking" in payload:
             resp.close()
             payload.pop("thinking", None)

@@ -1,10 +1,3 @@
-"""FLOW SCRAPER
-1. Fetch the post with curl_cffi; parse title, gallery photos, and Cossora video embed.
-2. Preserve gallery order, deduplicate URLs, exclude sidebar recommendations.
-3. Detect Cossora video embed (`cossora.stream/embed/<uuid>`) if present.
-4. Return {title, images, video_embed} — video resolution left blank for the
-   worker to decide (single HLS stream, no picker).
-"""
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup

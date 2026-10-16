@@ -1,21 +1,3 @@
-"""Caca Credit Billing: UI, top-up flow (preset + custom), balance, and owner controls.
-
-FLOW SCRAPER / HANDLER:
-1. `/cacatopup` (or `/buycaca`) -> preset package picker (Rp3k..Rp30k) +
-   "Custom Amount & Duration" button + "My Balance".
-2. Preset press -> order summary + Confirm/Cancel buttons.
-3. Custom press -> prompt for amount (text input validated server-side) ->
-   duration picker (7/14/21/30 days) -> order summary -> Confirm/Cancel.
-4. Confirm -> create QRIS invoice via `utils.axiom.create_qris()`, persist the
-   invoice (amount, credits, duration) in `data/caca_billing.sqlite3`, render the
-   QR PNG locally, then poll payment status every 15s.
-5. Payment PAID -> `fulfill_payment()` issues exactly one credit lot (idempotent).
-6. `/cacasaldo` -> available credits, reserved, expired, and per-lot expiry.
-7. `/freecaca enable|disable` -> owner-only global free-access switch.
-8. `/cacaadmin` -> owner-only reconciliation dashboard + manual grant.
-
-Callbacks: prefix `cacabill:` (bound to the invoker via `utils.menu_lock`).
-"""
 
 import asyncio
 import html
@@ -39,19 +21,16 @@ from utils.menu_lock import guard_callback_owner, register_message_owner
 
 log = logging.getLogger(__name__)
 
-PAYMENT_DEADLINE_SEC = 300          # 5-minute payment window (same as /buypremium)
+PAYMENT_DEADLINE_SEC = 300
 POLL_INTERVAL_SEC = 15
 WIB = timezone(timedelta(hours=7))
-CUSTOM_FLOW_TTL = 300               # custom-input session lifetime
+CUSTOM_FLOW_TTL = 300
 
-# chat_id -> {"user_id", "stage", "message_id", "amount", "days", "created_at"}
 _CUSTOM_FLOW: dict[int, dict] = {}
 _CHECK_LOCKS: dict[str, asyncio.Lock] = {}
 
 _AMOUNT_RE = re.compile(r"^\s*(?:rp\.?\s*)?([\d.,]+)\s*$", re.IGNORECASE)
 
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _lock(short_id: str) -> asyncio.Lock:
     lk = _CHECK_LOCKS.get(short_id)
@@ -96,11 +75,6 @@ def _render_qr_png(payload: str) -> bytes:
 
 
 def parse_custom_amount(raw: str) -> int:
-    """Parse a user-typed rupiah amount into an integer. Raises ValueError when invalid.
-
-    Rejects: empty, non-numeric, decimals, zero, negative, and out-of-range values.
-    Accepts: '7000', '7.000', 'Rp 7.000', 'Rp7000'.
-    """
     text = (raw or "").strip()
     if not text:
         raise ValueError("Amount is empty.")
@@ -109,12 +83,9 @@ def parse_custom_amount(raw: str) -> int:
         raise ValueError("Amount must be a whole number in rupiah (no letters or symbols).")
     digits = m.group(1)
 
-    # Reject explicitly decimal input (comma with 2 digits after, or a dot
-    # followed by exactly 1-2 digits when a thousands separator would not apply).
     if re.search(r",\d{1,2}$", digits):
         raise ValueError("Amount must be a whole number (no decimals).")
     if re.search(r"\.\d{1,2}$", digits) and len(digits.replace(".", "")) <= 6:
-        # e.g. "7000.50" -> decimal, not a thousands separator
         if not re.search(r"\.\d{3}$", digits):
             raise ValueError("Amount must be a whole number (no decimals).")
 
@@ -136,13 +107,10 @@ def parse_custom_amount(raw: str) -> int:
 
 
 def _access_allowed(user_id: int) -> bool:
-    """Owner always bypasses; /freecaca ON gives everyone free access."""
     if int(user_id) in OWNER_ID:
         return True
     return bill.is_freecaca_enabled()
 
-
-# ── Keyboards ────────────────────────────────────────────────────────────────
 
 def _packages_keyboard() -> InlineKeyboardMarkup:
     rows = []
@@ -191,8 +159,6 @@ def _invoice_keyboard(short_id: str, qr_url: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Cancel", callback_data=f"cacabill:can:{short_id}")],
     ])
 
-
-# ── Text builders ────────────────────────────────────────────────────────────
 
 def _packages_text(user_id: int) -> str:
     free = bill.is_freecaca_enabled()
@@ -315,8 +281,6 @@ def _balance_text(user_id: int) -> str:
 
     lines = ["<b>CACA CREDIT BALANCE</b>", ""]
 
-    # Access status line: never show "0 credits / top up" to a user who already
-    # has working access (owner or global free mode).
     if is_owner:
         lines.append("<b>Status:</b> <code>OWNER — UNLIMITED ACCESS</code>")
         lines.append("<b>Available:</b> <code>Unlimited</code> (owner is never charged)")
@@ -357,10 +321,7 @@ def _balance_text(user_id: int) -> str:
     return "\n".join(lines)
 
 
-# ── Commands ─────────────────────────────────────────────────────────────────
-
 async def cacatopup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """`/cacatopup` or `/buycaca`: show the top-up picker."""
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
@@ -387,7 +348,6 @@ async def cacatopup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cacasaldo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """`/cacasaldo`: show balance & lot expiries."""
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:
@@ -400,7 +360,6 @@ async def cacasaldo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def freecaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """`/freecaca enable|disable`: owner-only global free-access switch."""
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user or user.id not in OWNER_ID:
@@ -444,7 +403,6 @@ async def freecaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def providercaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """`/providercaca [shiteru|codebuddy]`: owner-only command to switch Caca's provider."""
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user or user.id not in OWNER_ID:
@@ -509,13 +467,6 @@ async def providercaca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def addcredit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """`/addcredit [@user/id] <credits> [days]`: owner-only command to add credits.
-
-    Supports:
-      - Reply to user: `/addcredit 30000` (optional days: `/addcredit 30000 30`)
-      - By username/id: `/addcredit @username 30000` (or `/addcredit 12345 30000 30`)
-    Defaults duration to 30 days if omitted. Extends user's active lot if present.
-    """
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user or user.id not in OWNER_ID:
@@ -569,7 +520,6 @@ async def addcredit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(args) > 2:
             days_token = args[2]
 
-    # Resolve target user
     target_id = await resolve_target_user_id(update, context, target_token)
     if not target_id:
         return await reply_in_topic(
@@ -578,7 +528,6 @@ async def addcredit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # Parse amount
     try:
         clean_amt = str(amount_token).replace(".", "").replace(",", "").strip()
         credits = int(clean_amt)
@@ -591,7 +540,6 @@ async def addcredit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # Parse duration
     days = 30
     if days_token:
         try:
@@ -618,7 +566,6 @@ async def addcredit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.error("Failed /addcredit | err=%r", e)
         return await reply_in_topic(msg, f"Failed to add credit: {html.escape(str(e))}")
 
-    # Build display
     obj = await resolve_target_user_obj_for_display(update, context, target_token)
     if not obj:
         obj = await resolve_user_obj_for_display_by_id(update, context, int(target_id))
@@ -644,7 +591,6 @@ async def addcredit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cacaadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """`/cacaadmin [grant <uid> <credits> <days> <reason>]`: owner dashboard."""
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user or user.id not in OWNER_ID:
@@ -707,14 +653,7 @@ async def cacaadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── Custom flow text input ───────────────────────────────────────────────────
-
 async def cacabill_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle a user-typed custom amount while the custom flow is armed.
-
-    Raises `ApplicationHandlerStop` when it consumes the message so no other
-    text handler (Caca chat, auto-download, prefix routers) also reacts to it.
-    """
     from telegram.ext import ApplicationHandlerStop
 
     msg = update.effective_message
@@ -759,8 +698,6 @@ async def cacabill_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         log.debug("register owner failed | err=%r", e)
     raise ApplicationHandlerStop
 
-
-# ── Invoice lifecycle ────────────────────────────────────────────────────────
 
 def _job_name(short_id: str) -> str:
     return f"poll_cacabill:{short_id}"
@@ -876,8 +813,6 @@ async def _create_invoice(
     is_custom: bool,
     status_msg=None,
 ):
-    """Buat invoice QRIS. `status_msg` dipakai ulang kalau karti pesanan sudah
-    diedit jadi teks 'creating' supaya TIDAK ada dua pesan status."""
     msg = update.effective_message
     if not msg and status_msg is None:
         return
@@ -892,9 +827,6 @@ async def _create_invoice(
             parse_mode="HTML",
         )
 
-    # Gross-up: the QRIS amount is raised so that after the gateway fee is
-    # deducted, the bot still receives exactly `amount` (the package price the
-    # owner configured). The fee is passed through to the user.
     gross_amount, gateway_fee = bill.calculate_gross_amount(amount, bill.GATEWAY_FEE_BPS)
 
     if status_msg is None:
@@ -913,7 +845,6 @@ async def _create_invoice(
         except Exception:
             return
 
-    # Cross-check: use the gateway-reported fee when present, else our gross-up.
     real_fee = int(data.get("fee_amount") or gateway_fee)
     real_rate = int(data.get("fee_rate_bps") or bill.GATEWAY_FEE_BPS)
     charged = int(data.get("amount") or gross_amount)
@@ -996,8 +927,6 @@ async def _create_invoice(
             )
 
 
-# ── Callbacks ────────────────────────────────────────────────────────────────
-
 async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data:
@@ -1052,7 +981,6 @@ async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # Everything below must be the menu owner's click
     if not await guard_callback_owner(q, expected_user_id=user.id):
         return
 
@@ -1136,7 +1064,6 @@ async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == "ok":
-        # Confirm & pay. ALWAYS re-validate server-side; never trust callback text.
         if len(parts) < 5:
             return await q.answer("Invalid order.", show_alert=True)
         kind, amount_s, days_s = parts[2], parts[3], parts[4]
@@ -1150,7 +1077,6 @@ async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pkg = bill.calculate_preset_package(amount)
             if not pkg:
                 return await q.answer("Unknown package.", show_alert=True)
-            # Preset must keep its own canonical duration
             if days != pkg["days"]:
                 return await q.answer("Package duration mismatch.", show_alert=True)
             base, bonus, total, duration = pkg["base"], pkg["bonus"], pkg["total"], pkg["days"]

@@ -1,13 +1,3 @@
-"""Command handler explorer CosXplay: `/cosxplay` (`cx:` callbacks).
-
-FLOW COMMAND
-------------
-1. Gate premium + NSFW via `_premium_link_allowed(GATE_URL, ...)`.
-2. Tanpa argumen -> menu Explorer (Rich Message) + tombol Search/Latest/Categories/
-   Tags/Cosplay Models/Shortcuts/Close.
-3. Dengan argumen -> search `/?s=<q>` (maks `MAX_RESULTS`), tampil sebagai
-   listing Rich Message + tombol angka (pola sama dengan search command lain).
-"""
 import asyncio
 import html
 import logging

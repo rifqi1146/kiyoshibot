@@ -1,10 +1,3 @@
-"""FLOW DOWNLOADER
-1. Scrape post metadata in a thread; reject MP3 for photo/video gallery posts.
-2. Download photos concurrently, convert to JPEG, keep gallery order.
-3. If Cossora embed exists: decrypt HLS URL, download TS segments in parallel,
-   concat/remux to MP4 faststart.
-4. Return one shared album payload: photos first, video last.
-"""
 import asyncio
 import os
 import subprocess
@@ -111,8 +104,6 @@ async def _download_photos(raw_url: str, photos: list[str], title: str, bot, cha
     tasks = []
     try:
         await progress(force=True)
-        # Gunakan shared session (get_http_session) + header per-request agar
-        # tidak membuka TLS handshake baru per album.
         session = await get_http_session()
         _headers = {'User-Agent': UA, 'Referer': raw_url}
         tasks = [asyncio.create_task(one(session, i, url, _headers)) for i, url in enumerate(photos)]

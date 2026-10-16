@@ -5,7 +5,6 @@ from utils.config import FONT_DIR
 
 log = logging.getLogger(__name__)
 
-# Poppins statis (SIL OFL 1.1) di folder fonts/ repo — font UI dashboard /stats.
 _UI_FONTS = {
     400: ("Poppins-Regular.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
     500: ("Poppins-Medium.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf"),
@@ -32,10 +31,6 @@ def _find_font(name):
 
 
 def get_ui_font(size, weight=400):
-    """Font UI (Poppins) dengan weight 400/500/600/700.
-
-    Fallback ke DejaVu/Liberation bila file Poppins tidak ada.
-    """
     key = min(_UI_FONTS, key=lambda w: abs(w - weight))
     names = _UI_FONTS[key]
     path = _find_font(names[0])
@@ -48,21 +43,10 @@ def get_ui_font(size, weight=400):
 
 
 def get_ui_mono(size):
-    """Font angka/terminal untuk dashboard (tetap mono supaya rapi sejajar)."""
     return get_font(["DejaVuSansMono.ttf", "LiberationMono-Regular.ttf", "FreeMono.ttf"], size)
 
 
 def get_font(font_names, size):
-    """
-    Robustly load a font from various locations.
-
-    Args:
-        font_names (str or list): Name(s) of the font to load (e.g. "DejaVuSans.ttf").
-        size (int): Font size.
-
-    Returns:
-        ImageFont: A PIL ImageFont object.
-    """
     if isinstance(font_names, str):
         font_names = [font_names]
 

@@ -1,13 +1,8 @@
-#!/usr/bin/env python3
 import os
 import re
 import socket
 import logging
 
-# uvloop di-install lewat requirements tapi dulu tidak pernah dipakai — bot
-# jalan di event loop selectors bawaan. Pasang SEBELUM loop pertama dibuat
-# (sebelum PTB bikin loop di run_polling). Matikan dengan BOT_UVLOOP=0 kalau
-# ada masalah: perilaku handler & UI tidak berubah sama sekali.
 if os.getenv("BOT_UVLOOP", "1").strip().lower() not in ("0", "false", "no"):
     try:
         import uvloop
@@ -169,12 +164,6 @@ def _local_bot_api_available(host:str,port:int,timeout:float=1.0)->bool:
         return False
 
 def _start_opencode_proxy():
-    """Nyalakan proxy OpenCode free-tier di thread daemon (dipakai /ask).
-
-    Idempoten: kalau port sudah dipakai proxy lain (mis. standalone), skip
-    dengan pesan jelas — bot tetap jalan, /ask tinggal memakai proxy itu.
-    Matikan otomatis lewat env OPENCODE_PROXY=0.
-    """
     if os.getenv("OPENCODE_PROXY","1").strip().lower() in ("0","false","no"):
         log.info("OpenCode proxy disabled via env (OPENCODE_PROXY=0)")
         return
@@ -283,7 +272,6 @@ def _build_application():
     return builder.build()
 
 def _allowed_updates():
-    """Update.ALL_TYPES + update baru yang belum dikenali PTB 22.8."""
     extra = ("stopped_message_generation",)
     names = []
     for ut in Update.ALL_TYPES:

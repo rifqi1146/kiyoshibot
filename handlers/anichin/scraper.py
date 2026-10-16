@@ -1,23 +1,3 @@
-"""HTTP client + parser + fetcher untuk Anichin (`anichin.moe`).
-
-FLOW SCRAPER
-------------
-1. `http_get(url)` -> HTML mentah (curl_cffi impersonate Chrome).
-2. `parse_cards(html)` -> kartu `article.bs > div.bsx > a.tip`:
-   judul (`div.tt`), status (`div.status`), tipe (`div.typez`),
-   episode/status (`span.epx`), sub (`span.sb`), thumbnail (`img`).
-3. `search(query)` -> `GET /?s=<q>` (form `input[name=s]`).
-4. `fetch_listing(path)` -> listing statis (`/anime`, `/ongoing`, `/completed`,
-   `/upcoming-donghua`, `/drop`). Paginasi WAJIB bentuk `/page/N/` — bentuk
-   `?page=N` sering jatuh ke beranda (`/ongoing/?page=2` -> `/?page=2`).
-5. `fetch_genres()` -> 47 genre dari `/genres/` (cache 1 jam).
-6. `fetch_az()` -> huruf A-Z dari `/az-lists/` + `fetch_az_letter(letter)`
-   (`/az-lists/?show=<L>` + `/az-lists/page/N/`).
-7. `fetch_schedule()` -> `/schedule/` dikelompokkan per hari (`div.bsx` + `h2`).
-8. `fetch_detail(url)` -> metadata series (`div.spe`, `div.genxed`,
-   `div.eplister ul li`) ATAU halaman episode (`select.mirror` base64 +
-   `div.soraurlx` mirror download).
-"""
 import base64
 import logging
 import math
@@ -51,7 +31,6 @@ def _http():
 
 
 def http_get(url: str) -> str:
-    """Ambil HTML halaman Anichin; kosong kalau gagal."""
     try:
         r = _http().get(url, headers={"User-Agent": UA, "Referer": f"{BASE_URL}/"}, timeout=HTTP_TIMEOUT)
         return r.text if r.status_code == 200 else ""
@@ -65,10 +44,6 @@ def _clean(text: str) -> str:
 
 
 def parse_cards(html_text: str) -> list[dict]:
-    """Kartu listing dari `article.bs`.
-
-    -> [{title, url, thumbnail, status, type, ep, sub}]
-    """
     if not html_text:
         return []
     soup = BeautifulSoup(html_text, "html.parser")
@@ -88,7 +63,6 @@ def parse_cards(html_text: str) -> list[dict]:
         tt = art.select_one("div.tt")
         h2 = art.select_one("div.tt h2")
         title = _clean(tt.get_text(" ", strip=True)) if tt else ""
-        # `div.tt` memuat judul bersih + <h2> judul lengkap -> pakai h2 kalau ada.
         if h2:
             full = _clean(h2.get_text(" ", strip=True))
             if full:
@@ -115,7 +89,6 @@ def parse_cards(html_text: str) -> list[dict]:
 
 
 def _collect(first_url: str, page_tmpl: str, max_items: int) -> list[dict]:
-    """Halaman 1..N sampai `max_items`; `page_tmpl` memakai `{page}`."""
     results = parse_cards(http_get(first_url))
     if not results:
         return []
@@ -143,24 +116,17 @@ def _collect(first_url: str, page_tmpl: str, max_items: int) -> list[dict]:
 
 
 def search(query: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Cari di `/?s=<q>`. Search Anichin biasanya hanya 1 halaman."""
     slug = quote_plus((query or "").strip())
     return _collect(f"{BASE_URL}/?s={slug}", "", max_items)
 
 
 def fetch_listing(path: str, paginated: bool = True, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing statis. `path` mis. `/ongoing`.
-
-    Paginasi memakai `/page/N/` (bentuk `?page=N` jatuh ke beranda untuk
-    sebagian path, jadi jangan dipakai).
-    """
     path = path.rstrip("/")
     tmpl = f"{BASE_URL}{path}/page/{{page}}/" if paginated else ""
     return _collect(f"{BASE_URL}{path}/", tmpl, max_items)
 
 
 def fetch_genres() -> list[dict]:
-    """47 genre dari `/genres/` (cache 1 jam). -> [{slug, name, count}]"""
     now = time.time()
     if GENRES_CACHE.get("list") and now - GENRES_CACHE.get("ts", 0) < INDEX_TTL:
         return GENRES_CACHE["list"]
@@ -181,7 +147,6 @@ def fetch_genres() -> list[dict]:
             continue
         seen.add(slug)
         label = _clean(a.get_text(" ", strip=True))
-        # Label memuat jumlah di belakang, mis. "Comedy 80".
         cm = re.search(r"\s(\d+)$", label)
         count = cm.group(1) if cm else ""
         name = re.sub(r"\s\d+$", "", label).strip() or slug.replace("-", " ").title()
@@ -194,7 +159,6 @@ def fetch_genres() -> list[dict]:
 
 
 def fetch_az() -> list[str]:
-    """Daftar huruf A-Z dari `/az-lists/` (cache 1 jam)."""
     now = time.time()
     if AZ_CACHE.get("letters") and now - AZ_CACHE.get("ts", 0) < INDEX_TTL:
         return AZ_CACHE["letters"]
@@ -220,20 +184,12 @@ def fetch_az() -> list[str]:
 
 
 def fetch_az_letter(letter: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing satu huruf A-Z: `/az-lists/?show=<L>` + `/az-lists/page/N/`."""
     from urllib.parse import quote
     first = f"{BASE_URL}/az-lists/?show={quote(letter, safe='')}"
     return _collect(first, f"{BASE_URL}/az-lists/page/{{page}}/", max_items)
 
 
 def fetch_schedule() -> list[dict]:
-    """Jadwal rilis dari `/schedule/` (cache 1 jam).
-
-    Struktur: `div.bixbox.schedulepage.sch_<english_day>` berisi N `div.bsx`.
-    Label hari Indonesia diambil dari `div.listSchh > h2` (urut Senin..Minggu,
-    lalu "Acak"), lalu diterjemahkan ke Inggris (`DAY_EN_MAP`) supaya UI tetap
-    English. -> [{day, items: [{title, url, thumbnail, time, ep}]}]
-    """
     now = time.time()
     if SCHEDULE_CACHE.get("days") and now - SCHEDULE_CACHE.get("ts", 0) < INDEX_TTL:
         return SCHEDULE_CACHE["days"]
@@ -244,7 +200,6 @@ def fetch_schedule() -> list[dict]:
 
     soup = BeautifulSoup(raw, "html.parser")
 
-    # Label hari (Indonesia) urut dari div.listSchh -> terjemahkan ke Inggris.
     labels = []
     for l in soup.select("div.listSchh h2"):
         t = _clean(l.get_text(" ", strip=True))
@@ -265,8 +220,6 @@ def fetch_schedule() -> list[dict]:
             href = a["href"].strip()
             if href.startswith("/"):
                 href = BASE_URL + href
-            # `span.epx` = status rilis berbahasa Indonesia: "Jam HH:MM" (jadwal)
-            # atau "sudah rilis" (sudah tayang). Normalisasi ke English bersih.
             ep_raw = _clean(ep_el.get_text(" ", strip=True)) if ep_el else ""
             low_ep = ep_raw.lower()
             if "sudah rilis" in low_ep or "sudah tayang" in low_ep or "tayang" in low_ep:
@@ -300,11 +253,6 @@ def fetch_schedule() -> list[dict]:
 
 
 def _parse_stream_servers(html_text: str) -> list[dict]:
-    """Decode `select.mirror` -> daftar server streaming.
-
-    Tiap `<option>` berisi iframe **base64**; nilai `src` diekstrak dari hasil
-    decode. -> [{label, url}]
-    """
     soup = BeautifulSoup(html_text, "html.parser")
     sel = soup.select_one("select.mirror")
     if not sel:
@@ -332,10 +280,6 @@ def _parse_stream_servers(html_text: str) -> list[dict]:
 
 
 def _parse_download_mirrors(html_text: str) -> list[dict]:
-    """`div.soraurlx` -> mirror unduh per resolusi.
-
-    -> [{label, name, url}]  (label mis. "360p", name mis. "Mirrored")
-    """
     soup = BeautifulSoup(html_text, "html.parser")
     mirrors = []
     seen = set()
@@ -346,9 +290,6 @@ def _parse_download_mirrors(html_text: str) -> list[dict]:
             continue
         label = _clean(strong.get_text(" ", strip=True)) if strong else ""
         url = (a.get("href") or "").strip()
-        # Dedup per (label, url): dua resolusi berbeda boleh berbagi URL yang sama
-        # (mis. 360p & 1080p sama-sama `inshorturl.in/6OM29W`) dan tetap harus
-        # tampil sebagai pilihan terpisah.
         key = (label.lower(), url)
         if not url or key in seen:
             continue
@@ -362,14 +303,6 @@ def _parse_download_mirrors(html_text: str) -> list[dict]:
 
 
 def fetch_detail(url: str) -> dict:
-    """Metadata halaman SERIES atau EPISODE.
-
-    Hasil selalu punya `kind`:
-    - `kind="series"` -> {title, poster, synopsis, meta:{...}, genres:[...],
-                          episodes:[{ep,title,url,date}]}
-    - `kind="episode"` -> {title, thumbnail, servers:[...], mirrors:[...]}
-    - `kind="unknown"`
-    """
     raw = http_get(url)
     if not raw:
         return {"kind": "unknown", "title": "", "url": url}
@@ -379,7 +312,6 @@ def fetch_detail(url: str) -> dict:
     og = soup.select_one('meta[property="og:title"]')
     og_title = og.get("content").strip() if og and og.get("content") else ""
 
-    # ---- SERIES: ada daftar episode (`div.eplister ul li`) ----
     eplister = soup.select_one("div.eplister ul")
     if eplister:
         h1 = soup.select_one("h1.entry-title") or soup.find("h1")
@@ -403,7 +335,6 @@ def fetch_detail(url: str) -> dict:
         meta = {}
         spe = soup.select_one("div.spe")
         if spe:
-            # "Status: Ongoing Network: X Studio: Y ..." -> pecah per label.
             parts = re.split(
                 r"(Status|Network|Studio|Tanggal rilis|Durasi|Season|Negara|Tipe|Episode|Subber|Diposting oleh|Ditambahkan|Diperbarui pada)\s*:",
                 _clean(spe.get_text(" ", strip=True)),
@@ -411,7 +342,6 @@ def fetch_detail(url: str) -> dict:
             for i in range(1, len(parts) - 1, 2):
                 key = parts[i].strip()
                 val = _clean(parts[i + 1])
-                # buang sisa label berikutnya yang ikut terbawa
                 val = re.split(
                     r"\s(?:Status|Network|Studio|Tanggal rilis|Durasi|Season|Negara|Tipe|Episode|Subber|Diposting oleh|Ditambahkan|Diperbarui pada)\s*:",
                     val,
@@ -462,7 +392,6 @@ def fetch_detail(url: str) -> dict:
             "episodes": episodes,
         }
 
-    # ---- EPISODE: ada player / mirror unduh ----
     servers = _parse_stream_servers(raw)
     mirrors = _parse_download_mirrors(raw)
     if servers or mirrors:

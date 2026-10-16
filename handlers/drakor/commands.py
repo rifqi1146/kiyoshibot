@@ -1,4 +1,3 @@
-"""Command handler `/drakorid`."""
 import asyncio
 import html
 import logging
@@ -22,7 +21,6 @@ log = logging.getLogger(__name__)
 
 
 async def drakorid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Main command handler for /drakorid."""
     if not await require_join_or_block(update, context):
         return
 

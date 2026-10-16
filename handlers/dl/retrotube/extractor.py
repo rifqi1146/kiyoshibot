@@ -34,7 +34,6 @@ def _host(url: str) -> str:
 
 
 def _collect_embed_candidates(html_text: str) -> list:
-    """Collect all embed URL candidates; lulustream hosts are prioritized."""
     seen = []
     order = []
 
@@ -58,8 +57,6 @@ def _collect_embed_candidates(html_text: str) -> list:
 
 
 def _scrape_post(url: str, _depth: int = 0) -> tuple:
-    """Extract (title, thumb_url, [embed_candidates]) from the post page.
-    Automatically jumps to the first video post if this is a category/listing page."""
     html_text = ""
     last_err = None
     for attempt in range(2):
@@ -108,8 +105,6 @@ def _scrape_post(url: str, _depth: int = 0) -> tuple:
 
     candidates = _collect_embed_candidates(html_text)
 
-    # Auto-resolve listing/category page:
-    # If there are no embeds and this is the first attempt, check for an <article> list.
     if not candidates and _depth == 0:
         articles = re.findall(r'<article\b.*?</article>', html_text, re.S | re.I)
         if articles:
@@ -117,7 +112,6 @@ def _scrape_post(url: str, _depth: int = 0) -> tuple:
                 m_href = re.search(r'href="([^"]+)"', art, re.I)
                 if m_href:
                     first_post_url = m_href.group(1).strip()
-                    # Ensure same host to prevent ad traps.
                     if _host(first_post_url) == _host(url):
                         _dbg("Category page detected. Jumping to first post: %s", first_post_url)
                         return _scrape_post(first_post_url, _depth=1)
@@ -127,11 +121,6 @@ def _scrape_post(url: str, _depth: int = 0) -> tuple:
 
 
 def _mirror_urls(raw_url: str) -> list:
-    """Return identical-path post URLs on mirror domains, excluding the original host.
-
-    Wildcard domains (e.g. 'lendirqu.*') cannot be used as target hosts, so only
-    explicit hosts listed in _MIRROR_EXTRA_HOSTS + the origin domain are used.
-    """
     try:
         parts = urlsplit(raw_url)
     except Exception:
@@ -147,7 +136,6 @@ def _mirror_urls(raw_url: str) -> list:
     hosts = []
     for g in group:
         if g.endswith(".*"):
-            # Wildcard: use hosts already verified active for this prefix.
             hosts.extend(_MIRROR_EXTRA_HOSTS.get(g, ()))
         else:
             hosts.append(g)
@@ -171,10 +159,8 @@ _VOE_CACHE_MAX = 500
 
 def _prune_voe_cache():
     now = time.time()
-    # 1) drop every entry past its TTL
     for k in [k for k, v in list(_VOE_RESOLVE_CACHE.items()) if now - v[1] > _VOE_CACHE_TTL]:
         _VOE_RESOLVE_CACHE.pop(k, None)
-    # 2) if still over the cap (all fresh), drop the oldest so the map stays bounded.
     if len(_VOE_RESOLVE_CACHE) > _VOE_CACHE_MAX:
         overflow = len(_VOE_RESOLVE_CACHE) - _VOE_CACHE_MAX
         oldest = sorted(_VOE_RESOLVE_CACHE.items(), key=lambda kv: kv[1][1])[: max(1, overflow)]
@@ -182,16 +168,11 @@ def _prune_voe_cache():
             _VOE_RESOLVE_CACHE.pop(k, None)
 
 
-# ── Cookie clearance & browser session → centralized in utils/scrapling_browser ──
-# (one global StealthySession shared by all downloaders; cookie reuse for the
-#  fast curl_cffi path). Thin wrappers below keep this extractor's old API.
-
 def _drop_host_cookies(host: str):
     _sb.clear_cookies(host)
 
 
 def _http_get(url: str, referer: str = ""):
-    """Fast GET via curl_cffi, reusing clearance cookies when available."""
     kwargs = {}
     ck = _sb.cookies_for(_host(url))
     if ck:
@@ -208,11 +189,6 @@ def _http_get(url: str, referer: str = ""):
 
 
 def _is_challenge_page(text: str) -> bool:
-    """Detect a JS challenge page (DDoS-Guard/Cloudflare) that requires a browser.
-
-    Only verified challenge signatures trigger the browser fallback — standard
-    404/server errors must NOT waste ~20s launching a headless browser.
-    """
     if not text:
         return False
     low = text.lower()
@@ -225,14 +201,6 @@ def _is_challenge_page(text: str) -> bool:
 
 
 def _browser_data_usable(data: dict) -> bool:
-    """True if browser capture contains real media (not a 403/challenge page).
-
-    A captured `m3u8` from the player request is always usable. Otherwise the
-    HTML must hold the obfuscated `<script type="application/json">` block (or a
-    packer blob) that `_deobfuscate_voe_json` can decode. A plain DDoS-Guard /
-    Cloudflare challenge page must NOT be treated as usable, otherwise it gets
-    cached and poisons every subsequent resolve for this embed until TTL expiry.
-    """
     if not data:
         return False
     if data.get("m3u8"):
@@ -247,17 +215,6 @@ _VOE_BROWSER_ATTEMPTS = 1
 
 
 def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 45000) -> dict:
-    """Resolve a VOE page via the shared StealthySession (utils/scrapling_browser).
-
-    Returns {"html": str, "m3u8": str|None}. Only returns usable media; never a
-    bare challenge/403 page.
-
-    The DDoS-Guard JS challenge on voe.sx is flaky: roughly one attempt in
-    several ends on `chrome-error://chromewebdata/` (browser navigation aborted)
-    or stays on the challenge page. Retrying the whole fetch recovers those runs
-    - the second attempt almost always clears the challenge, so we do not raise
-    from a single bad spin of the browser.
-    """
     last = {"html": "", "m3u8": None}
 
     for attempt in range(_VOE_BROWSER_ATTEMPTS):
@@ -278,10 +235,6 @@ def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 4500
                 _dbg("failed to attach m3u8 listener | %r", e)
 
         def _auto(page):
-            # Poll for the player JSON. The first (cold) resolve can take ~22s and
-            # a transient network hiccup can push it higher (Playwright retries the
-            # navigation itself), so the window must be generous. Once the session
-            # has cleared DDoS-Guard once, later resolves land in 2-4s.
             deadline = time.time() + min(65.0, max(25.0, timeout_ms / 1000.0 * 1.5))
             while time.time() < deadline:
                 if holder["m3u8"]:
@@ -303,9 +256,6 @@ def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 4500
             referer=referer,
             timeout_ms=timeout_ms,
         )
-        # Only fall back to the returned HTML when it is real media, not a
-        # challenge/error page. Returning a 403 body here poisons the resolve
-        # cache upstream.
         if not holder["m3u8"] and not (holder["html"] and "application/json" in holder["html"]):
             if html and not _is_challenge_page(html) and "chrome-error" not in html:
                 holder["html"] = html
@@ -329,10 +279,7 @@ def close_rt_browser():
 
 
 def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
-    """Resolve an embed URL to (kind, media_url, thumb) with kind in {'hls', 'mp4'}, or (None, None, None)."""
     
-    # VOE rotates its player domain via a literal JavaScript redirect.
-    # Do not pin an obsolete clone before fetching the canonical embed.
     is_voe = _host(embed_url) in ('voe.sx', 'www.voe.sx')
 
     text = None
@@ -343,12 +290,9 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
                 text = r.text
 
                 if _is_challenge_page(text):
-                    # clearance cookie expired/rejected -> drop it so it is not reused
                     _drop_host_cookies(_host(embed_url))
-                    break  # text = challenge -> triggers the browser fallback
+                    break
 
-                # voe.sx first returns a tiny JS page that redirects to a current
-                # player mirror (the host rotates; e.g. teresapoliticallearn.com).
                 if is_voe:
                     redirect = re.search(
                         r"window\.location\.href\s*=\s*['\"](https?://[^'\"]+/e/[^'\"?#]+)",
@@ -363,13 +307,11 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
                             embed_url = player_url
                         else:
                             _dbg("VOE mirror non-200 | %s %s", player_url, player.status_code)
-                            # non-200 but body is a challenge -> still hand off to the browser
                             if _is_challenge_page(getattr(player, "text", "") or ""):
                                 _drop_host_cookies(_host(player_url))
                                 text = player.text
                 break
 
-            # non-200: if the body is a challenge page, force the browser path
             body = getattr(r, "text", "") or ""
             if _is_challenge_page(body):
                 _drop_host_cookies(_host(embed_url))
@@ -380,18 +322,10 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
             _dbg("resolve fetch failed (attempt %s) | %s %r", attempt + 1, embed_url, e)
             time.sleep(1.0)
 
-    # Fallback: DDoS-Guard/VOE challenge -> stealth browser.
-    # Used ONLY when plain HTTP fails or yields no media, so the fast path
-    # (2 requests) stays the default.
-    #
-    # PERFORMANCE GUARD: never open a browser for arbitrary failures. Only when:
-    #   a) a VOE embed (`voe.sx`) whose HTML lacks the player JSON block, or
-    #   b) the response is a challenge page (DDoS-Guard/Cloudflare "Just a moment").
-    # A plain 404/dead page gives up immediately -> no wasted ~20s.
     voe_needs = is_voe and not (text and (_PACKER_RE.search(text) or "application/json" in text))
     needs_browser = bool(voe_needs or _is_challenge_page(text or ""))
     if needs_browser:
-        cache_key = embed_url  # referer does not change the HTML -> fewer misses
+        cache_key = embed_url
         cached = _VOE_RESOLVE_CACHE.get(cache_key)
         browser_data = None
         if cached and (time.time() - cached[1]) < _VOE_CACHE_TTL:
@@ -400,9 +334,6 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         else:
             _dbg("plain HTTP failed, resolving via StealthySession | %s", embed_url)
             browser_data = _fetch_voe_browser(embed_url, referer=referer)
-            # NEVER cache a failure (403/challenge HTML without JSON) — caching it
-            # makes every later resolve for this embed fail until TTL expiry
-            # (poison cache).
             if browser_data and _browser_data_usable(browser_data):
                 _prune_voe_cache()
                 _VOE_RESOLVE_CACHE[cache_key] = (browser_data, time.time())
@@ -411,7 +342,6 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
                 browser_data = None
 
         if browser_data:
-            # m3u8 captured from the player request -> use directly, skip deobfuscate
             if browser_data.get("m3u8"):
                 _dbg("m3u8 via request capture | %s", browser_data["m3u8"])
                 return "hls", browser_data["m3u8"], None
@@ -428,14 +358,12 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         except Exception as e:
             _dbg("unpack failed | %s %r", embed_url, e)
 
-    # VOE / its clones (miaw.lol): obfuscated JSON config -> m3u8 (source) / mp4.
     voe_hls, voe_mp4 = _deobfuscate_voe_json(text)
     if voe_hls:
         return "hls", voe_hls, None
     if voe_mp4:
         return "mp4", voe_mp4, None
 
-    # mumu.watch: MASTER_URL stored plaintext in JS with escaped slashes (\/).
     if "mumu.watch" in embed_url or "m-cdn.video" in text:
         mm = re.search(r'MASTER_URL\s*=\s*"([^"]+)"', text)
         if mm:
@@ -444,22 +372,17 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         if mm2:
             return "hls", mm2.group(0).replace("\\/", "/"), None
 
-    # HTML5 <video>/<source> (e.g. lordfile.site): direct mp4, URL may contain spaces
     for m in re.finditer(r'<(?:source|video)\b[^>]*\bsrc=["\']([^"\']+)["\']', text, re.I):
         u = m.group(1).strip()
         if re.search(r"\.(?:mp4|m3u8|webm)(?:\?|#|$)", u, re.I):
             u = u.replace(" ", "%20")
             return ("hls" if ".m3u8" in u.lower() else "mp4"), u, None
 
-    # db.fbplay.vip: Google Drive ID proxied to HLS (with 1x1 PNG segments from tiktokcdn).
-    # Bypass directly to original Google Drive for fast and complete downloads.
     if prefer_gdrive:
         m_gid = re.search(r'db\.fbplay\.vip/embed/video/([a-zA-Z0-9_-]{20,})', embed_url, re.I)
         if m_gid:
             return "gdrive", m_gid.group(1), None
 
-    # nontonvideo.xyz / JWPlayer relative path: /stream/...
-    # (can be escaped quotes: \'file\':\'/stream/...\')
     stream_m = re.search(r'''['"]?file['"]?\s*:\s*['"](/stream/[^'"]+)['"]''', text)
     if not stream_m:
         stream_m = re.search(r'''\\['"]file\\['"]\s*:\s*\\['"](/stream/[^\\'"]+)\\['"]''', text)
@@ -468,7 +391,6 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         full_stream_url = urljoin(embed_url, stream_path)
         return "mp4", full_stream_url, None
 
-    # JWPlayer m3u8
     m3u8 = re.findall(r'file\s*:\s*["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', text)
     if not m3u8:
         m3u8 = re.findall(r'https?://[^"\'\s\\]+\.m3u8[^"\'\s\\]*', text)
@@ -476,7 +398,6 @@ def _resolve_embed(embed_url: str, referer: str, prefer_gdrive: bool = True):
         thumbs = re.findall(r'image\s*:\s*["\'](https?://[^"\']+)["\']', text)
         return "hls", m3u8[0], (thumbs[0] if thumbs else None)
 
-    # JWPlayer mp4
     mp4 = re.findall(r'file\s*:\s*["\'](https?://[^"\']+\.mp4[^"\']*)["\']', text)
     if not mp4:
         mp4 = re.findall(r'https?://[^"\'\s\\]+\.mp4[^"\'\s\\]*', text)

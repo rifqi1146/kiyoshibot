@@ -199,7 +199,6 @@ def _build_headers(referer: str | None = None, use_cookies: bool = True) -> dict
     headers = dict(WEB_HEADERS)
     if referer:
         headers["Referer"] = referer
-    # Cookies HANYA sebagai last resort. Fetch cookieless dulu (use_cookies=False).
     if use_cookies:
         cookie_header = _load_cookie_header(COOKIES_PATH)
         if cookie_header:
@@ -274,9 +273,7 @@ def _clean_fb_title(text: str, fallback: str = "Facebook Video") -> str:
     text = (text or "").strip()
     text = re.sub(r"\s*\|\s*facebook\s*$", "", text, flags=re.I).strip()
     text = re.sub(r"\s*-\s*facebook\s*$", "", text, flags=re.I).strip()
-    # Convert literal \n \t to real newlines/tabs (from JSON-escaped strings)
     text = text.replace(r"\n", "\n").replace(r"\t", "\t")
-    # Collapse all whitespace to single space for clean single-line caption
     text = re.sub(r"\s+", " ", text).strip()
     if _is_bad_fb_title(text):
         return fallback
@@ -308,10 +305,8 @@ def _extract_title_from_html(body: bytes, fallback: str = "Facebook Video") -> s
 
     return fallback
 
-# ===== Facebook post photo/text scraper (cookieless) =====
 
 def _unescape_json_str(s: str) -> str:
-    """Decode string hasil escape JSON (\\/ , \\" , \\n, \\t)."""
     if not s:
         return ""
     out = s.replace(r"\/", "/")
@@ -320,7 +315,6 @@ def _unescape_json_str(s: str) -> str:
     return _html_unescape(out)
 
 def _normalize_image_url(url: str) -> str:
-    """Normalisasi URL foto utk dedup (strip param ukuran/crop)."""
     text = (url or "").strip()
     m = re.search(r"([^\?]+/(\d+)_\d+_\d+)(?:_\d+)?\.([a-zA-Z0-9]+)", text)
     if m:
@@ -334,7 +328,6 @@ def _extract_og_image(text: str) -> str:
     return unquote(_html_unescape(m.group(1)))
 
 def _extract_post_caption(text: str) -> str:
-    """Teks post utk caption foto: og:description, fallback og:title."""
     caption = ""
     m = OG_DESC_RE.search(text or "")
     if m:
@@ -349,17 +342,8 @@ def _extract_post_caption(text: str) -> str:
     return caption
 
 def _extract_attachment_photos(text: str) -> list[dict]:
-    """Ekstrak foto lampiran post.
-
-    Prioritas 1: album multi-foto via JSON all_subattachments (urut feed,
-        varian resolusi tertinggi: viewer_image > image).
-    Prioritas 2: foto tunggal via photo_image + accessibility_caption.
-    Prioritas 3: photo_image + dimensi.
-    Return list of {url, width, height, photo_id, caption}.
-    """
     text = text or ""
 
-    # Priority 1: album multi-foto (JSON parse all_subattachments)
     for pm in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', text, re.S):
         payload = pm.group(1)
         if '"all_subattachments"' not in payload:
@@ -420,10 +404,8 @@ def _extract_attachment_photos(text: str) -> list[dict]:
                     "caption": media.get("accessibility_caption") or "",
                 })
         if photos:
-            # Urut feed dipertahankan — jangan di-sort
             return photos
 
-    # Priority 2: foto tunggal via photo_image + accessibility_caption
     found: dict = {}
     for m in re.finditer(
         r'"photo_image"\s*:\s*\{\s*"uri"\s*:\s*"((?:[^"\\]|\\.)+)"[^}]*"height"\s*:\s*(\d+)\s*,\s*"width"\s*:\s*(\d+)\s*\}\s*,\s*"accessibility_caption"\s*:\s*"([^"]*)"',
@@ -435,7 +417,6 @@ def _extract_attachment_photos(text: str) -> list[dict]:
         if key not in found or h * w > found[key]["height"] * found[key]["width"]:
             found[key] = {"url": uri, "width": w, "height": h, "photo_id": "", "caption": m.group(4)}
 
-    # Priority 3: photo_image + dimensi apa saja
     if not found:
         for m in re.finditer(
             r'"photo_image"\s*:\s*\{\s*"uri"\s*:\s*"((?:[^"\\]|\\.)+)"\s*,\s*"height"\s*:\s*(\d+)\s*,\s*"width"\s*:\s*(\d+)',
@@ -448,10 +429,6 @@ def _extract_attachment_photos(text: str) -> list[dict]:
     return sorted(found.values(), key=lambda d: d["height"] * d["width"], reverse=True)
 
 def _extract_mixed_media(text: str) -> dict:
-    """Ekstrak video + foto dari all_subattachments (mixed content post).
-    
-    Return {"videos": [{"id": ..., "type": "video"}], "photos": [{"url": ..., "type": "photo"}]}
-    """
     text = text or ""
     videos = []
     photos = []
@@ -523,7 +500,6 @@ def _extract_mixed_media(text: str) -> dict:
     return {"videos": [], "photos": []}
 
 def _collect_photo_urls(text: str) -> list[str]:
-    """URL foto post, terdedup (og:image sering dobel dgn node pertama)."""
     photos = [p["url"] for p in _extract_attachment_photos(text)]
     og_image = _extract_og_image(text)
     if og_image:
@@ -545,7 +521,6 @@ def _sniff_image_ext(path: str) -> str:
     return ".jpg"
 
 def _fix_image_ext(path: str) -> str:
-    """Sesuaikan ekstensi file dgn isi file (nama URL fbcdn bisa bohong)."""
     if not path or not os.path.exists(path):
         return path
     ext = _sniff_image_ext(path)
@@ -559,7 +534,6 @@ def _fix_image_ext(path: str) -> str:
         return path
 
 def _extract_video_duration_from_url(url: str) -> int:
-    """Extract duration_s from efg parameter in video URL. Return -1 if not found or parse error."""
     import base64
     if not url:
         return -1
@@ -684,8 +658,6 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
             cmd.extend(["--header", f"{k}: {v}"])
     cmd.append(media_url)
     _dbg("aria2c start | out=%s url=%s", out_path, _clip(media_url, 200))
-    # uvloop create_subprocess_exec -> libuv fork() -> SIGSEGV(-11). Pakai
-    # spawn_process (subprocess.Popen via thread / posix_spawn) yang aman.
     proc = await spawn_process(*cmd, stdout=DEVNULL, stderr=PIPE)
     stats = TransferStats(total)
     while proc.returncode is None:
@@ -756,7 +728,6 @@ async def _download_with_best_engine(session, media_url: str, out_path: str, bot
         await _aiohttp_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
 
 async def _fetch_page_html(content_url: str, content_id: str, use_cookies: bool = False) -> tuple[int, str, bytes]:
-    """Fetch halaman post (cookieless by default). Return (status, final_url, body)."""
     content_url = _normalize_content_url(content_url, content_id)
     session = await get_http_session()
     headers = _build_headers(content_url, use_cookies=use_cookies)
@@ -769,7 +740,6 @@ async def _fetch_page_html(content_url: str, content_id: str, use_cookies: bool 
         return status, final_url, body
 
 async def _download_fb_photo(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str) -> str:
-    """Download 1 foto + fix ekstensi. Return path final. Raise jika gagal."""
     _dbg("photo download start | out=%s url=%s", out_path, _clip(media_url, 200))
     headers = dict(WEB_HEADERS)
     async with session.get(media_url, headers=headers, timeout=aiohttp.ClientTimeout(total=600), allow_redirects=True) as r:
@@ -827,7 +797,6 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     content_id=_extract_content_id(content_url)
     if not content_id:
         _dbg("no content_id extracted from url, proceeding to fetch page directly | url=%s", content_url)
-    # Fetch cookieless dulu; cookies.txt hanya last resort.
     _dbg("before _fetch_page_html (cookieless) | content_url=%s content_id=%s",content_url,content_id)
     status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=False)
     if status!=200 or not body:
@@ -837,19 +806,15 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
         _write_debug_file("facebook_http_error", body or b"")
         raise RuntimeError(f"failed to get page: HTTP {status}")
     body_text=body.decode("utf-8",errors="ignore")
-    # Post foto/teks tidak memuat sinyal video -> jalur scraper foto.
     if not VIDEO_SIGNAL_RE.search(body_text):
         return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id)
-    # Jalur video (parse dari body yg sudah di-fetch, tanpa fetch ulang).
     _dbg("video signal found, parse video from fetched body")
-    # Parse video dari body
     video_data=None
     try:
         video_data=_parse_video_from_body(body,content_id)
     except RuntimeError as e:
         _dbg("parse video from cookieless body failed | err=%r",e)
     if not video_data or not (video_data.get("hd_url") or video_data.get("sd_url")):
-        # Last resort: fetch ulang dgn cookies lalu parse.
         _dbg("no video urls in cookieless body, retry with cookies")
         video_data=await _get_video_data(content_url,content_id)
     _dbg("video data parsed | hd=%s sd=%s",bool(video_data.get("hd_url")),bool(video_data.get("sd_url")))
@@ -858,14 +823,10 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     if not video_url:
         _dbg("video url empty after parse | content_url=%s content_id=%s",content_url,content_id)
         raise RuntimeError("no video formats found")
-    # Cek duration dari URL (animated thumbnail punya duration_s=0)
     duration = _extract_video_duration_from_url(video_url)
     _dbg("video duration check | duration_s=%s", duration)
-    # Jika duration = 0, kemungkinan bukan video asli (animated thumbnail/preview), fallback ke photo scraper.
-    # duration=-1 artinya tidak ada info efg -> perlakukan sebagai video normal (jalur lama).
     if duration == 0:
         _dbg("video duration invalid or zero, treating as photo post | duration=%s", duration)
-        # Cek apakah ada foto di post
         mixed_media = _extract_mixed_media(body_text)
         has_photos = bool(mixed_media.get("photos"))
         og_image = _extract_og_image(body_text)
@@ -875,7 +836,6 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
             return await _scrape_photo_post(body, body_text, bot, chat_id, status_msg_id)
         raise RuntimeError("video has invalid duration and no photo found in post")
     
-    # Cek mixed content: video + foto dalam all_subattachments
     mixed_media = _extract_mixed_media(body_text)
     has_photos = bool(mixed_media.get("photos"))
     _dbg("mixed media check | videos=%s photos=%s", len(mixed_media.get("videos", [])), len(mixed_media.get("photos", [])))
@@ -891,7 +851,6 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
         raise RuntimeError("Facebook download output empty")
     _dbg("facebook scrape download video done | out=%s",out_path)
     
-    # Jika mixed content: download foto juga dan return sebagai album
     if has_photos:
         _dbg("mixed content: downloading photos | count=%s", len(mixed_media["photos"]))
         photo_paths = []
@@ -908,14 +867,12 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
                 photo_paths.append(photo_final)
         except Exception as e:
             _dbg("mixed content photo download failed | err=%r", e)
-            # Cleanup downloaded photos
             for p in photo_paths:
                 try:
                     if p and os.path.exists(p):
                         os.remove(p)
                 except Exception:
                     pass
-            # Cleanup video
             try:
                 if os.path.exists(out_path):
                     os.remove(out_path)
@@ -924,28 +881,19 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
             raise
         
         _dbg("mixed content download done | video=%s photos=%s", out_path, len(photo_paths))
-        # Return album: video pertama, lalu foto
         items = [{"path": out_path, "type": "video"}]
         items.extend([{"path": p, "type": "photo"} for p in photo_paths])
         return {"items": items, "title": title, "source": "Facebook"}
     
-    # Video saja (tidak ada foto)
     return {"path":out_path,"title":title,"source":"Facebook"}
 
 async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id):
-    """Scrape post foto/teks cookieless. Return format album service.py.
-
-    - 1 foto  -> {"path","title","source"} (caption nempel di foto)
-    - N foto  -> {"items","title","source"} (caption di item pertama)
-    - 0 foto  -> {"handled":True} setelah kirim teks post (fallback yt-dlp tidak perlu)
-    """
     photo_urls=_collect_photo_urls(body_text)
     caption=_extract_post_caption(body_text)
     if not caption:
         caption=_extract_title_from_html(body,"Facebook Photo")
     _dbg("photo post parsed | photos=%s caption_len=%s",len(photo_urls),len(caption or ""))
     if not photo_urls:
-        # Post teks saja: kirim sebagai pesan teks agar user tetap dapat isi.
         if caption and bot is not None and chat_id is not None:
             safe_caption=(caption or "").strip()
             if len(safe_caption)>3500:

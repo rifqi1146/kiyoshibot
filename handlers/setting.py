@@ -15,7 +15,6 @@ from utils.text import sanitize_ai_output
 
 
 async def _send_settings(message, text_md: str, keyboard):
-    """Kirim settings: coba rich message dulu (DM & supergroup), fallback HTML."""
     try:
         return await send_rich_message(
             message.get_bot(), message.chat_id, text_md,
@@ -30,7 +29,6 @@ async def _send_settings(message, text_md: str, keyboard):
 
 
 async def _edit_settings(message, text_md: str, keyboard):
-    """Edit settings: pertahankan rich message, fallback HTML kalau tak didukung."""
     if is_rich_message(message):
         try:
             return await edit_rich_message(

@@ -1,4 +1,3 @@
-"""Worker pembuatan dan pengiriman PDF chapter manga ke Telegram."""
 import asyncio
 import logging
 from io import BytesIO
@@ -106,9 +105,6 @@ async def _send_pdf_task(chat_id, message_thread_id, context, title, urls, refer
     pdf_io.name = f"{safe_title}.pdf"
 
     try:
-        # PDF final WAJIB membalas ke pesan command user (reply_to_message_id),
-        # bukan dikirim polos. Pesan status dihapus supaya tidak menyisakan
-        # pesan ganda di chat.
         await context.bot.send_document(
             chat_id=chat_id,
             message_thread_id=message_thread_id,

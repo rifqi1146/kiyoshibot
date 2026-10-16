@@ -1,8 +1,6 @@
-"""In-memory cache for MovieBox Explorer sessions and metadata."""
 import time
 from .constants import CACHE_TTL
 
-# session_id -> { title, query, results, page, user_id, chat_id, ts, details }
 MOVIEBOX_CACHE: dict[str, dict] = {}
 TRENDING_CACHE: dict = {"ts": 0, "list": []}
 HOME_CACHE: dict = {"ts": 0, "by_title": {}}

@@ -1,12 +1,3 @@
-"""Command handler `/anichin` — explorer Donghua (browse, genre, A-Z, jadwal, search).
-
-FLOW COMMAND
-------------
-1. Gate premium **tanpa NSFW** via `_premium_link_allowed(BASE_URL, ...)`
-   (`anichin.moe` terdaftar di `PREMIUM_NO_NSFW_DOMAINS`).
-2. Tanpa argumen -> menu Explorer (Rich Message).
-3. Dengan argumen -> search `/?s=<q>` (maks `MAX_RESULTS`).
-"""
 import asyncio
 import html
 import logging

@@ -1,20 +1,3 @@
-"""Extractor metadata TikTok (tiktok.com) — parsing HTML + fetch media URL.
-
-FLOW EXTRACTOR
---------------
-1. `is_tiktok(url)` / `_is_short_tiktok_url(url)` -> deteksi host TikTok/Douyin
-   dan URL pendek (vm./vt.).
-2. `_extract_aweme_id(url)` -> id video; `_resolve_tiktok_url` -> follow redirect
-   URL pendek + merge cookie respons.
-3. `_extract_item_struct` -> coba parser berurutan: __UNIVERSAL_DATA__,
-   SIGI_STATE, __NEXT_DATA__; kalau gagal cek halaman aneh (captcha/login/SSR).
-4. `_parse_direct_media(item)` -> dict {kind: video|album, video_urls, images,
-   music_urls, duration, width, height}. Urutan URL via `_prioritize_video_urls`.
-5. `_fetch_tiktok_govd_fast` -> fetch ringan 1 request (jalur cepat).
-   `_fetch_tiktok_direct` -> retry 5x aiohttp + fallback Scrapling.
-   `_fetch_tiktok_metadata` -> fast dulu, kalau gagal full-scraping.
-6. PoW challenge TikTok diselesaikan oleh `utils._solve_tt_challenge`.
-"""
 import re
 import json
 import time

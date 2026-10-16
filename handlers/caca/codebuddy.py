@@ -1,29 +1,3 @@
-"""CodeBuddy intl provider untuk Caca — OpenAI-compatible, stream-only.
-
-Gateway `https://www.codebuddy.ai/v2/chat/completions` punya tiga aturan kaku
-yang harus dipenuhi setiap request (kalau tidak, gateway balas 11101/11128):
-
-  1. Request WAJIB `stream: true`. Non-stream ditolak HTTP 400
-     ("Non-stream chat request is currently not supported").
-  2. Pesan pertama WAJIB `role: system` (else 11128 "Illegal API invocation").
-  3. `content` milik user WAJIB typed blocks `[{"type":"text","text":...}]`,
-     bukan string polos (else 11101 "invalid request").
-
-Auth: bearer token. Dua mode kredensial:
-
-  * refresh token (JWT `typ: Offline`) — ditukar ke access token on-demand via
-    `POST /v2/plugin/auth/token/refresh` dengan header `X-Refresh-Token`.
-    Refresh token dirotasi server, jadi hasilnya di-cache per proses.
-  * access token statis (JWT `typ: Bearer`) — dipakai apa adanya, tidak bisa
-    di-refresh, cocok sebagai fallback.
-
-Thinking dimatikan dengan `reasoning_effort: "none"` — terverifikasi live:
-mengirim nilai itu balas 200 dengan NOL delta `reasoning_content`. Nilai "off"
-ditolak 400, dan menghilangkan field membuat model bisa menyalakan thinking.
-
-Kredensial dibaca dari environment (JANGAN hardcode di file ini):
-  CODEBUDDY_REFRESH_TOKEN, CODEBUDDY_ACCESS_TOKEN, CODEBUDDY_MODEL
-"""
 
 from __future__ import annotations
 
@@ -70,7 +44,7 @@ CHAT_HEADERS = {
 
 
 class CodeBuddyError(RuntimeError):
-    """Gateway balas non-2xx atau payload tak terpakai."""
+    pass
 
 
 def _env(name: str) -> str:
@@ -78,7 +52,6 @@ def _env(name: str) -> str:
 
 
 def configured() -> bool:
-    """True kalau minimal satu kredensial CodeBuddy tersedia di environment."""
     return bool(_env("CODEBUDDY_REFRESH_TOKEN") or _env("CODEBUDDY_ACCESS_TOKEN"))
 
 
@@ -87,16 +60,11 @@ def _model() -> str:
 
 
 def reset_token_cache() -> None:
-    """Kosongkan cache token (dipakai saat owner ganti provider/kredensial)."""
     _TOKEN_CACHE["access_token"] = None
     _TOKEN_CACHE["expires_at"] = 0.0
     _TOKEN_CACHE["refresh_token"] = None
 
 
-# ── token cache ──────────────────────────────────────────────────────────────
-# Refresh token dirotasi server tiap kali dipakai; simpan hasil terbaru per
-# proses supaya tidak menukar ulang di setiap request (dan supaya token yang
-# sudah diputar tidak hilang).
 _TOKEN_LOCK = asyncio.Lock()
 _TOKEN_CACHE: dict[str, Any] = {"access_token": None, "expires_at": 0.0, "refresh_token": None}
 
@@ -135,7 +103,6 @@ async def _refresh_access_token(session: aiohttp.ClientSession, refresh_token: s
 
 
 async def _bearer_token(session: aiohttp.ClientSession, timeout: int) -> str:
-    """Ambil bearer token yang valid: refresh kalau ada, else access token statis."""
     static = _env("CODEBUDDY_ACCESS_TOKEN")
     refresh = _seed_refresh_token()
 
@@ -158,12 +125,6 @@ async def _bearer_token(session: aiohttp.ClientSession, timeout: int) -> str:
 
 
 def _normalise_messages(messages: list[dict]) -> list[dict]:
-    """Terapkan tiga aturan bentuk pesan gateway.
-
-    - Sisipkan system prompt di depan kalau belum ada.
-    - Ubah `content` string milik user jadi typed blocks.
-    - Pertahankan system/developer dari pemanggil apa adanya.
-    """
     has_system = any(
         isinstance(m, dict) and m.get("role") in ("system", "developer")
         for m in messages
@@ -187,10 +148,8 @@ def _normalise_messages(messages: list[dict]) -> list[dict]:
 def _build_body(messages: list[dict], max_tokens: int, temperature: float, top_p: float) -> dict:
     body: dict[str, Any] = {
         "model": _model(),
-        "stream": True,  # dipaksa: gateway menolak non-stream
+        "stream": True,
         "messages": _normalise_messages(messages),
-        # Matikan thinking. "none" balas 200 tanpa reasoning_content;
-        # "off" ditolak 400, dan menghilangkan field bisa menyalakan thinking.
         "reasoning_effort": "none",
     }
     if max_tokens and max_tokens > 0:
@@ -208,7 +167,6 @@ async def _iter_sse(
     timeout: int,
     usage_out: dict | None = None,
 ) -> Iterable[str]:
-    """Stream delta `content` dari gateway. `reasoning_content` dibuang."""
     token = await _bearer_token(session, timeout)
     headers = dict(CHAT_HEADERS)
     headers["Authorization"] = f"Bearer {token}"
@@ -246,7 +204,6 @@ async def _iter_sse(
                 if not choices:
                     continue
                 delta = choices[0].get("delta") or {}
-                # `reasoning_content` sengaja diabaikan (thinking sudah dimatikan).
                 piece = delta.get("content")
                 if piece:
                     yield piece
@@ -261,7 +218,6 @@ async def chat_stream(
     timeout: int = 60,
     usage_out: dict | None = None,
 ):
-    """Async generator delta teks Caca lewat CodeBuddy intl."""
     body = _build_body(messages, max_tokens, temperature, top_p)
     async for piece in _iter_sse(session, body, timeout, usage_out):
         yield piece
@@ -275,7 +231,6 @@ async def chat(
     top_p: float = 0.95,
     timeout: int = 60,
 ) -> tuple[str, dict]:
-    """Versi non-streaming: kumpulkan seluruh delta jadi satu string."""
     usage: dict = {}
     parts: list[str] = []
     async for piece in chat_stream(

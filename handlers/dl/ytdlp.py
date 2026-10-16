@@ -36,16 +36,6 @@ YT_SAFE_EXTRACTOR_ARGS = [
 
 
 def _spawn_sync(cmd: list[str], **kwargs):
-    """`subprocess.Popen` sinkron — WAJIB dipanggil via `asyncio.to_thread`.
-
-    PENTING (uvloop SIGSEGV): JANGAN pakai `asyncio.create_subprocess_exec`!
-    `uvloop.create_subprocess_exec` memakai `fork()` lewat libuv; di proses
-    Python multi-thread (curl_cffi / patchright / sqlite) `fork()` bisa
-    menabrak state libc dan anak proses mati `SIGSEGV` (`exit=-11`) tepat saat
-    `execve` — terkonfirmasi di dmesg (`python[..]: segfault .. in libc.so.6`).
-    `subprocess.Popen` memakai `posix_spawnp` (CLONE_VM | CLONE_VFORK) yang
-    100% aman terhadap kondisi itu.
-    """
     return subprocess.Popen(cmd, **kwargs)
 
 def _clean_percent(value: str) -> float:
@@ -236,8 +226,6 @@ async def _kill_proc(proc, label: str, job_id: str):
         return
     try:
         proc.kill()
-        # `proc` bisa `subprocess.Popen` sinkron (posix_spawn) — `wait()` sinkron
-        # harus dijalankan di thread supaya tidak memblokir event loop.
         await asyncio.to_thread(proc.wait)
         log.warning("%s process killed | job_id=%s", label, job_id)
     except ProcessLookupError:
@@ -272,8 +260,6 @@ async def gallerydl_fallback(url: str, job_id: str, bot, chat_id, status_msg_id,
         ])
         log.info("Running gallery-dl fallback | url=%s job_id=%s", url, job_id)
         log.debug("gallery-dl command: %s", " ".join(cmd))
-        # `subprocess.Popen` via thread (posix_spawnp) — lihat catatan `_spawn_sync`:
-        # `create_subprocess_exec` di uvloop rawan SIGSEGV (-11).
         proc = await asyncio.to_thread(
             _spawn_sync, cmd, cwd=job_dir,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -434,7 +420,6 @@ def _list_job_outputs(job_id: str) -> list[str]:
         return []
 
 def _find_job_thumbnail(job_id: str, exclude: str = "") -> str | None:
-    """Temukan file cover thumbnail (.jpg/.png/.webp) yang dihasilkan job ini."""
     try:
         cand = []
         for f in os.listdir(TMP_DIR):
@@ -461,7 +446,6 @@ def _find_job_thumbnail(job_id: str, exclude: str = "") -> str | None:
 
 
 def _extract_audio_meta(url: str, raw_title: str) -> tuple[str, str]:
-    """Ekstrak (artist, clean_title) dari pola judul seperti 'Artist - Title'."""
     raw = (raw_title or "").strip()
     for sep in (" - ", " – ", " — ", " | "):
         if sep in raw:
@@ -489,9 +473,6 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         nonlocal update_interval
         log.info("Running yt-dlp | url=%s job_id=%s fmt_key=%s", url, job_id, fmt_key)
         log.debug("yt-dlp command | %s", " ".join(cmd))
-        # `subprocess.Popen` via thread (posix_spawnp) — lihat catatan `_spawn_sync`:
-        # `create_subprocess_exec` di uvloop rawan SIGSEGV (-11) saat proses
-        # punya C-thread aktif (curl_cffi/patchright/sqlite).
         proc = await asyncio.to_thread(
             _spawn_sync, cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
@@ -580,7 +561,6 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
             "--extract-audio",
             "--audio-format", "flac",
             "--audio-quality", "0",
-            # Simpan cover art + metadata supaya bisa di-embed ke ID3 (mirip Spotify).
             "--write-thumbnail",
             "--convert-thumbnails", "jpg",
             "--newline",
@@ -599,14 +579,9 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         fmt = _build_ytdlp_format(format_id, has_audio)
         log.info("yt-dlp selected format | url=%s format_id=%s has_audio=%s fmt=%s", url, format_id, has_audio, fmt)
 
-        # Fast path: resolution picker already ran yt-dlp -J and knows total_size.
-        # Reuse it instead of spawning yt-dlp a second time (measured ~5.8s on YT).
         est_size = 0
         is_shorts = is_youtube_shorts_url(url)
         if is_shorts:
-            # Shorts are tiny (<~60MB); probing size would spawn yt-dlp -J again
-            # and cost ~5s for a check that cannot realistically fail. yt-dlp
-            # --max-filesize still guards the hard 2GB limit.
             log.info("yt-dlp size probe skipped for YouTube Shorts | url=%s", url)
         elif known_size and known_size > 0:
             est_size = int(known_size)

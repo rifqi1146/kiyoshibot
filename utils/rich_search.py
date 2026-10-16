@@ -1,12 +1,3 @@
-"""Helper Rich Message (Bot API 10.3) untuk halaman hasil pencarian.
-
-Dipakai bersama oleh `/becekku`, `/lendirqu`, `/punish`, `/simontok`, dan
-`/nekopoi` supaya tampilan hasil search seragam: heading besar, tabel
-`#`/`Title`/`Info`, dan footer `aside`.
-
-Semua fungsi WAJIB punya fallback ke HTML biasa (`parse_mode="HTML"`) supaya
-tetap jalan di server Bot API lama / klien tanpa dukungan rich message.
-"""
 import html
 import logging
 import math
@@ -33,19 +24,6 @@ def build_search_content(
     back_callback: str | None = None,
     back_label: str = "Back",
 ) -> tuple[str, str, InlineKeyboardMarkup | None]:
-    """Bangun `(rich_html, plain_html, markup)` untuk satu halaman hasil search.
-
-    `data` = `{ query, results: [{title, url, meta?}], page }`.
-    `meta` opsional; kalau kosong kolom Info diisi `-`.
-
-    `heading` menimpa judul default `🔍 <label> Search` (dipakai mode browse
-    non-search, mis. "Latest Episodes" / listing genre).
-    `number_action` / `close_action` mengatur aksi tombol angka & tombol tengah
-    (default `dl` / `close`; mode browse Nekopoi memakai `view`).
-    `back_callback` (opsional) menambahkan tombol kembali sebelum tombol tengah —
-    dipakai listing browse supaya user bisa balik ke daftar tag/kategori asal,
-    bukan langsung lompat ke menu. `back_label` = teks tombolnya.
-    """
     page = int(data.get("page") or 0)
     results = data.get("results") or []
     total = len(results)
@@ -151,7 +129,6 @@ async def send_search_rich(
     reply_to_message_id: int | None = None,
     message_thread_id: int | None = None,
 ):
-    """Kirim halaman search sebagai rich message; fallback ke HTML biasa."""
     payload: dict = {"chat_id": chat_id, "rich_message": {"html": rich_html}}
     if reply_to_message_id:
         payload["reply_parameters"] = {"message_id": reply_to_message_id}
@@ -186,7 +163,6 @@ async def edit_search_rich(
     plain_html: str,
     markup: InlineKeyboardMarkup | None,
 ):
-    """Edit pesan search jadi rich message; fallback ke HTML biasa."""
     payload: dict = {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -201,9 +177,6 @@ async def edit_search_rich(
             warnings.simplefilter("ignore")
             return await bot.do_api_request("editMessageText", payload)
     except Exception as e:
-        # "message is not modified" = pesan SUDAH benar; jangan jatuh ke fallback
-        # plain HTML (itu bikin rich message hilang saat user menekan tombol yang
-        # menghasilkan layar identik, mis. Menu dua kali / back ke halaman sama).
         if is_message_not_modified(e):
             log.debug("editMessageText (search) not modified, no-op")
             return None

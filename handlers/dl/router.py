@@ -40,21 +40,15 @@ TIKTOK_LOCK=asyncio.Semaphore(6)
 YTDLP_SEM=asyncio.Semaphore(8)
 _MAX_FLOOD_RETRY=2
 
-# ── Admission control (perbaikan unbounded create_task) ─────────────────────
-# Batasi TOTAL download worker yang aktif bersamaan. Task dibuat hanya setelah
-# slot global bebas, sehingga banjir pesan tidak men-spawn ratusan coroutine
-# yang semuanya parkir di semaphore dalam + memegang file sementara.
 _DL_GLOBAL_SEM = asyncio.Semaphore(int(os.getenv("DL_GLOBAL_CONCURRENCY", "6")))
 
-# Batasi download yang SEDANG BERJALAN per user (di luar cooldown non-premium).
-# Mencegah 1 user menduduki semua slot global.
 _DL_PER_USER = int(os.getenv("DL_PER_USER_CONCURRENCY", "2"))
 _USER_DL_SEM: "dict[int, asyncio.Semaphore]" = {}
 
 def _get_user_sem(user_id: int) -> asyncio.Semaphore:
     sem = _USER_DL_SEM.get(user_id)
     if sem is None:
-        if len(_USER_DL_SEM) >= 2000:  # batasi ukuran map (LRU kasar: buang terlama)
+        if len(_USER_DL_SEM) >= 2000:
             try:
                 oldest = next(iter(_USER_DL_SEM))
                 _USER_DL_SEM.pop(oldest, None)
@@ -79,22 +73,12 @@ def _cleanup_limit_cache():
         DL_LIMIT_CACHE.pop(u, None)
 
 def prune_runtime_caches():
-    """Bersihkan cache runtime router. Dipanggil tiap titik masuk download.
-
-    Membuat pembersihan TIDAK bergantung pada request non-premium (dulu
-    `_cleanup_dl_cache` ada di belakang short-circuit premium, jadi entri basi
-    bisa menahan map `res_map` dsb. selama tak ada user non-premium).
-    Cache edit status di objek bot membersihkan dirinya sendiri saat menulis
-    (lihat `progress.prune_edit_cache`), jadi tidak diiterasi di sini.
-    """
     _cleanup_dl_cache()
     _cleanup_limit_cache()
 
 def _check_and_consume_limit(user_id: int, count: int = 1) -> int:
     now = time.time()
 
-    # Cleanup cache selalu jalan (premium maupun bukan) — dulu di belakang
-    # short-circuit premium sehingga tidak pernah dieksekusi oleh user premium.
     prune_runtime_caches()
 
     if is_premium_user(user_id):
@@ -102,7 +86,6 @@ def _check_and_consume_limit(user_id: int, count: int = 1) -> int:
 
     history = DL_LIMIT_CACHE.get(user_id, [])
     history = [ts for ts in history if now - ts < 60]
-    # Batch dihitung per-URL (count), bukan 1 token per pesan.
     if len(history) + count > 3:
         DL_LIMIT_CACHE[user_id] = history
         return max(1, 60 - int(now - history[0]))
@@ -123,9 +106,8 @@ def _host_match(host:str,domain:str)->bool:
     domain=(domain or "").lower()
     if not host or not domain:
         return False
-    # Wildcard TLD: "lendirqu.*" cocok untuk lendirqu.pics, lendirqu.hair, dst.
     if domain.endswith(".*"):
-        base = domain[:-1]  # "lendirqu."
+        base = domain[:-1]
         clean = host.split(":", 1)[0]
         if clean.startswith("www."):
             clean = clean[4:]
@@ -135,13 +117,6 @@ def _host_match(host:str,domain:str)->bool:
     return host==domain or host.endswith("."+domain)
 
 def _premium_link_allowed(url:str,user_id:int,chat_id:int,chat_type:str)->tuple[bool, str]:
-    """Cek apakah link dari domain premium-only boleh diunduh.
-
-    1. Domain premium non-NSFW: user HARUS premium, tanpa syarat NSFW/grup.
-    2. Domain premium NSFW: user HARUS premium DAN tempat aman (private chat / NSFW enabled).
-
-    Returns: (is_allowed, error_reason_type)
-    """
     if is_premium_required(url, PREMIUM_NO_NSFW_DOMAINS):
         if not is_premium_user(user_id):
             return False, "not_premium"
@@ -184,7 +159,6 @@ def _premium_link_block_text(kind:str, reason:str, url:str="")->str:
     )
 
 def _adult_block_text(reason:str)->str:
-    """Pesan untuk konten dewasa yang terdeteksi di media sosial (X/Reddit)."""
     head="🔞 <b>Adult content detected</b>\n\n"
     if reason==ADULT_BLOCK_NOT_PREMIUM:
         return head + "This post is marked as <b>sensitive / adult</b> by the platform.\n\nDownloading it is restricted to <b>Premium Users</b> only."
@@ -207,11 +181,6 @@ def _format_id_for_engine(engine:str|None,height:int,picked:dict)->str:
     return str(picked.get("format_id") or "")
 
 def _engine_for_picked(engine:str|None,picked:dict)->str|None:
-    """Engine `*_server` kalau entri picker berasal dari server streaming.
-
-    Entri server (mis. OK.ru) tidak punya mirror shortener; worker harus
-    langsung ke jalur server, bukan rantai `mirrored.to`.
-    """
     if picked and picked.get("server"):
         return f"{engine or 'anichin'}_server"
     return engine
@@ -351,7 +320,6 @@ async def _start_dl_task(context,message,data,fmt_key,format_id=None,has_audio=F
     status_msg_id = message.message_id if message else None
 
     async def _spawn():
-        # Admission control: tunggu slot global + slot user sebelum task di-spawn.
         uid = data.get("user")
         async with _DL_GLOBAL_SEM:
             sem = _get_user_sem(int(uid)) if uid else None
@@ -408,14 +376,10 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     elapsed=time.monotonic()-t0
     if not res_list:
         DL_CACHE.pop(dl_id,None)
-        # Log WAJIB walau gagal: tanpa ini user cuma melihat "No valid
-        # resolutions available." tanpa jejak apa pun di terminal.
         log.warning(
             "Resolution picker empty | url=%s engine=%s elapsed=%.2fs reason=%s",
             url,engine or "(auto)",elapsed,reason or "(no reason returned)",
         )
-        # Tampilkan alasan asli kalau ada (mis. post Nekopoi tanpa jalur unduh
-        # yang didukung), supaya user tahu KENAPA, bukan cuma "tidak ada".
         if reason:
             text=f"Unable to get resolutions.\n\n<code>{html.escape(str(reason))}</code>"
         else:
@@ -446,9 +410,6 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     settings=get_user_settings(data["user"])
     preferred_height = int(settings.get("youtube_resolution") or 0)
     
-    # Settings "ask" (preferred_height=0) harus tetap memunculkan picker resolusi,
-    # termasuk saat silent mode. Penghapusan pesan picker setelah user memilih
-    # dilakukan di dlres_callback lewat flag DL_CACHE["silent_picker"].
     silent_mode = bool(settings.get("silent_download", 0))
 
     if preferred_height > 720 and not is_premium_user(data["user"]):
@@ -474,9 +435,6 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
     DL_CACHE[dl_id]["res_map"]=res_map
     if engine:
         DL_CACHE[dl_id]["engine"]=engine
-    # Silent mode: pesan picker ini harus hilang begitu user memilih resolusi.
-    # Flag dititipkan di DL_CACHE supaya dlres_callback tahu harus menghapus,
-    # tanpa mengubah flow non-silent (picker tetap tampil & pesan tetap ada).
     DL_CACHE[dl_id]["silent_picker"]=silent_mode
         
     if message:
@@ -490,8 +448,6 @@ async def _show_resolution_picker(context,message,dl_id:str,data:dict,engine:str
 
 async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id:int,status_ready:bool=False):
     url=data["url"]
-    # Guard: kalau dl_id hilang dari DL_CACHE (mis. race dengan /reload atau
-    # cache dibersihkan), isi ulang dari `data` supaya tidak KeyError di bawah.
     if dl_id not in DL_CACHE:
         log.warning("DL_CACHE miss in _process_choice, re-seeding | dl_id=%s", dl_id)
         DL_CACHE[dl_id]=dict(data)
@@ -506,9 +462,6 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
                 status_ready=True
             return await _show_resolution_picker(context,message,dl_id,data,engine="ytdlp",status_ready=status_ready)
         if supports_nekopoi_resolution(url):
-            # Nekopoi: HLS mandiri. Status non-silent diedit
-            # dulu ke "Scraping..." sebelum jadi picker; silent (message=None)
-            # -> picker dikirim sebagai pesan baru di _show_resolution_picker.
             log.info(
                 "Resolution probe start | engine=nekopoi url=%s since_msg=%.2fs",
                 url, since_msg,
@@ -617,7 +570,6 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if msg.text.strip().startswith("/"):
         return
 
-    # Batch: 2-5 link didukung dalam satu pesan -> kirim sebagai 1 album.
     batch_urls=[u for u in extract_all_urls(msg.text,limit=5) if is_supported_platform(u)]
     if len(batch_urls)>1:
         settings=get_user_settings(update.effective_user.id)
@@ -625,7 +577,6 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
             groups=load_auto_dl()
             if chat.id not in groups and not bool(settings.get("force_autodl")):
                 return
-        # Link yang dikirim tanpa command -> jangan broadcast gate join ke grup.
         _silent = chat.type in ("group","supergroup")
         if not await require_join_or_block(update,context,silent=_silent):
             return
@@ -638,7 +589,6 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if wait_time>0:
             return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
         auto_choice=str(settings.get("autodl_format") or "ask").lower()
-        # Batch butuh format tetap; "ask" (butuh picker) tidak berlaku di sini.
         fmt_key="mp3" if auto_choice=="mp3" else "video"
         silent_mode=bool(settings.get("silent_download")) and fmt_key=="video"
         status_msg=None
@@ -680,7 +630,6 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         groups=load_auto_dl()
         if chat.id not in groups and not bool(settings.get("force_autodl")):
             return
-    # Link yang dikirim tanpa command -> jangan broadcast gate join ke grup.
     _silent = chat.type in ("group","supergroup")
     if not await require_join_or_block(update,context,silent=_silent):
         return
@@ -707,9 +656,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
     
-    # +++ FIX SILENT MODE YOUTUBE: Hapus "and not is_yt" +++
     silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
-    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++
     
     if auto_choice in ("video","mp3"):
         if silent_mode:
@@ -737,7 +684,6 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
     register_message_owner(msg.chat.id, sent.message_id, user_id)
-
 
 
 async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
@@ -798,8 +744,6 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
     )
     
 async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0,chat_type:str="",msg_date:float=0.0):
-    # Gate terakhir: jangan pernah unduh domain premium-only tanpa izin,
-    # walau request datang dari worker/cache lama.
     if user_id is not None:
         if not chat_type:
             try:
@@ -907,8 +851,6 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
                 await _safe_delete_message(bot,chat_id,status_msg_id,"download status")
             return
         prepare_started=time.monotonic()
-        # Konten dewasa dari platform media sosial (X/Reddit) dispoiler di grup
-        # bila spoiler aktif — flag `sensitive` dititipkan hasil parser.
         adult_social = bool(isinstance(path,dict) and path.get("sensitive"))
         path=await prepare_download_result_for_send(path,fmt_key=fmt_key)
         stage("processing",prepare_started,job=raw_url)
@@ -982,12 +924,10 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
 
 
 async def _download_one_for_batch(url:str,fmt_key:str,bot,chat_id,status_msg_id,message_thread_id=None,user_id:int|None=None,chat_type:str="private"):
-    """Unduh satu URL untuk keperluan batch. Return hasil siap kirim."""
     if is_tiktok(url):
         async with TIKTOK_LOCK:
             res=await tiktok_download(url,bot,chat_id,None,fmt_key,metadata_ready=True)
             if isinstance(res,dict) and res.get("choice_required")=="tiktok_slideshow":
-                # Untuk batch, paksa slideshow video agar tidak menahan antrean picker.
                 media=res.get("media") or {}
                 video_url=(media.get("video_url") or media.get("music_url") or "")
                 if not video_url:
@@ -1096,7 +1036,6 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             "By using this downloader, you are responsible for the content you download and how you use it."
         )
 
-    # Cek apakah ada multiple URLs di args atau body pesan
     all_batch_urls = [u for u in extract_all_urls(" ".join(context.args), limit=5) if is_supported_platform(u)]
     user_id = update.effective_user.id
     if len(all_batch_urls) > 1:
@@ -1317,8 +1256,6 @@ async def dlres_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         time.time() - float(data.get("msg_date") or data.get("ts") or time.time()),
     )
 
-    # Silent mode: hapus pesan picker begitu resolusi dipilih, lalu teruskan
-    # message=None agar status/progress berikutnya tidak menempel di pesan itu.
     if silent_picker:
         await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"resolution picker")
         return await _start_dl_task(

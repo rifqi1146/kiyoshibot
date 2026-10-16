@@ -1,11 +1,3 @@
-"""Maid-Manga scraper, detail view, dan callback handler.
-
-Menangani fitur Maid-Manga (`maid.my.id`):
-- Detail series & daftar chapter -> dibangun `fetch_detail_view`, dikirim sebagai
-  foto cover oleh layer search (`search.py`).
-- Reader chapter & navigasi halaman (`maidread_`, `maidnav_`)
-- Unduh PDF (`pdfmaid_`)
-"""
 import asyncio
 import hashlib
 import logging
@@ -23,7 +15,6 @@ log = logging.getLogger(__name__)
 
 
 async def fetch_detail_view(path: str, short_id: str, offset: int = 0, context=None):
-    """-> (rich_html, plain_html, keyboard, cover_url) untuk detail series."""
     if not path:
         return None, None, None, None
     html_doc = await fetch_html(f"{MAID_URL}{path}")
@@ -83,7 +74,6 @@ async def fetch_detail_view(path: str, short_id: str, offset: int = 0, context=N
 
 
 async def _parse_maid_chapter(url_path: str, context):
-    """Ambil daftar gambar halaman dari halaman chapter Maid-Manga."""
     target_url = f"{MAID_URL}{url_path}" if url_path.startswith("/") else f"{MAID_URL}/{url_path}"
     html_doc = await fetch_html(target_url)
     if not html_doc:
@@ -154,7 +144,6 @@ async def handle_maid_callback(query, context, data: str):
         keyboard = InlineKeyboardMarkup([nav, ch_nav])
         caption = f"📖 <b>{_escape(manga_title)}</b> | Ch:{_escape(ch_num)}"
         reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
-        # Pesan detail hilang, reader dikirim sebagai reply ke pesan command user.
         try:
             await query.message.delete()
         except Exception:
@@ -212,7 +201,6 @@ async def handle_maid_callback(query, context, data: str):
             )
         title = f"{manga_title} - Ch {ch_num}"
         reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
-        # Pesan detail hilang, PDF dikirim sebagai reply ke pesan command user.
         try:
             await query.message.delete()
         except Exception:

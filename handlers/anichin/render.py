@@ -1,25 +1,3 @@
-"""Renderer Rich Message (Bot API 10.3) + plain HTML fallback untuk `/anichin`.
-
-Setiap builder mengembalikan tuple `(rich_html, plain_html, markup)`.
-
-Grammar callback `ac:`:
-- `ac:menu:0:0`             -> menu utama
-- `ac:prompt:0:0`           -> layar instruksi search
-- `ac:close:0:0`            -> hapus pesan
-- `ac:list:<key>:<page>`    -> listing statis (`list`/`ongoing`/`completed`/`upcoming`/`drop`)
-- `ac:genres:<page>:0`      -> picker genre
-- `ac:genre:<slug>:<page>`  -> listing genre
-- `ac:az:<page>:0`          -> picker huruf A-Z
-- `ac:azl:<letter>:<page>`  -> listing satu huruf
-- `ac:schedule:<day>:0`     -> jadwal per hari (index hari)
-- `ac:nav:<sid>:<page>`     -> pindah halaman listing
-- `ac:back:<sid>:0`         -> balik ke listing
-- `ac:view:<sid>:<idx>`     -> detail series / episode picker
-- `ac:eps:<sid>:<idx>:<page>` -> halaman episode picker
-- `ac:pick:<sid>:<idx>:<ep>`  -> pilih episode -> format picker
-- `ac:dl:<sid>:<idx>:<ep>:<fmt>` -> unduh episode
-- `ac:epdl:<sid>:<idx>:<fmt>`    -> unduh post episode langsung
-"""
 import html
 import math
 
@@ -37,9 +15,6 @@ from .constants import (
 )
 from .state import AZ_CACHE, GENRES_CACHE, SCHEDULE_CACHE
 
-# Label metadata Anichin memakai bahasa Indonesia (`Tipe`, `Negara`, `Durasi`,
-# `Tanggal rilis`, `Subber`). Diterjemahkan ke Inggris supaya konsisten dengan
-# kebijakan UI bot (semua UI English, minim emote).
 META_LABEL_MAP = {
     "Status": "Status",
     "Type": "Type",
@@ -53,7 +28,6 @@ META_LABEL_MAP = {
     "Tanggal rilis": "Released",
     "Subber": "Fansub",
 }
-# Urutan tampilan metadata di kartu detail series.
 META_ORDER = ("Status", "Type", "Tipe", "Studio", "Network", "Season",
               "Negara", "Durasi", "Episode", "Tanggal rilis", "Subber")
 
@@ -135,7 +109,6 @@ def build_search_prompt_content() -> tuple[str, str, InlineKeyboardMarkup]:
 
 
 def build_results_content(session_id: str, data: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Listing (search/statis/genre/A-Z), 5 kartu per halaman."""
     for it in data.get("results") or []:
         if not it.get("meta"):
             parts = []
@@ -234,8 +207,6 @@ def build_az_content(page: int) -> tuple[str, str, InlineKeyboardMarkup]:
             for l in chunk[i:i + 7]
         ])
 
-    # Navigasi halaman: 27 huruf > 10/halaman -> WAJIB ada Prev/Next,
-    # kalau tidak halaman 2-3 (J..Z) tidak bisa diakses sama sekali.
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("Prev", callback_data=f"{PREFIX}:az:{page - 1}:0"))
@@ -298,7 +269,6 @@ def build_schedule_content(day_index: int = 0) -> tuple[str, str, InlineKeyboard
 
 
 def build_detail_content(detail: dict, session_id: str, idx: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Detail series: poster, meta, genre, sinopsis, tombol Download."""
     title = html.escape(detail.get("title") or LABEL)
     synopsis = detail.get("synopsis") or "No synopsis available."
     meta = detail.get("meta") or {}
@@ -356,7 +326,6 @@ def build_detail_content(detail: dict, session_id: str, idx: int) -> tuple[str, 
 
 
 def build_episodes_content(detail: dict, session_id: str, idx: int, page: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Episode picker grid untuk series."""
     episodes = detail.get("episodes") or []
     total = len(episodes)
     max_page = max(1, math.ceil(total / EPISODES_PER_PAGE))
@@ -398,7 +367,6 @@ def build_episodes_content(detail: dict, session_id: str, idx: int, page: int) -
 
 
 def build_format_choice_content(title: str, *, session_id: str, idx: int, episode: int = 0, direct: bool = False) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Pilih format Video/MP3."""
     t_esc = html.escape(title)
     if direct:
         sub = "<p><b>Source:</b> Episode page (direct post)</p>"
@@ -441,7 +409,6 @@ def build_format_choice_content(title: str, *, session_id: str, idx: int, episod
 
 
 def build_episode_content(detail: dict, session_id: str, idx: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Detail halaman episode: resolusi mirror + daftar server streaming."""
     title = html.escape(detail.get("title") or LABEL)
     mirrors = detail.get("mirrors") or []
     servers = detail.get("servers") or []

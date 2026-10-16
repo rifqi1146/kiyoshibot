@@ -1,4 +1,3 @@
-"""Callback query handler untuk inline navigation Drakor.id (`dk:` callbacks)."""
 import asyncio
 import logging
 import time
@@ -33,7 +32,6 @@ log = logging.getLogger(__name__)
 
 
 async def drakorid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback query handler for Drakor.id inline navigation."""
     q = update.callback_query
     if not q or not q.data or not q.data.startswith(f"{PREFIX}:"):
         return
@@ -134,7 +132,6 @@ async def drakorid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # Operations requiring session_id
     if len(parts) < 3:
         return await q.answer()
 

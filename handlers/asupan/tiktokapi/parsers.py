@@ -1,76 +1,3 @@
-"""TikTok normalizers: the web API's objects -> one clean snake_case shape per
-entity, whichever endpoint served them.
-
-Output conventions (shared with the other scrapers here): `link` for
-canonical tiktok.com URLs, `*_link` / `cover` / `profile_picture` for media
-URLs, `*_count` for counters, `is_*` / `has_*` for booleans, ISO-8601 UTC
-timestamps (the upstream's epoch seconds), numbers as numbers, null for
-missing, [] for empty lists. Ids stay STRINGS: they are 19-20 digits and
-overflow a JavaScript number.
-
-Entity shapes:
-  user (compact)  {id, sec_uid, username, nickname, link, profile_picture,
-                   is_verified, is_private, biography}
-  profile         compact user + created_at, bio_link, language, flags,
-                   live room id, stats{...}, tabs{...}
-  video           {id, link, type, description, language, created_at, flags,
-                   playlist_id, stats{...}, author, author_stats, music,
-                   video{...} | images[...], hashtags, mentions, location,
-                   effects, text_stickers, anchors, suggested_searches}
-                   `type` is "video" or "photo" (a photo carousel: `images`
-                   is filled and `video` is null).
-  comment         {id, video_id, link, text, language, created_at,
-                   like_count, reply_count, flags, parent_comment_id,
-                   user, images, mentions}
-
-The web API serves the same entity in two dialects — camelCase from the
-webapp services (itemStruct, userInfo) and snake_case from search and
-comments (user_info, comments[].user) — and counters twice (`stats` rounded
-to 3 digits: 96100000, `statsV2` exact strings: "96072949"). Every parser
-reads both dialects and prefers the exact counters.
-
-Media links (checked 2026-10-05 from fresh exits with no cookies):
-`video.play_link` and every `qualities[].play_link` prefer TikTok's
-`www.tiktok.com/aweme/v1/play/` form, which streams the mp4 with no cookie
-and no Referer — but only to IPs in the region that hosts the video (a US
-video answered 206 video/mp4 from US exits and an HTML page from German
-ones, whichever exit minted the link). The CDN-host forms that follow it in
-`play_links`, and `download_link`, answer 403 without the minting session's
-`tt_chain_token` cookie. Cover / avatar / photo / subtitle / sound links
-carry their own signature and open anywhere until their `x-expires`.
-
-Deliberately dropped as noise:
-  viewer state   digged, collected, relation, followStatus, user_digged,
-                 user_buried, is_author_digged's sibling collect_stat,
-                 forFriend, secret (= privateAccount), openFavorite on
-                 compact users, isCollected — the logged-out viewer's own
-                 state, always false
-  tracking       extra.logid, log_pb, backendSourceEventTracking,
-                 diversificationId, contentContext, enterMdpPV, sort_tags,
-                 sort_extra_score, word_record, extra_info, logExtra,
-                 penaltyContext / item_control / creatorAIComment /
-                 itemCommentStatus (moderation and ranking internals)
-  duplicates     stats when statsV2 is present, avatarMedium / avatarThumb
-                 (avatarLarger kept), coverMedium / coverThumb,
-                 video.PlayAddrStruct (= bitrateInfo[0].PlayAddr),
-                 video.zoomCover (four resizes of cover), contents[] (desc
-                 + textExtra again), heart (= heartCount), mixName (= name),
-                 claInfo.captionInfos (= subtitleInfos), shareMeta (title /
-                 description strings built from the same fields),
-                 comment share_info (a share sentence + the video link)
-  undocumented enums  commentSetting, duetSetting, stitchSetting,
-                 downloadSetting, followingVisibility, duetDisplay,
-                 stitchDisplay, CategoryType, maskType, itemMute,
-                 trans_btn_style, fold_status, reply_style — per-viewer
-                 permission codes TikTok never labels; the booleans that
-                 matter (duetEnabled, stitchEnabled, shareEnabled) are kept
-  player internals    VQScore, MVMAF, VideoExtra, FileCs, FileHash,
-                 volumeInfo, encodedType, encodeUserTag, videoTags,
-                 tt2dsp tokens (Apple Music developer JWTs)
-  live internals      room_auth, link_mic, room_create_ab_param, the
-                 `deprecated*` keys, pay grades, badge lists, push urls —
-                 broadcaster / gifting plumbing with no public reading
-"""
 import json
 import re
 from datetime import datetime, timezone
@@ -85,12 +12,7 @@ DSP_PLATFORMS = {1: ("apple_music", "https://music.apple.com/song/{}"),
 LIVE_STATUS = {2: "live", 4: "offline"}
 
 
-# ---- scalars ---------------------------------------------------------------------------
-# The same scalar helpers the other scrapers here use, kept inside this
-# package so it runs standalone (no sibling scraper packages needed).
-
 def clean(value):
-    """Whitespace-trimmed string, or None for empty / non-strings."""
     if value is None or isinstance(value, (dict, list, bool)):
         return None
     text = str(value).strip()
@@ -121,7 +43,6 @@ def to_float(value):
 
 
 def to_bool(value):
-    """True/False for real booleans (and 0/1), None when absent."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -132,7 +53,6 @@ def to_bool(value):
 
 
 def to_id(value):
-    """An upstream numeric id as a string (they exceed 2**53)."""
     if value is None or isinstance(value, bool):
         return None
     text = str(value).strip()
@@ -140,7 +60,6 @@ def to_id(value):
 
 
 def iso_utc(epoch):
-    """Epoch seconds -> 2026-09-17T14:27:44Z."""
     seconds = to_int(epoch)
     if not seconds:
         return None
@@ -159,7 +78,6 @@ def _list(value):
 
 
 def _pick(raw, *keys):
-    """The first non-empty value among `keys` (the two API dialects)."""
     for key in keys:
         value = raw.get(key)
         if value not in (None, "", [], {}):
@@ -168,7 +86,6 @@ def _pick(raw, *keys):
 
 
 def link_list(value):
-    """Every URL in a string | [urls] | {urlList / url_list / UrlList: [...]}."""
     if isinstance(value, str):
         return [value] if value.startswith("http") else []
     if isinstance(value, dict):
@@ -187,15 +104,11 @@ def iso_utc_ms(epoch_ms):
 
 
 def iso_date_ms(epoch_ms):
-    """Epoch milliseconds -> YYYY-MM-DD (UTC) for day-granular fields."""
     stamp = iso_utc_ms(epoch_ms)
     return stamp[:10] if stamp else None
 
 
-# ---- users -----------------------------------------------------------------------------
-
 def user_ref(raw):
-    """The compact user from either dialect, or None without an id / name."""
     raw = _dict(raw)
     username = clean(_pick(raw, "uniqueId", "unique_id", "display_id"))
     user_id = to_id(_pick(raw, "id", "uid", "id_str"))
@@ -220,7 +133,6 @@ def user_ref(raw):
 
 
 def user_stats(stats, exact=None):
-    """Counters of a user; `exact` (statsV2) wins over the rounded `stats`."""
     stats, exact = _dict(stats), _dict(exact)
 
     def count(*keys):
@@ -242,7 +154,6 @@ def user_stats(stats, exact=None):
 
 
 def profile(user_info):
-    """webapp userInfo ({user, stats, statsV2}) -> the full profile."""
     user_info = _dict(user_info)
     raw = _dict(user_info.get("user"))
     out = user_ref(raw)
@@ -279,7 +190,6 @@ def profile(user_info):
 
 
 def user_with_stats(row):
-    """A {user, stats, statsV2} row (followers / following lists)."""
     row = _dict(row)
     out = user_ref(row.get("user"))
     if out is None:
@@ -290,7 +200,6 @@ def user_with_stats(row):
 
 
 def search_user(row):
-    """One user search hit (snake_case `user_info`)."""
     raw = _dict(_dict(row).get("user_info"))
     out = user_ref(raw)
     if out is None:
@@ -307,8 +216,6 @@ def search_user(row):
 def users(rows, parser=user_ref):
     return [user for user in (parser(row) for row in _list(rows)) if user]
 
-
-# ---- music -----------------------------------------------------------------------------
 
 def _streaming_links(raw):
     out = []
@@ -350,8 +257,6 @@ def music(raw, stats=None, author=None):
     return out
 
 
-# ---- hashtags --------------------------------------------------------------------------
-
 def hashtag_ref(raw):
     raw = _dict(raw)
     name = clean(_pick(raw, "title", "hashtagName", "cha_name"))
@@ -361,7 +266,6 @@ def hashtag_ref(raw):
 
 
 def hashtag(challenge_info):
-    """webapp challengeInfo ({challenge, stats, statsV2}) -> the hashtag."""
     info = _dict(challenge_info)
     raw = _dict(info.get("challenge"))
     out = hashtag_ref(raw)
@@ -382,10 +286,7 @@ def hashtag(challenge_info):
     return out
 
 
-# ---- places ----------------------------------------------------------------------------
-
 def location(raw):
-    """A video's tagged place (`poi`), or None."""
     raw = _dict(raw)
     place_id = to_id(raw.get("id"))
     name = clean(raw.get("name"))
@@ -408,7 +309,6 @@ def location(raw):
 
 
 def place(poi_info):
-    """webapp poiInfo ({poi, stats}) -> the place page."""
     info = _dict(poi_info)
     raw = _dict(info.get("poi"))
     out = location(raw)
@@ -423,8 +323,6 @@ def place(poi_info):
     })
     return out
 
-
-# ---- videos ----------------------------------------------------------------------------
 
 def _stats(item):
     exact, stats = _dict(item.get("statsV2")), _dict(item.get("stats"))
@@ -444,7 +342,6 @@ def _stats(item):
 
 
 def _ordered_links(value):
-    """A rendition's URLs with the cookieless www.tiktok.com form first."""
     urls = link_list(value)
     return sorted(urls, key=lambda url: not url.startswith(COOKIELESS_PLAY_PREFIX))
 
@@ -503,8 +400,6 @@ def subtitles(rows):
 
 
 def video_file(raw):
-    """itemStruct.video -> the playable video block (None for photo posts,
-    whose `video` holds only a cover)."""
     raw = _dict(raw)
     qualities = _qualities(raw.get("bitrateInfo"))
     play_links = _ordered_links(_dict(raw.get("PlayAddrStruct"))) or link_list(raw.get("playAddr"))
@@ -541,7 +436,6 @@ def images(image_post):
 
 
 def _text_entities(item):
-    """(hashtags, mentions) from challenges + the caption's textExtra."""
     hashtags, seen = [], set()
     for raw in _list(item.get("challenges")) + [t for t in _list(item.get("textExtra")) if _dict(t).get("hashtagName")]:
         tag = hashtag_ref(raw)
@@ -570,7 +464,6 @@ def _effects(rows):
 
 
 def _text_stickers(rows):
-    """Text overlays the creator placed on the video."""
     out = []
     for raw in _list(rows):
         for text in _list(_dict(raw).get("stickerText")):
@@ -581,7 +474,6 @@ def _text_stickers(rows):
 
 
 def _anchors(rows):
-    """Link stickers under the caption (CapCut template, shop, playlist …)."""
     out = []
     for raw in _list(rows):
         raw = _dict(raw)
@@ -606,7 +498,6 @@ def _suggested_searches(item):
 
 
 def video(item):
-    """One webapp itemStruct -> the video shape, or None without an id."""
     item = _dict(item)
     video_id = to_id(item.get("id"))
     if not video_id:
@@ -659,7 +550,6 @@ def videos(rows):
 
 
 def media(item):
-    """Just the downloadable files of one itemStruct (/videos/media)."""
     parsed = video(item)
     if parsed is None:
         return None
@@ -675,8 +565,6 @@ def media(item):
         "music": parsed["music"],
     }
 
-
-# ---- comments --------------------------------------------------------------------------
 
 def _comment_images(rows):
     out = []
@@ -728,8 +616,6 @@ def comments(rows, username=None):
     return [parsed for parsed in (comment(row, username) for row in _list(rows)) if parsed]
 
 
-# ---- playlists / collections -----------------------------------------------------------
-
 def playlist(raw):
     raw = _dict(raw)
     playlist_id = to_id(_pick(raw, "id", "mixId"))
@@ -763,8 +649,6 @@ def collection(raw):
     }
 
 
-# ---- effects ---------------------------------------------------------------------------
-
 def effect(sticker_info):
     info = _dict(sticker_info)
     raw = _dict(info.get("sticker"))
@@ -781,8 +665,6 @@ def effect(sticker_info):
     }
 
 
-# ---- search ----------------------------------------------------------------------------
-
 def suggestions(rows):
     out = []
     for row in _list(rows):
@@ -793,7 +675,6 @@ def suggestions(rows):
 
 
 def top_results(rows):
-    """The mixed "Top" search list -> (videos, users), each in page order."""
     found_videos, found_users = [], []
     for row in _list(rows):
         row = _dict(row)
@@ -806,10 +687,7 @@ def top_results(rows):
     return found_videos, found_users
 
 
-# ---- live ------------------------------------------------------------------------------
-
 def _stream_links(stream_data):
-    """streamData.pull_data.stream_data (a JSON string) -> {quality: {flv, hls}}."""
     raw = _dict(_dict(_dict(stream_data).get("pull_data")).get("stream_data"))
     if not raw:
         text = _dict(_dict(stream_data).get("pull_data")).get("stream_data")
@@ -827,8 +705,6 @@ def _stream_links(stream_data):
 
 
 def live_room(data, room_info=None):
-    """api-live/user/room `data` ({user, stats, liveRoom}) merged with the
-    webcast room info (`room_info`, optional) -> one live room."""
     data, room_info = _dict(data), _dict(room_info)
     raw_user = _dict(data.get("user"))
     room = _dict(data.get("liveRoom"))
@@ -849,7 +725,6 @@ def live_room(data, room_info=None):
         "is_live": is_live,
         "title": clean(room.get("title")) or clean(room_info.get("title")),
         "started_at": iso_utc(room.get("startTime") or room_info.get("create_time")) if is_live else None,
-        # offline, the room keeps the counters of the last broadcast: not a current audience
         "viewer_count": (to_int(room_stats.get("userCount")) if room_stats else to_int(room_info.get("user_count"))) if is_live else None,
         "total_viewer_count": to_int(room_stats.get("enterCount")) if room_stats else to_int(stats.get("total_user")),
         "like_count": to_int(room_info.get("like_count")) if is_live else None,
@@ -866,7 +741,6 @@ def live_room(data, room_info=None):
 
 
 def search_live_room(row):
-    """One live search hit: live_info.raw_data is the webcast room as a JSON string."""
     info = _dict(_dict(row).get("live_info"))
     try:
         raw = _dict(json.loads(info.get("raw_data") or "{}"))
@@ -901,8 +775,6 @@ def search_live_room(row):
     }
 
 
-# ---- ads library -----------------------------------------------------------------------
-
 AD_STATUS = {"1": "active", "2": "inactive"}
 
 
@@ -917,7 +789,6 @@ def _ad_videos(rows):
 
 
 def library_ad(raw):
-    """One Commercial Content Library ad (search row or details.ad)."""
     raw = _dict(raw)
     ad_id = to_id(raw.get("id"))
     if not ad_id:
@@ -956,7 +827,6 @@ def library_ad_details(data):
     regions = _dict(targeting.get("location"))
 
     def enabled(rows):
-        """[{region, <option>: bool, ...}] -> {region: [options switched on]}."""
         return [{"country": clean(_dict(row).get("region")),
                  "values": [key for key, value in _dict(row).items() if key != "region" and value is True]}
                 for row in _list(rows)]
@@ -999,10 +869,7 @@ def library_ad_details(data):
     return out
 
 
-# ---- creative center top ads -----------------------------------------------------------
-
 def _label(key, prefix):
-    """campaign_objective_conversion -> conversion (the site's i18n key tail)."""
     text = clean(key)
     if not text:
         return None
@@ -1036,7 +903,7 @@ def top_ad(raw):
                 renditions.items(), key=lambda kv: -(to_int(str(kv[0]).rstrip("p")) or 0)) if isinstance(url, str)],
         } if info else None,
     }
-    if "comment" in raw or "landing_page" in raw:      # the detail payload
+    if "comment" in raw or "landing_page" in raw:
         out.update({
             "comment_count": to_int(raw.get("comment")),
             "share_count": to_int(raw.get("share")),

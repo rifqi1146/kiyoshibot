@@ -10,9 +10,6 @@ WELCOME_VERIFY_DB = os.path.abspath(
 
 def _connect():
     os.makedirs(os.path.dirname(WELCOME_VERIFY_DB), exist_ok=True)
-    # PRAGMAs WAJIB di setiap koneksi, bukan cuma saat init: `busy_timeout`
-    # membuat writer menunggu 30s alih-alih langsung `database is locked`,
-    # dan WAL membuat reader tidak memblokir writer.
     con = sqlite3.connect(WELCOME_VERIFY_DB, timeout=30.0)
     try:
         con.execute("PRAGMA journal_mode=WAL;")
@@ -64,7 +61,6 @@ def init_welcome_db():
 
         con.commit()
 
-        # migration lama untuk welcome_chats
         cur = con.execute("PRAGMA table_info(welcome_chats)")
         cols = cur.fetchall()
         pk_on_chat_id = False
@@ -102,7 +98,6 @@ def init_welcome_db():
             con.execute("DROP TABLE welcome_chats_old")
             con.commit()
 
-        # migration untuk pending_welcome.created_at
         cur = con.execute("PRAGMA table_info(pending_welcome)")
         pending_cols = {row[1] for row in cur.fetchall()}
         if "created_at" not in pending_cols:

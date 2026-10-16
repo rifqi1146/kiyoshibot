@@ -1,20 +1,3 @@
-"""Callback query handler untuk inline navigation Nekopoi (`nk:` callbacks).
-
-FLOW CALLBACK
--------------
-1. `nk:menu` / `nk:prompt:search` / `nk:close` — layar statis.
-2. `nk:latest` / `nk:cat:<slug>` / `nk:genre:<slug>` — fetch listing lalu simpan
-   sesi (`NEKOPOI_CACHE[sid]`) dan render listing.
-3. `nk:cats:<page>` / `nk:genres:<page>` / `nk:az:<kind>:<page>` — picker.
-4. `nk:azl:<kind>:<letter>:<page>` — daftar series satu huruf (dari cache A-Z).
-5. `nk:schedule` — jadwal rilis (informasi saja).
-6. `nk:view:<sid>:<idx>` — fetch detail:
-   - `kind="series"` -> detail + tombol Download -> episode picker.
-   - `kind="episode"` -> langsung format picker (Video/MP3).
-7. `nk:eps` / `nk:pick` / `nk:dl` (series) dan `nk:epdl` (post langsung) —
-   unduh lewat `_process_choice` supaya resolution picker Nekopoi muncul
-   (JANGAN `_start_dl_task` langsung: itu diam-diam memilih resolusi tertinggi).
-"""
 import asyncio
 import logging
 import time
@@ -90,7 +73,6 @@ async def nekopoi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
 
-    # ---------------- layar statis ----------------
     if action == "close":
         try:
             await q.message.delete()
@@ -121,7 +103,6 @@ async def nekopoi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return await q.answer()
 
-    # ---------------- picker ----------------
     if action == "cats":
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         r_html, p_html, markup = build_categories_content(page)
@@ -172,7 +153,6 @@ async def nekopoi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- listing ----------------
     if action == "latest":
         await q.answer("Loading latest...")
         results = await asyncio.to_thread(fetch_latest)
@@ -213,7 +193,6 @@ async def nekopoi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_rich(bot, chat_id, message_id, r_html, p_html, markup)
         return
 
-    # ---------------- operasi berbasis sesi ----------------
     if len(parts) < 3:
         return await q.answer()
 

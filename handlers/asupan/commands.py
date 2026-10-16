@@ -202,10 +202,7 @@ async def send_asupan_once(bot):
         log.warning("[ASUPAN STARTUP] Chat_id is empty")
         return
     try:
-        # Isi cache penuh (bukan cuma 1) supaya command /asupan pertama user
-        # langsung ambil dari cache, tidak menunggu fetch dingin.
         await warm_asupan_cache(bot)
-        # Kirim 1 asupan ke log chat sebagai tanda warmup berhasil.
         if state.ASUPAN_CACHE:
             data = state.ASUPAN_CACHE.pop(0)
         else:

@@ -1,28 +1,3 @@
-"""HTTP client and metadata parser for MovieBox (officialmoviebox.com).
-
-FLOW SCRAPER
-------------
-1. Search:
-   -> GET `https://officialmoviebox.com/newWeb/searchResult?keyword=<q>`
-   -> Parse HTML SSR `a.card` + state JSON -> title, rating, slug, cover.
-2. Trending:
-   -> GET `https://h5-api.aoneroom.com/wefeed-h5api-bff/subject/trending`
-   -> tabId: `ONEROOM_MOVIE` (movies), `ONEROOM_TV` (series), omit for all.
-3. Home sections:
-   -> GET `https://h5-api.aoneroom.com/wefeed-h5api-bff/home?host=<host>`
-   -> Pre-curated `operatingList[].subjects[]` blocks (Popular, Coming Soon,
-      K-Drama, C-Drama, Anime, Action, Horror, Hot Short TV, ...).
-4. Filter (by country / type / sort):
-   -> POST `https://h5-api.aoneroom.com/wefeed-h5api-bff/subject/filter`
-   -> body `{page, perPage, country, subjectType, sort}`.
-5. Detail:
-   -> GET `https://h5-api.aoneroom.com/wefeed-h5api-bff/detail?detailPath=<slug>`
-   -> title, synopsis, year, country, genres, IMDb, seasons & episodes.
-6. Stream resolver:
-   -> GET `.../subject/play?subjectId=<id>&se=<se>&ep=<ep>&detailPath=<slug>`
-   -> Header `Referer` MUST match the video page URL.
-   -> Direct MP4 streams: 1080p, 720p, 480p, 360p (H.264 + AAC, >200 MB/s CDN).
-"""
 import json
 import logging
 import re
@@ -62,7 +37,6 @@ def _clean(text: str) -> str:
 
 
 def http_get(url: str, referer: str = f"{BASE_URL}/") -> str:
-    """Fetch HTML with standard headers."""
     try:
         r = _http().get(
             url,
@@ -80,7 +54,6 @@ def http_get(url: str, referer: str = f"{BASE_URL}/") -> str:
 
 
 def http_json(url: str, referer: str = f"{BASE_URL}/") -> dict:
-    """Fetch a GET JSON endpoint."""
     try:
         r = _http().get(
             url,
@@ -100,7 +73,6 @@ def http_json(url: str, referer: str = f"{BASE_URL}/") -> dict:
 
 
 def http_post_json(url: str, body: dict, referer: str = f"{BASE_URL}/") -> dict:
-    """Fetch a POST JSON endpoint."""
     try:
         r = _http().post(
             url,
@@ -122,9 +94,8 @@ def http_post_json(url: str, body: dict, referer: str = f"{BASE_URL}/") -> dict:
 
 
 def _subject_to_item(it: dict) -> dict:
-    """Normalise a MovieBox `subject` object into a card item."""
     sid = str(it.get("subjectId") or "")
-    stype = int(it.get("subjectType") or 1)  # 1 = Movie, 2 = TV Series
+    stype = int(it.get("subjectType") or 1)
     is_tv = (stype == 2)
     slug = it.get("detailPath") or ""
     title = _clean(it.get("title") or "Unknown")
@@ -161,14 +132,12 @@ def _subject_to_item(it: dict) -> dict:
 
 
 def parse_search_cards(html_text: str) -> list[dict]:
-    """Parse search result cards from SSR HTML."""
     if not html_text:
         return []
     soup = BeautifulSoup(html_text, "html.parser")
     out = []
     seen = set()
 
-    # Thumbnails live in the Nuxt state blob (HTML has no <img> on search).
     img_map = {}
     for s in soup.find_all("script"):
         if s.string and "ShallowReactive" in s.string:
@@ -224,7 +193,6 @@ def parse_search_cards(html_text: str) -> list[dict]:
 
 
 def search(query: str) -> list[dict]:
-    """Search MovieBox by title query."""
     q = _clean(query)
     if not q:
         return []
@@ -234,7 +202,6 @@ def search(query: str) -> list[dict]:
 
 
 def fetch_trending(tab_id: str | None = None, page: int = 0, per_page: int = 30) -> list[dict]:
-    """Trending movies / TV shows from the MovieBox API."""
     tab_param = f"tabId={tab_id}&" if tab_id else ""
     url = f"{API_BASE}/subject/trending?{tab_param}page={page}&perPage={per_page}"
     data = http_json(url)
@@ -245,7 +212,6 @@ def fetch_trending(tab_id: str | None = None, page: int = 0, per_page: int = 30)
 
 
 def fetch_home_sections() -> dict:
-    """Pre-curated home blocks: {section title: [subject, ...]} (cached)."""
     now = time.time()
     cached = HOME_CACHE.get("by_title") or {}
     if cached and now - HOME_CACHE.get("ts", 0) < INDEX_TTL:
@@ -265,7 +231,6 @@ def fetch_home_sections() -> dict:
 
 
 def fetch_section_items(section_key: str, page: int = 1, per_page: int = 30) -> list[dict]:
-    """Fetch items for one section key from `constants.SECTIONS`."""
     from .constants import SECTIONS
 
     spec = SECTIONS.get(section_key)
@@ -275,8 +240,6 @@ def fetch_section_items(section_key: str, page: int = 1, per_page: int = 30) -> 
 
     if kind == "trending":
         tab = params.get("tab")
-        # `subject/trending` ignores perPage > 18 for tabbed requests and
-        # returns ~10 items, so page through and merge until `per_page`.
         out: list[dict] = []
         seen: set[str] = set()
         api_page = 0
@@ -309,5 +272,4 @@ def fetch_section_items(section_key: str, page: int = 1, per_page: int = 30) -> 
 
 
 def fetch_popular_titles() -> list[str]:
-    """Curated quick-search titles."""
     return list(POPULAR_TITLES)

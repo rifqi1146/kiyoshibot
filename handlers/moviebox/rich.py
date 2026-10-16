@@ -1,4 +1,3 @@
-"""Bot API 10.3 Rich Message helpers for MovieBox Explorer UI."""
 import html
 import logging
 import warnings
@@ -10,7 +9,6 @@ log = logging.getLogger(__name__)
 
 
 async def send_rich(bot, chat_id: int, reply_to: int | None, rich_html: str, plain_html: str, markup: InlineKeyboardMarkup):
-    """Kirim rich message (Bot API 10.3) dengan fallback aman ke plain HTML."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -36,7 +34,6 @@ async def send_rich(bot, chat_id: int, reply_to: int | None, rich_html: str, pla
 
 
 async def edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_html: str, markup: InlineKeyboardMarkup):
-    """Edit pesan menjadi rich message dengan fallback aman ke plain HTML."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

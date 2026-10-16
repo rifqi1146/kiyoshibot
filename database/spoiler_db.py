@@ -20,11 +20,6 @@ def spoiler_db_init():
 
 
 def is_spoiler_enabled(chat_id: int, chat_type: str) -> bool:
-    """Spoiler setting bersifat per grup.
-
-    Private chat tidak punya setting grup, jadi spoiler selalu nonaktif
-    (media dikirim normal) kecuali grup mengaktifkannya.
-    """
     if chat_type == "private":
         return False
     try:

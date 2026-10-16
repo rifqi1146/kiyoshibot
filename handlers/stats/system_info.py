@@ -207,7 +207,6 @@ def gather_system_stats():
 
 
 async def measure_network_speed():
-    """Sample RX/TX while the caller gathers the rest of the stats in parallel."""
     max_bps = (NET_BAR_MBIT * 1000 * 1000) / 8
     if not psutil:
         return {"rxps": 0.0, "txps": 0.0, "iface": "N/A", "max_bps": max_bps}
@@ -228,7 +227,6 @@ async def measure_network_speed():
 
 
 async def gather_system_stats_async():
-    """Collect system stats concurrently (CPU sampling + everything else in parallel)."""
     net_speed_task = asyncio.create_task(measure_network_speed())
     stats = await asyncio.to_thread(gather_system_stats)
     net_speed = await net_speed_task

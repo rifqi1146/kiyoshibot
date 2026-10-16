@@ -1,15 +1,3 @@
-"""MovieBox downloader (officialmoviebox.com)
-
-FLOW DOWNLOADER
----------------
-1. `is_moviebox_url(url)`: Match officialmoviebox.com / moviebox.ph / moviebox.co
-   and video paths (`/movies/`, `/moviesDetail/`).
-2. `probe_moviebox(url, season, episode)`: Fetch detail + direct stream variants
-   via MovieBox API and cache in `_PROBE_CACHE` (TTL 5 min).
-3. `moviebox_download(...)`: Download the chosen resolution (1080p/720p/480p/360p)
-   via aria2c 16 connections (fallback streaming curl_cffi), then optional
-   MP3 extraction.
-"""
 import asyncio
 import logging
 import os
@@ -37,7 +25,6 @@ _CACHE_TTL = 300.0
 
 
 def is_moviebox_url(url: str) -> bool:
-    """True if URL is a MovieBox video page."""
     parsed = urlparse((url or "").strip())
     host = (parsed.hostname or "").lower()
     if host.startswith("www."):
@@ -70,7 +57,6 @@ def peek_probe(post_url: str) -> dict | None:
 
 
 def probe_moviebox(raw_url: str, season: int | None = None, episode: int | None = None) -> dict:
-    """Fetch metadata + resolution variants for a MovieBox URL."""
     url = (raw_url or "").strip()
     cached = peek_probe(url)
     if cached:
@@ -118,7 +104,6 @@ def probe_moviebox(raw_url: str, season: int | None = None, episode: int | None 
             "fps": "-",
         })
 
-    # Dedup per height (keep largest)
     dedup = {}
     for v in variants:
         prev = dedup.get(v["height"])

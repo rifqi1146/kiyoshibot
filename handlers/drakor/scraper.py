@@ -1,15 +1,3 @@
-"""HTTP client + parser + fetcher untuk Drakor.id (drakorid.co).
-
-FLOW SCRAPER
-------------
-1. `http_get(url)` -> HTML mentah (curl_cffi impersonate Chrome).
-2. `parse_cards(html)` -> daftar kartu `.movie-list-card` (judul, url, thumb).
-3. `fetch_paginated(url_template)` -> gabungkan beberapa halaman server sampai
-   `MAX_RESULTS` (search / latest / kategori).
-4. `fetch_categories()` -> 63 kategori dari `/kategori.html` (cache 1 jam).
-5. `fetch_detail(url)` -> metadata drama dari `/nonton/<slug>/` (judul, poster,
-   episode count, genres, network, release, sinopsis).
-"""
 import logging
 import math
 import re
@@ -28,7 +16,6 @@ _TITLE_TRIM = ("Sub Indo", "Drakor.id", "Nonton", " - ")
 
 
 def make_session() -> curl_requests.Session:
-    """Session `curl_cffi` dengan kuki login Drakor.id bila tersedia."""
     sess = curl_requests.Session(impersonate="chrome")
     try:
         for name, value in (get_auth_cookies() or {}).items():
@@ -88,11 +75,6 @@ def parse_cards(html_text: str) -> list[dict]:
 
 
 def fetch_paginated(url_template: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Kumpulkan kartu dari beberapa halaman server sampai `max_items`.
-
-    `url_template` memakai `{page}`; berhenti saat halaman kosong, semua
-    duplikat, atau target tercapai. Batas keras `max_items` (default 100).
-    """
     results: list[dict] = []
     seen: set[str] = set()
     max_pages = max(1, math.ceil(max_items / 30) + 1)
@@ -166,7 +148,6 @@ def fetch_detail(url: str) -> dict:
     m_slug = re.search(r"/nonton/([^/]+)", url)
     fallback_title = m_slug.group(1).replace("-", " ").title() if m_slug else "Drama"
 
-    # Halaman promo "Welcome" (butuh login / dibatasi) bukan detail drama.
     if "Welcome" in raw_title and not soup.select(".episode-pick-num, [data-episode], .poster-img"):
         return {
             "title": fallback_title,

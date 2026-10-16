@@ -1,13 +1,3 @@
-"""Central callback query dispatcher untuk manga reader.
-
-Routing berdasarkan prefix:
-- `mgdex:` / `mgmaid:` / `mgnh:` -> layer search Rich Message (`search.py`):
-  `nav`, `open` (hapus pesan search + kirim foto detail), `close`.
-- `detailmanga_`, `readmanga_`, `switchch_`, `nav_`, `pdfdex_` -> MangaDex.
-- `maiddet_`, `maidread_`, `maidnav_`, `pdfmaid_` -> Maid-Manga.
-- `nhdetail_`, `nhread_`, `nhnav_`, `pdfnh_` -> nHentai.
-- `ignore`, `close_manga` -> umum.
-"""
 import logging
 
 from telegram import Update
@@ -38,8 +28,6 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     data = query.data
 
-    # Kunci kepemilikan tombol WAJIB dicek duluan sebelum gate join channel,
-    # supaya klik dari user lain langsung ditolak alert tanpa mem-broadcast pesan join ke grup.
     if not await _ensure_callback_lock(query):
         return
 
@@ -49,7 +37,6 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_nsfw_enabled(query.message.chat_id, query.message.chat.type):
         return await query.answer("❌ NSFW is not enabled in this group.", show_alert=True)
 
-    # nHentai gate premium
     if data.startswith(("mgnh:", "nhdetail_", "nhread_", "nhnav_", "pdfnh_")):
         user = update.effective_user
         if not user or not premium.check(user.id):
@@ -66,11 +53,9 @@ async def manga_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             return
 
-    # Layer search Rich Message
     if data.startswith(_SEARCH_PREFIXES):
         return await search.handle_search_callback(query, context, data)
 
-    # Detail / reader per provider
     if data.startswith(("detailmanga_", "readmanga_", "switchch_", "nav_", "pdfdex_")):
         return await handle_mangadex_callback(query, context, data)
 

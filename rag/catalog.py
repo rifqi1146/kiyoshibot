@@ -1,13 +1,3 @@
-"""Compact command catalog for RAG.
-
-Two representations:
-    1. names_only: a 1-line comma-separated list of all ~74 bot commands
-       (~170 tokens total). Always injected on bot-intent queries so the model
-       knows the real command names (preventing hallucinated commands like
-       /setwelcome).
-    2. grouped_catalog: a category-grouped index with short descriptions
-       (~750 tokens), used for broad questions like "apa saja fitur bot".
-"""
 
 import re
 
@@ -62,7 +52,6 @@ def _line_description(line: str, cmds: list[str]) -> str:
 
 
 def extract_all_commands(docs: list[dict]) -> list[str]:
-    """Collect all unique command names across all documents."""
     seen: set[str] = set()
     names: list[str] = []
     for doc in docs or []:
@@ -79,7 +68,6 @@ def extract_all_commands(docs: list[dict]) -> list[str]:
 
 
 def build_command_roster(docs: list[dict]) -> str:
-    """A compact ~170-token comma-separated list of all commands."""
     names = extract_all_commands(docs)
     if not names:
         return ""
@@ -87,7 +75,6 @@ def build_command_roster(docs: list[dict]) -> str:
 
 
 def build_command_catalog(docs: list[dict]) -> str:
-    """Build a category-grouped catalog with brief descriptions."""
     seen: set[str] = set()
     groups: dict[str, list[str]] = {}
     order: list[str] = []

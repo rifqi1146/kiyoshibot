@@ -1,4 +1,3 @@
-"""Konstanta scraper/downloader TikTok (tiktok.com / douyin.com)"""
 import os
 import re
 import logging
@@ -53,7 +52,6 @@ TIKTOK_COOKIE_DOMAINS = (
     "tikwm.com",
 )
 
-# Engine & feature flags
 USE_GOVD_FAST = os.getenv("TIKTOK_GOVD_FAST", "1").lower() not in ("0", "false", "off", "no")
 USE_SCRAPLING = os.getenv("TIKTOK_USE_SCRAPLING", "1").lower() not in ("0", "false", "off", "no")
 DEBUG_TIKTOK_LOG = os.getenv("TIKTOK_DEBUG", "0").lower() in ("1", "true", "on", "yes")
@@ -66,7 +64,6 @@ TIKTOK_ALBUM_CHUNK_SIZE = int(os.getenv("TIKTOK_ALBUM_CHUNK_SIZE", str(256 * 102
 ARIA2C_TIMEOUT = int(os.getenv("TIKTOK_ARIA2C_TIMEOUT", "600"))
 AIOHTTP_DOWNLOAD_TIMEOUT = int(os.getenv("TIKTOK_AIOHTTP_TIMEOUT", "600"))
 
-# Slideshow settings
 TIKTOK_SLIDESHOW_IMAGE_DURATION = float(os.getenv("TIKTOK_SLIDESHOW_IMAGE_DURATION", "4.0"))
 TIKTOK_SLIDESHOW_LOOP_IMAGES = os.getenv("TIKTOK_SLIDESHOW_LOOP_IMAGES", "1").lower() in ("1", "true", "on", "yes")
 TIKTOK_SLIDESHOW_WIDTH = int(os.getenv("TIKTOK_SLIDESHOW_WIDTH", "720"))

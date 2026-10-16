@@ -1,31 +1,3 @@
-"""MovieBox URL parser and direct stream extractor.
-
-FLOW SCRAPER
-------------
-1. `parse_moviebox_url(url)`: slug + `subject_id` + `season`/`episode` from the
-   page URL (`/movies/<slug>?id=&type=/tv/detail&detailSe=&detailEp=`).
-2. `fetch_detail(slug_or_id)`:
-   -> GET `h5-api.aoneroom.com/wefeed-h5api-bff/detail?detailPath=<slug>`
-   -> title, synopsis, year, country, genres, IMDb, seasons & episode counts.
-3. `fetch_streams(subject_id, se, ep, slug, is_tv)`:
-   -> GET `.../subject/play?subjectId=&se=&ep=&detailPath=`
-   -> Header `Referer` MUST be the full video page URL; without it the server
-      returns `streams: []` with HTTP 200 (silent empty result).
-   -> Direct MP4 variants: 1080p, 720p, 480p, 360p (H.264 + AAC).
-
-FLOW DOWNLOADER
----------------
-1. `resolve_moviebox_streams(url, season, episode)`: detail + deduped variants
-   (dedup per height, keep the largest file).
-2. `download_video(...)`: resolve again (signed `t=` URLs expire), then aria2c
-   16 connections (fallback streaming `curl_cffi` chunk 512KB).
-3. `TransferStats` for Telegram progress + speed/ETA + `MAX_TG_SIZE` guard.
-   `main.py` handles the optional MP3 conversion.
-
-All scraping lives here (self-contained, mirrors `handlers/dl/anichin/` and
-`handlers/dl/drakorid/`) so the `handlers/dl/*` layer never imports the UI
-package `handlers/moviebox/`.
-"""
 import asyncio
 import logging
 import os
@@ -67,7 +39,6 @@ def _clean(text: str) -> str:
 
 
 def _http_json(url: str, referer: str = f"{BASE_URL}/") -> dict:
-    """GET a MovieBox JSON endpoint (empty dict on any failure)."""
     try:
         r = _http().get(
             url,
@@ -87,7 +58,6 @@ def _http_json(url: str, referer: str = f"{BASE_URL}/") -> dict:
 
 
 def fetch_detail(slug_or_id: str) -> dict:
-    """Detailed metadata for a movie or TV series."""
     key = "subjectId" if str(slug_or_id).isdigit() else "detailPath"
     url = f"{API_BASE}/detail?{key}={slug_or_id}"
     data = _http_json(url)
@@ -153,11 +123,6 @@ def fetch_detail(slug_or_id: str) -> dict:
 
 
 def fetch_streams(subject_id: str, se: int = 0, ep: int = 0, slug: str = "", is_tv: bool = False) -> list[dict]:
-    """Resolve direct MP4 video streams via the MovieBox API.
-
-    The `Referer` header is mandatory and must be the full video page URL;
-    without it the server returns `streams: []` with HTTP 200.
-    """
     ref = (
         f"{BASE_URL}/movies/{slug}?id={subject_id}"
         f"&type={'/tv/detail' if is_tv else '/movie/detail'}"
@@ -193,12 +158,6 @@ def fetch_streams(subject_id: str, se: int = 0, ep: int = 0, slug: str = "", is_
 
 
 def parse_moviebox_url(url: str) -> dict:
-    """Parse MovieBox URL into structured dictionary.
-
-    Supports:
-    - `https://officialmoviebox.com/movies/<slug>?id=<subjectId>&type=/tv/detail&detailSe=1&detailEp=2`
-    - `https://officialmoviebox.com/moviesDetail/<slug>`
-    """
     raw = (url or "").strip()
     parsed = urlparse(raw)
     path = parsed.path.strip("/")
@@ -214,7 +173,6 @@ def parse_moviebox_url(url: str) -> dict:
         if parts:
             slug = parts[-1]
 
-    # Extract query params if present
     sid = (qs.get("id") or [""])[0]
     stype = (qs.get("type") or [""])[0]
     se_str = (qs.get("detailSe") or [""])[0]
@@ -239,17 +197,11 @@ def resolve_moviebox_streams(
     season: int | None = None,
     episode: int | None = None,
 ) -> tuple[dict, list[dict]]:
-    """Resolve direct MP4 streams for a MovieBox URL.
-
-    Returns:
-    (detail_dict, variants_list)
-    """
     parsed = parse_moviebox_url(url)
     slug = parsed["slug"]
     se = int(season) if season is not None else parsed["season"]
     ep = int(episode) if episode is not None else parsed["episode"]
 
-    # If subject_id missing, fetch detail by slug
     sid = parsed["subject_id"]
     detail = fetch_detail(sid if sid else slug)
     if not detail:
@@ -259,7 +211,6 @@ def resolve_moviebox_streams(
     slug = detail.get("slug") or slug
     is_tv = detail.get("is_tv", False)
 
-    # For TV Series default to season 1, ep 1 if not specified
     if is_tv and se == 0 and ep == 0:
         se = 1
         ep = 1
@@ -296,7 +247,6 @@ def resolve_moviebox_streams(
             "episode": ep,
         })
 
-    # Dedup by height, pick largest filesize
     dedup = {}
     for v in variants:
         prev = dedup.get(v["height"])
@@ -319,7 +269,6 @@ async def download_video(
     episode: int | None = None,
     notify: bool = True,
 ) -> dict:
-    """Download MovieBox video to `out_path` via aria2c or streaming curl_cffi."""
     detail, variants = await asyncio.to_thread(
         resolve_moviebox_streams, url, season=season, episode=episode
     )
@@ -357,7 +306,6 @@ async def download_video(
 
     label = f"MovieBox {target.get('label')}"
 
-    # Engine 1: aria2c 16 connections
     try:
         from handlers.dl.aria2 import download_aria2
         ok = await download_aria2(
@@ -382,7 +330,6 @@ async def download_video(
     except Exception as e:
         log.warning("MovieBox aria2c exception, fallback streaming | err=%r", e)
 
-    # Engine 2: streaming curl_cffi fallback
     def _get():
         return curl_requests.get(
             dl_url,

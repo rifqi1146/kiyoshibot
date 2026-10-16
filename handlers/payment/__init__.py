@@ -1,4 +1,3 @@
-"""Axiom Payment gateway helpers for the Telegram bot."""
 
 from utils.axiom import (
     AxiomError,

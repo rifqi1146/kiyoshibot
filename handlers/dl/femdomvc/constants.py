@@ -1,11 +1,3 @@
-"""Konstanta scraper FemdomVC (femdomvc.com)
-
-FLOW KONSTANTA
---------------
-1. UA & timeout untuk request curl_cffi (impersonate Chrome).
-2. Host FemdomVC untuk deteksi URL dan routing download.
-3. Interval progress edit pesan Telegram.
-"""
 import os
 
 UA = (

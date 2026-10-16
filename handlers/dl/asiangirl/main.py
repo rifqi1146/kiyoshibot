@@ -1,18 +1,3 @@
-"""Downloader AsianGirlPorn (asiangirl.porn)
-
-FLOW DOWNLOADER
----------------
-1. `is_asiangirl_url(url)`: cocokkan host asiangirl.porn + path `/v/<slug>`.
-2. `probe_asiangirl(url)`: ambil metadata (`title`, `stream_url`, `poster`) untuk
-   picker/status.
-3. `asiangirl_download(...)`:
-   - scrape ULANG halaman tiap unduh (token stream `/<epoch>/` bertanda tangan).
-   - `parse_hls(stream_url)` -> kunci AES + IV + daftar segmen + durasi.
-   - `download_segments_aes(...)` -> unduh paralel `SEG_CONCURRENCY=12` +
-     dekripsi AES-128-CBC lokal (bukan ffmpeg serial).
-   - `concat_segments(...)` -> MP4 faststart. fmt `mp3` -> `extract_audio`.
-   - hasil membawa `"remux_done": True` (jangan remux dua kali).
-"""
 
 import asyncio
 import logging
@@ -94,7 +79,6 @@ async def asiangirl_download(
     del format_id, has_audio, known_size, engine
     url = (raw_url or "").strip()
 
-    # Token stream bertanda tangan (`/<epoch>/`) — selalu scrape ulang.
     probe = await asyncio.to_thread(extractor.scrape_post, url)
     cache_probe(url, probe)
 

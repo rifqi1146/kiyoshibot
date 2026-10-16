@@ -1,4 +1,3 @@
-"""Constants for MovieBox Explorer UI (/moviebox)."""
 
 LABEL = "MovieBox"
 PREFIX = "mb"
@@ -12,38 +11,21 @@ UA = (
 )
 
 HTTP_TIMEOUT = 25
-# Items shown per Telegram page.
 PER_PAGE = 50
-# Hard cap on collected results.
 MAX_RESULTS = 200
-# Sections shown per picker page.
 SECTIONS_PER_PAGE = 12
 CACHE_TTL = 3600
 INDEX_TTL = 1800
 EPISODES_PER_PAGE = 15
 
-# ---------------------------------------------------------------------------
-# Section catalogue
-# ---------------------------------------------------------------------------
-# kind:
-#   "home"     -> read the pre-curated `operatingList` block titled `title`
-#                 from `GET /home?host=<host>`.
-#   "trending" -> `GET /subject/trending?[tabId=<tab>&]page=<N>&perPage=<M>`
-#   "filter"   -> `POST /subject/filter` with the given body.
-#
-# key -> (label, kind, params)
 SECTIONS: dict[str, tuple[str, str, dict]] = {
-    # --- Trending ---------------------------------------------------------
     "trending":          ("Trending Now",           "trending", {}),
     "trending_movies":   ("Trending Movies",        "trending", {"tab": "ONEROOM_MOVIE"}),
     "trending_tv":       ("Trending TV Series",     "trending", {"tab": "ONEROOM_TVSHOW"}),
-    # --- Popular ----------------------------------------------------------
     "popular_movies":    ("Popular Movies",         "home", {"title": "Popular Movie"}),
     "popular_series":    ("Popular Series",         "home", {"title": "Popular Series"}),
-    # --- New / Upcoming ---------------------------------------------------
     "coming_soon":       ("Coming Soon",            "home", {"title": "Coming Soon"}),
     "hot_short_tv":      ("Hot Short TV",           "home", {"title": "🔥Hot Short TV"}),
-    # --- Asian drama ------------------------------------------------------
     "kdrama":            ("K-Drama",                "home", {"title": "K-Drama"}),
     "cdrama":            ("C-Drama",                "home", {"title": "C-Drama"}),
     "indo_movies":       ("Indonesia Movies",      "filter", {"country": "Indonesia", "subjectType": "MOVIE", "sort": "HOT"}),
@@ -65,11 +47,9 @@ SECTIONS: dict[str, tuple[str, str, dict]] = {
     "turkey_series":     ("Turkey Series",         "filter", {"country": "Turkey", "subjectType": "TV", "sort": "HOT"}),
     "usa_movies":        ("USA Movies",            "filter", {"country": "United States", "subjectType": "MOVIE", "sort": "HOT"}),
     "uk_series":         ("UK Series",             "filter", {"country": "United Kingdom", "subjectType": "TV", "sort": "HOT"}),
-    # --- Anime ------------------------------------------------------------
     "anime_dub":         ("Anime [English Dubbed]", "home", {"title": "Anime[English Dubbed]"}),
     "anime_filter":      ("Anime & Animation",      "filter", {"genre": "Animation", "sort": "HOT"}),
     "adult_animation":   ("Adult Animation",        "home", {"title": "Adult Animation"}),
-    # --- Movies by genre --------------------------------------------------
     "action_movies":     ("Action Movies",          "home", {"title": "Action Movies"}),
     "horror_movies":     ("Horror Movies",          "home", {"title": "Horror Movies"}),
     "romantic_movie":    ("Romantic Movies",        "filter", {"genre": "Romance", "subjectType": "MOVIE", "sort": "HOT"}),
@@ -85,7 +65,6 @@ SECTIONS: dict[str, tuple[str, str, dict]] = {
     "black_shows":       ("Black Shows",             "home", {"title": "Must-watch Black Shows"}),
     "bet_plus":          ("BET+",                   "home", {"title": "Bet+"}),
     "romance":           ("Romance",                "home", {"title": "💓Romance 💓"}),
-    # --- Genre filters (API) ----------------------------------------------
     "genre_action":      ("Genre: Action",          "filter", {"genre": "Action", "sort": "HOT"}),
     "genre_romance":     ("Genre: Romance",         "filter", {"genre": "Romance", "sort": "HOT"}),
     "genre_comedy":      ("Genre: Comedy",          "filter", {"genre": "Comedy", "sort": "HOT"}),
@@ -96,14 +75,11 @@ SECTIONS: dict[str, tuple[str, str, dict]] = {
     "genre_scifi":       ("Genre: Sci-Fi",          "filter", {"genre": "Sci-Fi", "sort": "HOT"}),
     "genre_crime":       ("Genre: Crime",           "filter", {"genre": "Crime", "sort": "HOT"}),
     "genre_animation":   ("Genre: Animation",       "filter", {"genre": "Animation", "sort": "HOT"}),
-    # --- Recent -----------------------------------------------------------
     "recent_movies":     ("Recent Movies",          "filter", {"subjectType": "MOVIE", "sort": "LATEST"}),
     "recent_series":     ("Recent Series",          "filter", {"subjectType": "TV", "sort": "LATEST"}),
     "recent_all":        ("Recent Added",           "filter", {"sort": "LATEST"}),
 }
 
-# Main menu layout: rows of section keys. "search"/"close"/"all"/"countries"
-# are special actions handled by the renderer.
 MENU_LAYOUT: tuple[tuple[str, ...], ...] = (
     ("search", "trending"),
     ("trending_movies", "trending_tv"),
@@ -116,7 +92,6 @@ MENU_LAYOUT: tuple[tuple[str, ...], ...] = (
     ("close",),
 )
 
-# Curated quick-search titles (index-based callbacks keep data short).
 POPULAR_TITLES: tuple[str, ...] = (
     "Avatar",
     "Stranger Things",

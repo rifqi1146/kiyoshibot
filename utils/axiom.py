@@ -1,37 +1,3 @@
-"""Axiom Payment QRIS client (https://portal.axiomcreative.xyz/docs).
-
-FLOW SCRAPER / API:
-1. `create_qris(amount)` -> POST /create-qris with header `x-api-key`.
-   Returns the invoice: qris_id, trx_id, amount, fee_amount, net_amount,
-   status, created_at, expires_at, qr_url, qris_string.
-2. `check_payment(qris_id=None, trx_id=None)` -> POST /check-payment.
-   Response shape: {success, paid, status, data, transaction?}.
-3. `payment_status(qris_id)` -> GET /api/qr-status/<qris_id> (public, no key).
-   Used as read-only fallback when check-payment fails (429/503/network).
-
-Rules from the docs that this client enforces:
-- The API key never leaves the backend (only sent as `x-api-key` header).
-- `amount` must be an integer 1..10_000_000.
-- Never treat a failed check as "unpaid": on 429/503/network the caller keeps
-  the last known status, so each function raises instead of returning a
-  fabricated PENDING.
-- The provider decides QR expiry; we always read `expires_at` from the response.
-
-RETRY:
-The Axiom origin sits behind a load balancer whose backends flap: a request can
-hit an edge node whose upstream origin fails the TLS handshake and returns
-HTTP 525 while the next request on the same host returns 200 (measured ~17/30
-success on a single burst). Cloudflare 520/521/522/523/524/525/526 and 503 are
-therefore retried with a short backoff before the error is surfaced.
-
-TRANSPORT:
-Requests go through `curl_cffi` with `impersonate="chrome"` instead of plain
-`aiohttp`. The Cloudflare WAF in front of the portal raises a Turnstile
-challenge (HTTP 403 "Just a moment...") for plain clients coming from
-datacenter IPs; a real Chrome TLS/JA3 fingerprint passes. `curl_cffi` ships the
-same Chrome signature, so the WAF sees a browser. Do not swap this back to
-aiohttp: it works from a clean IP and fails from a flagged one.
-"""
 
 import asyncio
 import logging
@@ -51,20 +17,14 @@ CHECK_TIMEOUT = 15
 MIN_AMOUNT = 1
 MAX_AMOUNT = 10_000_000
 
-# Gateway origin failures worth retrying (Cloudflare edge <-> origin errors)
-# plus 403, which is the Turnstile challenge that appears when a datacenter IP
-# is flagged; a retry with the Chrome fingerprint usually clears it.
 RETRY_STATUSES = {403, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
 MAX_ATTEMPTS = 5
 BASE_BACKOFF = 0.4
 
-# Chrome impersonation profile used for every request (mirrors the header the
-# docs assume: an authenticated backend call, not a browser session).
 IMPERSONATE = "chrome"
 
 
 class AxiomError(RuntimeError):
-    """Raised when the gateway cannot be reached or answers with an error."""
 
     def __init__(self, message: str, *, status: int | None = None, data: dict | None = None):
         super().__init__(message)
@@ -83,7 +43,6 @@ def _headers() -> dict:
 
 
 def _parse_iso(value) -> float | None:
-    """Parse an ISO 8601 timestamp (e.g. 2026-10-08T12:15:00.000Z) to epoch."""
     if not value:
         return None
     text = str(value).strip()
@@ -126,8 +85,6 @@ async def _request(
                 status = resp.status_code
                 text = resp.text
 
-                # Cloudflare Turnstile challenge (403), origin flapping (525/520/522/503/etc),
-                # or rate limiting (429).
                 if status in RETRY_STATUSES:
                     retry_after = resp.headers.get("Retry-After")
                     delay = float(retry_after) if retry_after and retry_after.isdigit() else (
@@ -185,7 +142,6 @@ async def _request(
 
 
 async def create_qris(amount: int) -> dict:
-    """Create a QRIS invoice. Returns a normalized dict (never a raw body)."""
     try:
         amount = int(amount)
     except Exception:
@@ -226,11 +182,6 @@ async def check_payment(
     *,
     attempts: int = 3,
 ) -> dict:
-    """POST /check-payment -> {paid, status, data, transaction?}.
-
-    Raises AxiomError on 429/503/network. Callers must keep the last known
-    status when this raises, never assume the user did not pay.
-    """
     if not qris_id and not trx_id:
         raise AxiomError("check_payment needs qris_id or trx_id.")
 
@@ -260,11 +211,6 @@ async def check_payment(
 
 
 async def payment_status(qris_id: str) -> dict:
-    """GET /api/qr-status/<qris_id> -> {paid, status, expires_at}.
-
-    Public read-only endpoint (no API key). Used only to cross-check when the
-    authenticated check fails. Raises AxiomError on 404/503/network.
-    """
     body = await _request("GET", f"/api/qr-status/{qris_id}", timeout=CHECK_TIMEOUT)
     if not body.get("success"):
         raise AxiomError(str(body.get("message") or "Failed to read payment status."))

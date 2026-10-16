@@ -1,14 +1,3 @@
-"""HTTP client and parser for Xiaomi Firmware Updater (xmfirmwareupdater.com).
-
-Sumber data (semuanya publik, tanpa login):
-- `data/firmware_devices.yml` -> pemetaan codename ke nama komersial Xiaomi/Redmi/POCO.
-- `/archive/hyperos/<codename>/` -> tabel ROM HyperOS (Recovery + Fastboot, semua region).
-- `/archive/miui/<codename>/`    -> tabel ROM MIUI (Recovery + Fastboot, semua region).
-- `/<section>/<codename>/<branch>/<version>/` -> halaman detail ROM berisi semua mirror CDN.
-
-Tabel arsip di situs sudah PRE-RENDERED di dalam `<tbody>` (tanpa XHR/AJAX),
-jadi cukup parse HTML langsung — tidak perlu browser headless.
-"""
 import logging
 import re
 import time
@@ -30,7 +19,6 @@ log = logging.getLogger(__name__)
 
 _session = None
 
-# Region resmi yang muncul di nama device (mis. "POCO F4 Indonesia").
 REGION_HINTS = (
     "Indonesia",
     "China",
@@ -61,7 +49,6 @@ def _http():
 
 
 def _get(url: str) -> str:
-    """GET halaman dan kembalikan teks HTML; string kosong bila gagal."""
     try:
         r = _http().get(url, headers={"User-Agent": UA}, timeout=HTTP_TIMEOUT)
         if r.status_code != 200:
@@ -74,18 +61,13 @@ def _get(url: str) -> str:
 
 
 def _region_from(name: str) -> str:
-    """Turunkan region dari nama device, mis. 'POCO F4 Indonesia' -> 'Indonesia'."""
     for reg in REGION_HINTS:
         if reg.lower() in (name or "").lower():
             return "Europe" if reg in ("EEA", "Europe") else reg
     return "Global"
 
 
-# ---------------------------------------------------------------------------
-# Device catalogue
-# ---------------------------------------------------------------------------
 def fetch_devices_map(force: bool = False) -> dict[str, str]:
-    """Ambil daftar 300+ perangkat Xiaomi dari firmware_devices.yml dengan caching."""
     now = time.time()
     cached = DEVICES_CACHE.get("map")
     if not force and cached and (now - DEVICES_CACHE.get("ts", 0) < DEVICES_TTL):
@@ -116,14 +98,6 @@ def fetch_devices_map(force: bool = False) -> dict[str, str]:
 
 
 def resolve_device(query: str) -> tuple[str, str, list[tuple[str, str]]]:
-    """Cari codename dan nama perangkat berdasarkan input user.
-
-    Returns:
-        (exact_codename, exact_name, multiple_matches)
-        - cocok persis  -> ("munch", "Redmi K40S/POCO F4", [])
-        - ambigu         -> ("", "", [("munch", "POCO F4"), ...])
-        - tidak ada     -> ("", "", [])
-    """
     devs = fetch_devices_map()
     if not devs:
         return "", "", []
@@ -156,11 +130,7 @@ def resolve_device(query: str) -> tuple[str, str, list[tuple[str, str]]]:
     return "", "", []
 
 
-# ---------------------------------------------------------------------------
-# ROM archive (HyperOS + MIUI, semua region & tipe)
-# ---------------------------------------------------------------------------
 def _parse_archive_table(html: str, section: str, seen: set) -> list[dict]:
-    """Parse `<tbody>` tabel arsip ROM menjadi list dict."""
     body = re.search(r"<tbody>(.*?)</tbody>", html, re.S)
     if not body:
         return []
@@ -178,7 +148,6 @@ def _parse_archive_table(html: str, section: str, seen: set) -> list[dict]:
         device_name, branch, rom_type, version, android, size, date = cells[:7]
         detail_path = href[0]
 
-        # Dedup per (versi, tipe flash) — situs kadang punya baris kembar.
         key = (version, rom_type, detail_path)
         if key in seen:
             continue
@@ -202,10 +171,6 @@ def _parse_archive_table(html: str, section: str, seen: set) -> list[dict]:
 
 
 def fetch_rom_archive(codename: str) -> list[dict]:
-    """Ambil seluruh riwayat ROM (HyperOS + MIUI) untuk codename tertentu.
-
-    Hasil diurutkan tanggal rilis terbaru -> terlama dan dipotong MAX_RESULTS.
-    """
     c = (codename or "").strip().lower()
     if not c:
         return []
@@ -222,16 +187,7 @@ def fetch_rom_archive(codename: str) -> list[dict]:
     return items[:MAX_RESULTS]
 
 
-# ---------------------------------------------------------------------------
-# ROM detail page -> daftar mirror CDN
-# ---------------------------------------------------------------------------
 def fetch_rom_mirrors(detail_path: str) -> dict:
-    """Ambil semua mirror CDN dari halaman detail ROM.
-
-    Returns:
-        {"recovery": {...}, "fastboot": {...}}
-        Setiap blok: {size, md5, filename, mirrors: [{url, host, label}], incremental: {...}|None}
-    """
     if not detail_path:
         return {}
 

@@ -1,15 +1,3 @@
-"""Downloader BDSMLust (bdsmlust.com)
-
-FLOW DOWNLOADER
----------------
-1. `is_bdsmlust_url(url)`: Cocokkan host bdsmlust.com + path non-kosong yang
-   bukan halaman statis (search, category, page, dst).
-2. `probe_bdsmlust(url)`: Ekstrak metadata (title, duration, thumbnail,
-   download_url, filesize) dan simpan ke cache singkat (TTL 300s).
-3. `bdsmlust_download(...)`: Unduh direct MP4 (via embed bdsmstreak atau
-   KVS bdsmx.tube). Mendukung konversi mp3 (libmp3lame via ffmpeg) jika
-   `fmt_key == 'mp3'`. Hasil membawa metadata untuk upload Telegram.
-"""
 
 import asyncio
 import logging
@@ -135,7 +123,6 @@ async def bdsmlust_download(
 
         final_path = res["path"]
 
-        # Mode audio / mp3
         if fmt_key == "mp3":
             mp3_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp3")
             ffmpeg_cmd = [
@@ -159,7 +146,6 @@ async def bdsmlust_download(
                 "artist": "BDSMLust",
             }
 
-        # Pindahkan file ke TMP_DIR
         out_video = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp4")
         shutil.move(final_path, out_video)
         return {

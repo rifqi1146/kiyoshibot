@@ -1,21 +1,3 @@
-"""uvloop-safe async subprocess spawner.
-
-PENTING (uvloop fork() SIGSEGV -11):
-`asyncio.create_subprocess_exec` di bawah uvloop memanggil `fork()` lewat
-`libuv.uv_spawn`. Ketika bot memiliki background C-threads aktif (seperti
-curl_cffi, Playwright/scrapling, atau sqlite3), `fork()` pada thread lain merusak
-state internal `libc.so.6` sehingga anak proses mati SIGSEGV (`exit code -11`)
-sebelum/saat `execve` (terkonfirmasi di kernel dmesg: segfault in libc.so.6).
-Selain itu, uvloop child watcher bisa rusak sehingga SEMUA pemanggilan spawn
-berikutnya gagal sampai bot di-restart.
-
-`subprocess.Popen` yang dipanggil via `asyncio.to_thread` aman karena
-menggunakan implementasi CPython (`posix_spawnp` / `CLONE_VM | CLONE_VFORK`)
-dan tidak menyentuh uvloop child watcher.
-
-Modul ini menyediakan `AsyncProcess` dan `spawn_process()` sebagai drop-in
-replacement yang aman untuk `asyncio.create_subprocess_exec`.
-"""
 import os
 import sys
 import shutil
@@ -31,7 +13,6 @@ _RESOLVED_ARIA2: str | None = None
 
 
 def resolve_aria2() -> str | None:
-    """Temukan binary `aria2c`. Cek PATH sistem, lalu `venv/bin/aria2c` dan site-packages."""
     global _RESOLVED_ARIA2
     if _RESOLVED_ARIA2 is not None:
         return _RESOLVED_ARIA2 or None
@@ -56,7 +37,6 @@ def resolve_aria2() -> str | None:
 
 
 class AsyncProcess:
-    """Wrapper `subprocess.Popen` dengan interface async ala `asyncio.subprocess.Process`."""
 
     def __init__(self, proc: subprocess.Popen):
         self._proc = proc
@@ -114,10 +94,6 @@ async def spawn_process(
     env: dict | None = None,
     **kwargs: Any,
 ) -> AsyncProcess:
-    """Spawn child process via `subprocess.Popen` di worker thread (posix_spawn).
-
-    Aman dijalankan di bawah uvloop dan thread C aktif.
-    """
     flat_cmd: list[str] = []
     for arg in cmd:
         if isinstance(arg, (list, tuple)):

@@ -1,21 +1,3 @@
-"""Optional Instagram mobile-device session fallback.
-
-Instagram age-gated / login-walled posts are refused by the logged-out web
-GraphQL (``gating_ruling`` with ``NO_ACCESS``). The private mobile API
-(``i.instagram.com/api/v1/media/<pk>/info/``) does not have that restriction,
-but it requires a logged-in Android-app session.
-
-``scripts/ig_login.py`` performs a one-shot login and stores the full device
-fingerprint (device_id / phone_id / uuid / cookies / authorization token) in
-``data/ig_session.json``. This module loads that file lazily and reuses it
-WITHOUT ever calling ``login()`` again, so the session survives for weeks or
-months instead of expiring like a browser cookie.
-
-Everything here is best-effort: if ``instagrapi`` is not installed or the
-session file is missing/expired, the functions return ``None`` and the caller
-falls back to the next source (Neoxr API). ``instagrapi`` is synchronous
-(requests), so every call is wrapped in ``asyncio.to_thread``.
-"""
 
 import asyncio
 import importlib.util
@@ -43,7 +25,6 @@ def _instagrapi_available() -> bool:
 
 
 def session_available() -> bool:
-    """True when a saved session file exists and the feature is enabled."""
     if not IG_SESSION_ENABLED or not _instagrapi_available():
         return False
     return SESSION_PATH.exists()
@@ -53,11 +34,6 @@ def _build_client():
     from instagrapi import Client
 
     cl = Client()
-    # Load WITHOUT override_app_version: the saved JSON already carries a
-    # complete app profile (app_version + version_code + bloks_versioning_id),
-    # so this preserves the exact device fingerprint the account logged in with.
-    # Overriding would rewrite app_version to the current library default and
-    # change the User-Agent, which can invalidate the mobile session.
     cl.load_settings(str(SESSION_PATH))
     return cl
 
@@ -71,7 +47,6 @@ async def _get_client():
 
 
 def reset_session():
-    """Drop the cached client (used by /reload and shutdown hooks)."""
     global _client
     _client = None
 
@@ -124,12 +99,6 @@ def _resolve_blocking(shortcode: str) -> dict | None:
 
 
 async def fetch_media_via_session(shortcode: str) -> dict | None:
-    """Resolve a post via the saved mobile session.
-
-    Returns a metadata dict shaped like ``_fetch_gql_metadata`` (with an extra
-    ``source`` key), or ``None`` when the session is unavailable / expired /
-    the post has no media. Never raises.
-    """
     global _session_failed_at
 
     if not IG_SESSION_ENABLED:
@@ -145,7 +114,7 @@ async def fetch_media_via_session(shortcode: str) -> dict | None:
 
     try:
         data = await asyncio.to_thread(_resolve_blocking, shortcode)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _session_failed_at = time.monotonic()
         log.warning("Instagram mobile session resolve failed | code=%s err=%r", shortcode, exc)
         reset_session()

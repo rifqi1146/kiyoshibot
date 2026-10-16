@@ -1,14 +1,3 @@
-"""MangaDex API client + detail view + callback handler.
-
-Detail manga (caption + tombol chapter) dibangun oleh `fetch_detail_view` dan
-dikirim sebagai foto cover oleh layer search (`search.py`).
-
-Callback yang ditangani di sini (pesan detail yang sudah berupa foto):
-- `detailmanga_<manga_id>_<offset>` -> halaman chapter Older/Newer (edit caption).
-- `readmanga_<chapter_id>` / `switchch_<chapter_id>` -> buka chapter.
-- `nav_<chapter_id>_<idx>` -> navigasi halaman reader.
-- `pdfdex_<chapter_id>` -> unduh PDF.
-"""
 import asyncio
 import logging
 
@@ -73,7 +62,6 @@ def get_nav_keyboard(chapter_id: str, current_idx: int, total_pages: int, prev_c
 
 
 async def fetch_detail_view(manga_id: str, offset: int = 0):
-    """-> (rich_html, plain_html, keyboard, cover_url) untuk detail manga."""
     m_data = await fetch_json(f"{MANGADEX_API}/manga/{manga_id}?includes[]=cover_art")
     if not m_data or not m_data.get("data"):
         return None, None, None, None
@@ -147,7 +135,6 @@ async def handle_mangadex_callback(query, context, data: str):
                 text="❌ Failed to download image."
             )
         reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
-        # Pesan detail hilang, reader dikirim sebagai reply ke pesan command user.
         try:
             await query.message.delete()
         except Exception:
@@ -188,7 +175,6 @@ async def handle_mangadex_callback(query, context, data: str):
         urls = [f"{base_url}/data/{chapter_hash}/{p}" for p in server_data.get("chapter", {}).get("data", [])]
         title = f"{m_title} - Ch {m_ch} [{m_lang}]"
         reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
-        # Pesan detail hilang, PDF dikirim sebagai reply ke pesan command user.
         try:
             await query.message.delete()
         except Exception:

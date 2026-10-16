@@ -55,19 +55,17 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     def S(val): 
         return int(val * scale)
 
-    # Palet light minimalis — background gradasi biru ke putih, kartu putih, border navy
-    text_title = (13, 20, 30)          # navy gelap
-    text_body = (51, 65, 85)           # slate-700
-    text_muted = (100, 116, 139)       # slate-500
-    bar_bg = (226, 232, 240)           # slate-200
-    accent = (236, 72, 153)            # magenta
+    text_title = (13, 20, 30)
+    text_body = (51, 65, 85)
+    text_muted = (100, 116, 139)
+    bar_bg = (226, 232, 240)
+    accent = (236, 72, 153)
     accent_soft = (249, 168, 212)
-    card_border = (216, 224, 238)      # navy sangat pucat — garis samar seperti contoh
+    card_border = (216, 224, 238)
 
     img = Image.new("RGB", (width, height), (244, 247, 251))
     draw = ImageDraw.Draw(img)
 
-    # Gradasi vertikal: biru muda → putih
     from PIL import ImageDraw as ID
     grad = Image.new("RGB", (1, height))
     for y in range(height):
@@ -96,13 +94,10 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     left_x = margin
     right_x = margin + col_w + gap
 
-    # Baris 1: CPU | System + Runtime
     y1 = S(120)
     h1 = S(290)
-    # Baris 2: Memory + Disk | Host Traffic
     y2 = y1 + h1 + gap
     h2 = S(300)
-    # Baris 3: Bot Process (full width, 2 kolom x 4 baris)
     y3 = y2 + h2 + gap
     h3 = S(230)
 
@@ -131,7 +126,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     draw.text((cx0 + S(24), cy0 + S(108)), "Freq", font=font_body, fill=text_muted)
     draw.text((cx0 + S(130), cy0 + S(108)), f"{cpu['freq']}", font=font_body, fill=text_body)
 
-    # Bar tipis, label "Load: x%" dengan font UI (bukan mono, biar lembut)
     draw_progress_bar(draw, cx0 + S(24), cy0 + S(196), col_w - S(48), S(13), cpu_load, bar_bg, accent)
     draw.text((cx0 + S(24), cy0 + S(222)), f"Load: {cpu_load:.1f}%", font=font_body, fill=text_body)
 
@@ -165,7 +159,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     draw.text((rx0 + S(24), ry0 + S(24)), "Memory + Disk", font=font_heading, fill=text_title)
     right_align_x = rx1 - S(24)
 
-    # RAM
     ram = stats["ram"]
     ram_pct = clamp_percent(ram["pct"])
     draw.text((rx0 + S(24), ry0 + S(70)), "RAM", font=font_body, fill=text_title)
@@ -173,7 +166,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     draw_progress_bar(draw, rx0 + S(24), ry0 + S(98), col_w - S(48), S(13), ram_pct, bar_bg, accent)
     draw.text((rx0 + S(24), ry0 + S(118)), f"{ram_pct:.1f}%", font=font_small, fill=text_body)
 
-    # SWAP
     swap = stats["swap"]
     swap_pct = clamp_percent(swap["pct"])
     draw.text((rx0 + S(24), ry0 + S(156)), "Swap", font=font_body, fill=text_title)
@@ -183,7 +175,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     else:
         draw_right("N/A", right_align_x, ry0 + S(156), font_body, text_muted)
 
-    # DISK
     disk = stats["disk"]
     disk_pct = clamp_percent(disk["pct"])
     draw.text((rx0 + S(24), ry0 + S(224)), "Disk (/)", font=font_body, fill=text_title)
@@ -191,7 +182,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     draw_right(disk_info, right_align_x, ry0 + S(224), font_small, text_muted)
     draw_progress_bar(draw, rx0 + S(24), ry0 + S(252), col_w - S(48), S(13), disk_pct, bar_bg, accent)
 
-    # Host Traffic (baris 2 kanan)
     nx0, ny0, nx1, ny1 = net_card
     draw.text((nx0 + S(24), ny0 + S(24)), "Host Traffic", font=font_heading, fill=text_title)
 
@@ -221,7 +211,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
         draw.text((nx0 + S(24), ny0 + S(200)), "TX/s", font=font_small, fill=text_muted)
         draw.text((nx0 + S(80), ny0 + S(200)), f"{humanize_bytes(int(txps))}/s", font=font_small, fill=text_body)
 
-        # Bar RX/TX: padding kiri/kanan S(24), dan jarak bawah S(24) dari border kartu
         bar_x = nx0 + S(64)
         bar_w = (nx1 - S(24)) - bar_x
 
@@ -233,7 +222,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
     except Exception:
         pass
 
-    # Baris 3: Bot Process (full width, 2 kolom x 4 baris)
     bx0, by0, bx1, by1 = bot_card
     diag = stats.get("diagnostics") or {}
     process = diag.get("process") or {}
@@ -250,8 +238,6 @@ def render_dashboard(stats, net_speed=(0.0, 0.0)):
         ("API mode", str(diag.get("api_mode", "N/A"))),
         ("Quote API", str(diag.get("quote", "N/A"))),
     ]
-    # Kolom kiri sejajar dengan CPU (bx0 + S(24))
-    # Kolom kanan sejajar persis dengan System + Runtime & Host Traffic (nx0 + S(24))
     for rows, col_x in ((proc_left, bx0 + S(24)), (proc_right, nx0 + S(24))):
         row_y = by0 + S(64)
         for label, val in rows:

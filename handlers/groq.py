@@ -37,8 +37,6 @@ def _emo():
     return random.choice(_EMOS)
 
 def _cleanup_cooldown(now:float):
-    # Bersihkan entri basi secara berkala — bukan cuma saat len>=500, supaya
-    # tidak ada entri stale yang menahan memori di antara 0..500.
     if len(_last_req)<64 and not any(now-ts>max(COOLDOWN*10,300) for ts in list(_last_req.values())):
         return
     expired=[uid for uid,ts in list(_last_req.items()) if now-ts>max(COOLDOWN*10,300)]
@@ -100,8 +98,6 @@ async def _reply_thread(bot,msg,text,parse_mode=None):
     try:
         return await bot.send_message(**kwargs)
     except Exception as e:
-        # Tag HTML tak seimbang / entity tak valid -> Telegram balas 400.
-        # Kirim ulang sebagai teks polos agar pesan tetap sampai.
         if parse_mode and "parse" in str(e).lower():
             log.warning("Telegram parse rejected, resend plain | chat_id=%s err=%r",msg.chat_id,e)
             kwargs["text"]=strip_tags_plain(text)
@@ -116,11 +112,6 @@ async def _reply_thread(bot,msg,text,parse_mode=None):
         return await bot.send_message(**kwargs)
 
 def _clean_groq_output(raw:str)->str:
-    """Bersihkan markdown mentah Groq dari sitasi browser_search & sampah unicode.
-
-    Hasilnya markdown (bukan HTML) supaya bisa dikirim sebagai Rich Message;
-    fallback HTML-nya dikerjakan di `_send_chunks` via sanitize_ai_output.
-    """
     raw=raw or ""
     raw=re.sub(r"【\d+†L\d+-L\d+】","",raw)
     raw=re.sub(r"\[\d+†L\d+-L\d+\]","",raw)
@@ -128,7 +119,6 @@ def _clean_groq_output(raw:str)->str:
     return sanitize_markdown(raw)
 
 async def _send_chunks(bot,msg,chunks:list[str])->Optional[int]:
-    """Send markdown output as Rich Message, fallback to HTML sendMessage."""
     from utils.rich_stream import send_rich_message
     if not chunks:
         return None
@@ -213,15 +203,9 @@ async def ask_groq_text(prompt:str,history:Optional[list]=None,use_search:bool=F
     raw=data["choices"][0]["message"].get("content")
     if not raw or not raw.strip():
         raise RuntimeError("Groq response kosong")
-    # Markdown mentah (bukan HTML) supaya bisa dikirim sebagai Rich Message.
     return _clean_groq_output(raw)
 
 async def ask_groq_stream(prompt:str,history:Optional[list]=None,use_search:bool=False):
-    """Async generator delta teks Groq (SSE OpenAI-compatible).
-
-    Hanya `delta.content` yang di-yield; kolom `reasoning` (model reasoning
-    seperti gpt-oss) sengaja dilewatkan agar tidak bocor ke draft Telegram.
-    """
     payload=await _groq_payload(prompt,history,use_search)
     payload["stream"]=True
     session=await get_http_session()
@@ -258,7 +242,6 @@ async def ask_groq_stream(prompt:str,history:Optional[list]=None,use_search:bool
                     yield text
 
 async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
-    """Streaming Rich Message draft for DMs; groups use the non-streaming path."""
     from utils.rich_stream import stream_to_draft
     bot=context.bot
     draft_id=msg.message_id
@@ -301,7 +284,6 @@ async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
     except RuntimeError as e:
         if "not supported in this chat" not in str(e):
             raise
-        # Server/klien tak punya draft streaming -> fallback non-streaming.
         stop=asyncio.Event()
         typing=asyncio.create_task(_typing_loop(bot,msg.chat_id,stop,None))
         try:

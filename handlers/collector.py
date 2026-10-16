@@ -10,12 +10,6 @@ log = logging.getLogger(__name__)
 
 BROADCAST_DB = "data/broadcast.sqlite3"
 
-# Throttle: `updated_at` hanya bermakna "kapan terakhir chat/user terlihat".
-# Menulis ulang tiap pesan (grup ramai) memboroskan disk I/O + lock SQLite
-# tanpa menambah informasi. Simpan mtime terakhir di memori supaya satu chat
-# atau satu user cukup ditulis sekali per COLLECT_TTL_SEC. Tabelnya sudah
-# persisten dan entri cache hilang saat restart -> paling lambat langsung
-# ditulis ulang setelah boot.
 COLLECT_TTL_SEC = float(os.getenv("BROADCAST_COLLECT_TTL_SEC", "1800"))
 
 _COLLECT_SEEN: dict[tuple, float] = {}
@@ -60,13 +54,6 @@ def _db_init():
 
 
 def _collect_sync(chat_id: int, chat_type: str, usernames: list[tuple[int, str]]) -> None:
-    """Persist chat membership + username cache in a single transaction.
-
-    Runs the whole unit of work (open/execute/commit/close) inside one
-    thread so the SQLite connection never crosses thread boundaries.
-    DDL tidak dijalankan di sini lagi (dulu 3x CREATE TABLE tiap pesan);
-    tabel dijamin sudah ada oleh `_db_init()` saat import.
-    """
     chat_key = (chat_id, chat_type)
     user_keys = [(int(chat_id), u) for _, u in usernames]
     now = float(time.time())
@@ -115,7 +102,6 @@ def _collect_sync(chat_id: int, chat_type: str, usernames: list[tuple[int, str]]
                 )
             con.commit()
     except Exception:
-        # Jangan pernah bikin handler pesan gagal gara-gara cache collector.
         log.warning("Collector persist failed | chat_id=%s", chat_id, exc_info=True)
         return
 

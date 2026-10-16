@@ -1,18 +1,3 @@
-"""Helper Rich Message (Bot API 10.3) generik untuk pesan non-search.
-
-Dipakai handler yang output-nya terstruktur (key-value / tabel): `/ip`,
-`/domain`, `/net`, `/whoisdomain`, `/weather`, `/kurs`, dll.
-
-Desain: pemanggil menyusun daftar **section** `(heading, rows)` di mana `rows`
-adalah list `(label, value)`. Helper menghasilkan DUA versi sekaligus:
-
-- `rich`: `<h1>` + `<h3>` + `<table compact>` + `<aside>`.
-- `plain`: HTML biasa (`<b>` + `• label: value`) untuk fallback server lama.
-
-API utama:
-- `Report` + `report.add(...)` -> `(rich_html, plain_html)`.
-- `send_rich(...)` / `edit_rich(...)` dengan fallback otomatis.
-"""
 import html
 import logging
 import warnings
@@ -24,14 +9,12 @@ log = logging.getLogger(__name__)
 
 
 class Report:
-    """Akumulator section untuk pesan terstruktur rich + plain."""
 
     def __init__(self, title: str, subtitle: str = "", *, aside: str = "", footer: str = ""):
         self.title = title
         self.subtitle = subtitle
         self.aside = aside
         self.footer = footer
-        # (heading, rows) ; rows = list[(label, value)] ; value None -> dilewati
         self.sections: list[tuple[str, list]] = []
         self._plain_extra: list[str] = []
 
@@ -41,13 +24,11 @@ class Report:
         return self
 
     def add_raw(self, heading: str, rows) -> "Report":
-        """Seperti `add`, tapi `value` TIDAK di-escape (pemanggil sudah bikin markup)."""
         rows = [(lbl, val) for lbl, val in rows if val is not None and str(val).strip()]
         self.sections.append((heading, rows))
         return self
 
     def add_text(self, plain_block: str) -> "Report":
-        """Tambah blok plain tambahan (mis. daftar name server) ke fallback."""
         if plain_block and plain_block.strip():
             self._plain_extra.append(plain_block)
         return self
@@ -142,9 +123,6 @@ async def edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_ht
             warnings.simplefilter("ignore")
             return await bot.do_api_request("editMessageText", payload)
     except Exception as e:
-        # "message is not modified" = pesan SUDAH benar; jangan jatuh ke fallback
-        # plain HTML (itu bikin rich message hilang saat user menekan tombol yang
-        # menghasilkan layar identik).
         if is_message_not_modified(e):
             log.debug("editMessageText rich not modified, no-op")
             return None

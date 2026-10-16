@@ -26,7 +26,6 @@ from handlers.blacklist import blacklist_callback_gate
 from handlers.welcome import verify_method_callback
 from handlers.caca import cacabill_callback
 
-# ... tambahin di deretan app.add_handler lu:
 
 def register_callbacks(app):
     app.add_handler(

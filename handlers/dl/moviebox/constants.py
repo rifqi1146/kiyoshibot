@@ -1,4 +1,3 @@
-"""Constants for MovieBox downloader (officialmoviebox.com)."""
 import os
 
 UA = (

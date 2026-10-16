@@ -30,7 +30,6 @@ from database.welcome_db import (
 
 log = logging.getLogger(__name__)
 
-#WEB CONFIG
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", f"http://{WEB_HOST}:{WEB_PORT}")
@@ -100,7 +99,6 @@ async def _check_cas_ban(user_id: int) -> dict:
         log.error(f"[CAS] Failed to check CAS API for {user_id} | err={e}")
     
     return {"banned": False}
-
 
 
 def _cancel_verify_timeout(chat_id: int, user_id: int):
@@ -406,9 +404,6 @@ async def _process_new_member(chat, user, context: ContextTypes.DEFAULT_TYPE):
                 log.error(f"[CAS] FAILED to send BAN notification: {e}")
 
 
-
-
-
 async def wlc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global WELCOME_ENABLED_CHATS
     msg = update.message
@@ -533,7 +528,6 @@ async def verify_method_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def _on_verification_success(bot, chat_id: int, user_id: int):
-    """Callback pas Web Server dapet validasi sukses dari Cloudflare/hCaptcha"""
     async with _get_verify_lock(chat_id, user_id):
         key = _verify_key(chat_id, user_id)
         pending = PENDING_VERIFY.get(key)
@@ -934,9 +928,6 @@ async def _cleanup_caches_loop():
                 VERIFY_LOCKS.pop(k, None)
                 VERIFY_LOCK_TIMES.pop(k, None)
 
-            # VERIFIED_USERS adalah cache dari DB (load_verified), jadi aman
-            # dipangkas. Tanpa ini setiap user yang pernah verify menetap di
-            # RAM selamanya untuk lifetime proses.
             _MAX_VERIFIED_PER_CHAT = 5000
             for cid in list(VERIFIED_USERS.keys()):
                 users = VERIFIED_USERS.get(cid)
@@ -957,7 +948,6 @@ async def _cleanup_caches_loop():
             log.warning(f"Cache cleanup loop error: {e}")
 
 async def start_welcome_server(bot):
-    """Fungsi ini dipanggil di post_init buat nyalain web server"""
     global BOT_INSTANCE
     BOT_INSTANCE = bot
     

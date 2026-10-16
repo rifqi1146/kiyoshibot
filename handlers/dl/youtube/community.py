@@ -81,8 +81,6 @@ def _walk_json(obj):
 
 
 def _to_full_res_url(img_url: str) -> str:
-    # Google/YouTube image URLs on yt3.ggpht.com / *.googleusercontent.com:
-    # replace =s\d+... suffix with =s0 for original full uncompressed resolution
     if not img_url:
         return ""
     if "=s" in img_url:
@@ -96,7 +94,6 @@ async def _download_file(session: aiohttp.ClientSession, url: str, dest_path: st
             if r.status != 200:
                 log.warning("Failed to fetch image | status=%s url=%s", r.status, url)
                 return False
-            # Stream ke disk alih-alih menampung seluruh gambar di RAM.
             with open(dest_path, "wb") as f:
                 size = 0
                 async for chunk in r.content.iter_chunked(256 * 1024):
@@ -128,7 +125,6 @@ async def download_youtube_post(
 
     m = re.search(r'var ytInitialData\s*=\s*(\{.*?\});</script>', html_text, re.S)
     if not m:
-        # Fallback inline data
         m = re.search(r'window\["ytInitialData"\]\s*=\s*(\{.*?\});</script>', html_text, re.S)
     if not m:
         raise RuntimeError("Failed to extract YouTube Community Post data")
@@ -152,11 +148,9 @@ async def download_youtube_post(
     content_runs = post.get("contentText", {}).get("runs", [])
     content = "".join(r.get("text", "") for r in content_runs).strip()
 
-    # Attachment parsing
     attachment = post.get("backstageAttachment", {})
     image_urls: list[str] = []
 
-    # Case 1: single image
     single = attachment.get("backstageImageRenderer", {}).get("image", {}).get("thumbnails", [])
     if single:
         best = max(single, key=lambda t: t.get("width", 0))
@@ -164,7 +158,6 @@ async def download_youtube_post(
         if best_url:
             image_urls.append(best_url)
 
-    # Case 2: carousel / multi-image
     multi = attachment.get("postMultiImageRenderer", {}).get("images", [])
     if multi:
         for item in multi:
@@ -186,7 +179,6 @@ async def download_youtube_post(
     job_id = uuid.uuid4().hex[:10]
 
     if not image_urls:
-        # Case 3: text-only post (tidak ada gambar)
         log.info("YouTube community post is text-only | post_id=%s", post_id)
         if bot and chat_id:
             safe_author = html.escape(author or "YouTube Post")
@@ -199,7 +191,6 @@ async def download_youtube_post(
             return {"handled": True, "title": caption_text}
         raise RuntimeError("This community post only contains text (no media to download).")
 
-    # Download semua gambar
     saved_paths: list[str] = []
     for idx, i_url in enumerate(image_urls):
         dest = f"{TMP_DIR}/{job_id}_{idx}.jpg"

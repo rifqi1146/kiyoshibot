@@ -1,20 +1,3 @@
-"""HTTP client + parser + fetcher untuk explorer Simontok (`/simontok`).
-
-FLOW SCRAPER
-------------
-1. `http_get(url)` -> HTML mentah (curl_cffi impersonate Chrome).
-2. `parse_cards(html)` -> kartu listing `article.smt-kartu` (judul, url, thumb,
-   durasi, views, badge). Halaman kosong tetap memuat artikel filler "Video
-   Terbaru", jadi `section.smt-kata` ("Tidak ada hasil...") dicek lebih dulu.
-3. `fetch_paginated(url_template, max_items)` -> gabungkan beberapa halaman
-   server sampai `MAX_RESULTS` (24 kartu/halaman).
-4. `fetch_section(section_key)` -> listing seksi kurasi (`/terbaru/`,
-   `/trending/`, `/vip/`, `/indo/`, `/jav/`, `/semi/`, `/hentai/`).
-5. `fetch_genre(slug)` -> listing genre (`/genre/<slug>/page/N/`).
-6. `search(query)` -> `/?s=<q>` dengan paginasi `/page/<N>/?s=<q>`.
-7. `fetch_categories()` -> `div.smt-kategori` beranda (cache 1 jam, fallback statis).
-8. `fetch_detail(url)` -> metadata halaman post (judul, thumb, genre/tag).
-"""
 import logging
 import math
 import re
@@ -52,7 +35,6 @@ def _http(host_key: str = "default"):
 
 
 def http_get(url: str, referer: str = "") -> str:
-    """Ambil HTML halaman; kosong kalau gagal."""
     try:
         headers = {"User-Agent": UA}
         if referer:
@@ -65,7 +47,6 @@ def http_get(url: str, referer: str = "") -> str:
 
 
 def is_post_url(url: str) -> bool:
-    """True kalau href adalah post (bukan kategori/genre/pagination/halaman statis)."""
     if not url:
         return False
     parts = urlsplit(url)
@@ -86,11 +67,6 @@ def _stat(art, class_name: str) -> str:
 
 
 def parse_cards(html_text: str) -> list[dict]:
-    """Kartu listing dari `article.smt-kartu`.
-
-    -> [{title, url, thumbnail, duration, views, badge, meta}]
-    Halaman kosong (`section.smt-kata` = "Tidak ada hasil...") -> [].
-    """
     if not html_text:
         return []
     soup = BeautifulSoup(html_text, "html.parser")
@@ -151,7 +127,6 @@ def parse_cards(html_text: str) -> list[dict]:
 
 
 def _has_next_page(html_text: str, page: int) -> bool:
-    """True kalau nav paginasi memuat link ke halaman berikutnya."""
     if not html_text:
         return False
     soup = BeautifulSoup(html_text, "html.parser")
@@ -164,7 +139,6 @@ def _has_next_page(html_text: str, page: int) -> bool:
 
 
 def _collect_pages(first_url: str, page_tmpl: str, max_items: int) -> list[dict]:
-    """Ambil halaman 1..N sampai `max_items`; `page_tmpl` memakai `{page}`."""
     raw = http_get(first_url)
     results = parse_cards(raw)
     if not results:
@@ -197,16 +171,11 @@ def _collect_pages(first_url: str, page_tmpl: str, max_items: int) -> list[dict]
 
 
 def fetch_paginated(url_template: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Kumpulkan kartu dari beberapa halaman server sampai `max_items`.
-
-    `url_template` memakai `{page}` dan halaman 1 memakai `/page/1/`.
-    """
     first = url_template.format(page=1)
     return _collect_pages(first, url_template, max_items)
 
 
 def fetch_section(section_key: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing seksi kurasi (`terbaru`, `trending`, `vip`, `indo`, `jav`, `semi`, `hentai`)."""
     section = SECTIONS.get(section_key)
     if not section:
         return []
@@ -219,7 +188,6 @@ def fetch_section(section_key: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def fetch_genre(slug: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Listing genre (`/genre/<slug>/page/N/`)."""
     slug = (slug or "").strip()
     if not slug:
         return []
@@ -232,7 +200,6 @@ def fetch_genre(slug: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def search(query: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Cari di `/?s=<q>`; halaman berikutnya `/page/<N>/?s=<q>`."""
     slug = quote_plus((query or "").strip())
     return _collect_pages(
         f"{BASE_URL}/?s={slug}",
@@ -242,7 +209,6 @@ def search(query: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def _parse_category_links(raw: str) -> list[dict]:
-    """Ambil kategori dari `div.smt-kategori a[href*='/genre/']`."""
     if not raw:
         return []
     soup = BeautifulSoup(raw, "html.parser")
@@ -269,11 +235,6 @@ def _parse_category_links(raw: str) -> list[dict]:
 
 
 def fetch_categories() -> list[dict]:
-    """Kategori dari `div.smt-kategori` beranda (cache 1 jam). -> [{slug, name, count}]
-
-    Hasil apa pun (termasuk `FALLBACK_CATEGORIES` statis) SELALU disimpan ke
-    cache supaya `build_categories_content` ikut terisi.
-    """
     slot = get_categories_cache()
     now = time.time()
     if slot.get("list") and now - slot.get("ts", 0) < INDEX_TTL:
@@ -290,11 +251,6 @@ def fetch_categories() -> list[dict]:
 
 
 def fetch_detail(url: str) -> dict:
-    """Metadata halaman post.
-
-    -> {kind, title, thumbnail, embed, duration, views, badge, categories}
-    `kind="video"` kalau ada iframe embed putarin/puterin; `"unknown"` kalau tidak.
-    """
     raw = http_get(url, referer=f"{BASE_URL}/")
     if not raw:
         return {"kind": "unknown", "title": "", "url": url}

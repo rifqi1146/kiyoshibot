@@ -6,16 +6,11 @@ import asyncio
 
 MEMORY_EXPIRE = 60 * 60 * 24
 CACA_DB_PATH = "data/caca_memory.sqlite3"
-# Riwayat yang dikirim ulang tiap request = CACA_MAX_TURNS * 2 pesan.
-# Diukur: persona + framing Caca = ~840 token KONSTAN tiap pesan, jadi riwayat
-# yang menumpuk adalah biaya variabel utama. 8 turn (16 pesan) -> ~160 token
-# riwayat -> total ~1.000 token/chat -> pas dengan target "300 chat per Rp3.000".
 CACA_MAX_TURNS = int(os.getenv("CACA_MAX_TURNS", "8"))
 
 
 def _caca_db_init():
     os.makedirs("data", exist_ok=True)
-    # Hapus file warisan lama (meta_memory.sqlite3) kalau masih ada
     legacy_path = "data/meta_memory.sqlite3"
     if os.path.exists(legacy_path):
         try:

@@ -1,30 +1,3 @@
-"""Scraper Bunkr (bunkr.cr / bunkr.ph / ...)
-
-FLOW SCRAPER
-------------
-1. Album: `scrape_album(url)` -> `GET /a/<id>`, baca tiap `.theItem`:
-   - `title` = nama file, span `type-Image`/`type-Video` = tipe
-   - `p.theName` = nama, `p.theSize` = ukuran, `img.grid-images_box-img[src]` = thumb
-   - `a[href^="/f/"]` = halaman file
-2. Halaman file: `resolve_file(page_url)` -> rantai 3 lapis:
-     GET  <origin>/f/<id>          -> link `dl.<host>/file/<id>`
-     GET  dl.<host>/file/<id>      -> <div id="download-btn" data-id="...">
-     POST <origin>/api/_001_v2     {"id": data-id} -> {mediafiles, path, original}
-     GET  glb-apisign.cdn.cr/sign?path=<path> -> {token, ex}
-   URL final = `mediafiles + path + ?token=&ex=&n=<original>`
-   Token bertanggal (field `ex` = epoch); URL tidak boleh di-cache lama.
-3. Unduh CDN: `download_to_file` streaming dengan TransferStats (jendela 1s)
-   + progress bar + batas MAX_TG_SIZE.
-4. Album: `download_album` mengunduh semua media senyap lalu mengembalikan
-   `{items:[{path, type}], title}` -> `service._send_media_group_result`
-   memecah per 10 file (batas Telegram).
-5. `extract_audio` (ffmpeg libmp3lame) untuk fmt_key == "mp3".
-6. Nama file Bunkr ter-encode ganda (UTF-8 bytes dibaca sebagai Latin-1)
-   -> `_fix_name` mengembalikan ke UTF-8, mis. `çèå...cos(31).mp4`
-   menjadi `王者原神星铁cos(31).mp4`.
-7. Parsing HTML WAJIB dari `r.content.decode("utf-8")`, bukan `r.text`
-   (Content-Type-nya `text/html` tanpa charset).
-"""
 import os
 import re
 import time
@@ -60,12 +33,10 @@ log = logging.getLogger(__name__)
 
 
 def _new_session():
-    """Satu session per panggilan besar (curl_cffi Session tidak thread-safe)."""
     return curl_requests.Session(impersonate="chrome")
 
 
 def _html(resp) -> str:
-    """Dekode HTML selalu sebagai UTF-8 (Content-Type tanpa charset)."""
     return resp.content.decode("utf-8", "replace")
 
 
@@ -79,11 +50,6 @@ async def _safe_edit_status(bot, chat_id, status_msg_id, text):
 
 
 def _fix_name(name: str) -> str:
-    """Bunkr menyajikan nama file ter-encode ganda (UTF-8 bytes dibaca Latin-1).
-
-    Nama asli `王者原神星铁cos(31).mp4` sampai ke client sebagai mojibake
-    `çèåæçæéèècos(31).mp4`. Kembalikan ke UTF-8 kalau memang bisa.
-    """
     name = name or ""
     try:
         fixed = name.encode("latin-1").decode("utf-8")
@@ -95,7 +61,6 @@ def _fix_name(name: str) -> str:
 
 
 def extension_for(name: str | None, default: str = ".mp4") -> str:
-    """Ekstensi nama file, fallback `default`."""
     path = urlsplit(name or "").path.lower()
     for ext in _VIDEO_EXT + _IMAGE_EXT:
         if path.endswith(ext):
@@ -112,7 +77,6 @@ def _item_type(it) -> str:
 
 
 def parse_album_html(html: str, base: str = "") -> list:
-    """Ambil daftar item album dari HTML `/a/<id>`."""
     soup = BeautifulSoup(html, "html.parser")
     out = []
     for it in soup.find_all(class_="theItem"):
@@ -138,7 +102,6 @@ def parse_album_html(html: str, base: str = "") -> list:
 
 
 def scrape_album(url: str) -> dict:
-    """-> {title, items:[{page,name,type,size_text,thumb}], url}"""
     sess = _new_session()
     try:
         r = sess.get(url, headers={"User-Agent": UA}, timeout=_HTTP_TIMEOUT)
@@ -158,12 +121,6 @@ def scrape_album(url: str) -> dict:
 
 
 def resolve_file(page_url: str, *, retries: int = 3) -> dict:
-    """Halaman `/f/<id>` -> URL CDN bertanda-tangan + nama file asli.
-
-    Lihat FLOW SCRAPER langkah 2 untuk rantai lengkapnya. Blocking ringan
-    (2-3 request HTTP, ~1s) — panggil dari `asyncio.to_thread` kalau dipakai
-    dari coroutine.
-    """
     sess = _new_session()
     last_err = None
     try:
@@ -175,11 +132,8 @@ def resolve_file(page_url: str, *, retries: int = 3) -> dict:
                 text = _html(r)
                 soup = BeautifulSoup(text, "html.parser")
                 btn = soup.find(id="download-btn")
-                # Origin API = halaman download (`dl.<host>`), bukan halaman /f/.
                 api_origin = "{0.scheme}://{0.netloc}".format(urlsplit(r.url))
 
-                # Kalau halaman /f/ hanya berisi link ke halaman download,
-                # ikuti dulu sebelum mencari data-id.
                 if btn is None:
                     dl = next(
                         (a["href"] for a in soup.find_all("a", href=True)
@@ -268,12 +222,6 @@ async def download_to_file(
     notify: bool = True,
     referer: str = "",
 ) -> int:
-    """Stream file Bunkr ke `out_path` dengan progress + limit 2GB.
-
-    `notify=False` dipakai jalur album: unduh senyap supaya tidak membanjiri
-    pesan status. Progress `TransferStats` memakai jendela 1s (bukan delta
-    antar-chunk) supaya speed yang tampil adalah throughput riil.
-    """
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer
@@ -314,7 +262,6 @@ async def download_to_file(
                 resp.close()
             except Exception:
                 pass
-            # Buang file parsial supaya tidak menunggu sweeper.
             try:
                 if os.path.exists(out_path):
                     os.remove(out_path)
@@ -376,7 +323,6 @@ async def download_to_file(
 
 
 def _album_interval(total: int) -> float:
-    """Interval edit status album: 3s untuk sedikit, 5s untuk banyak."""
     if total <= 5:
         return 3.0
     if total >= 50:
@@ -388,13 +334,6 @@ async def download_album(
     medias_list: list, title: str, bot, chat_id, status_msg_id,
     out_dir: str, tag: str = "bunkr", item_label: str = "media",
 ) -> dict:
-    """Unduh semua media album, kembalikan `{items:[{path,type}], title}`.
-
-    Resolve + unduh dijalankan **paralel** (Semaphore `BUNKR_ALBUM_CONCURRENCY`)
-    supaya album besar tidak lagi memakan waktu ~2x dari yang perlu. Progres
-    pesan status diperbarui saat tiap item selesai, tetap memakai
-    `_album_interval(total)` agar aman dari rate limit.
-    """
     medias = [m for m in (medias_list or []) if m.get("page")]
     total = len(medias)
     if not total:
@@ -479,7 +418,6 @@ async def download_album(
 
 
 def extract_audio(src_path: str, out_path: str) -> str:
-    """Ekstrak trek audio (ffmpeg libmp3lame) -> out_path."""
     import subprocess
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",

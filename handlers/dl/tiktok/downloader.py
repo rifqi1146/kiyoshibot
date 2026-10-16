@@ -1,19 +1,3 @@
-"""Downloader TikTok — engine transfer + render media.
-
-FLOW DOWNLOADER
----------------
-1. Engine: `_download_with_best_engine` pilih aria2c atau aiohttp sesuai
-   TIKTOK_DOWNLOAD_ENGINE; masing-masing punya fallback silang.
-2. `aria2c_download` / `aiohttp_download` -> stream ke TMP_DIR, ukur pakai
-   `TransferStats`, cek batas MAX_TG_SIZE (2GB), progress via edit_status.
-3. Video: `_download_direct_video` -> coba semua kandidat video_urls berurutan.
-   Album: `_download_album_images` -> paralel 8 koneksi.
-   Slideshow: `_download_slideshow_audio` -> render `_render_slideshow_video`
-   (ffmpeg xfade) -> mp4.
-4. `_download_tiktok_media` -> dispatcher per fmt_key (mp4/mp3/slideshow_video)
-   dan kind (video/album); album >1 gambar + fmt mp4 -> minta picker
-   (`choice_required`) supaya user pilih Images vs Slideshow video.
-"""
 import os
 import re
 import time
@@ -65,12 +49,6 @@ log = logging.getLogger(__name__)
 async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     try:
         async with session.head(url,headers=headers,timeout=aiohttp.ClientTimeout(total=20),allow_redirects=True) as resp:
-            # JANGAN percaya Content-Length dari response non-media: CDN TikTok
-            # `aweme/v1/play/` membalas HEAD dengan HTTP 200
-            # `Content-Type: application/json` + `Content-Length: 108` (bukan
-            # video). Tanpa guard ini total jadi 108 B dan UI memaparkan
-            # `1.3 MB/108 B` dengan persentase jutaan persen. Video aslinya
-            # di-stream lewat GET/Range dan berukuran megabyte.
             if is_media_content_type(resp.headers.get("Content-Type")):
                 total=int(resp.headers.get("Content-Length",0) or 0)
                 if total>0:

@@ -1,21 +1,3 @@
-"""Caca Credit Billing & Ledger Database (SQLite).
-
-Architecture & Invariants:
-1. Multi-lot Credit Ledger (FEFO - First Expiring, First Out).
-   - Every top-up creates a distinct lot with its own `expires_at`.
-   - A new top-up never extends previous lots.
-   - Expired lots (expires_at <= now) are strictly excluded from available balance.
-2. Safe Concurrent Usage (Atomic Reservation & Settlement).
-   - Pre-reserve credits before calling LLM.
-   - Settle actual usage on response; release remainder or on error.
-3. Axiom QRIS Invoices.
-   - Stores user invoices with preset or custom nominal & custom duration.
-   - Enforces unique payment fulfillment (idempotent mark_paid).
-4. Settings (`caca_settings`):
-   - Stores global settings such as `freecaca` mode (1 = enabled, 0 = disabled).
-   - Self-healing in-memory cache against importlib.reload().
-5. WAL mode + NORMAL synchronous + 30000ms busy_timeout via `database.db.db_session`.
-"""
 
 import os
 import time
@@ -29,27 +11,14 @@ log = logging.getLogger(__name__)
 
 DB_PATH = "data/caca_billing.sqlite3"
 
-# Default rates (can be overridden via environment variables)
-# Target 300 chat / Rp 3.000:
-#   Rata-rata 1 chat ~900 token input + 50 output = 1.000 credit (pada 1 cr/t input, 2 cr/t output)
-#   Rp 3.000 -> 300.000 credit -> 300.000 / 1.000 = 300 chat.
-#   1 Credit = Rp 0.01  (Rp 1 = 100 Credits)
 RATE_CREDIT_PER_RUPIAH = int(os.getenv("CACA_CREDIT_PER_RUPIAH", "100"))
-RATE_INPUT_TOKEN = int(os.getenv("CACA_CREDIT_PER_INPUT_TOKEN", "1"))    # 1 credit / input token
-RATE_OUTPUT_TOKEN = int(os.getenv("CACA_CREDIT_PER_OUTPUT_TOKEN", "2"))  # 2 credits / output token
+RATE_INPUT_TOKEN = int(os.getenv("CACA_CREDIT_PER_INPUT_TOKEN", "1"))
+RATE_OUTPUT_TOKEN = int(os.getenv("CACA_CREDIT_PER_OUTPUT_TOKEN", "2"))
 
-# QRIS payment gateway fee passed through to user so the bot receives the
-# exact target amount. 2% = 200 bps.
 GATEWAY_FEE_BPS = int(os.getenv("AXIOM_FEE_BPS", "200"))
 
 
 def calculate_gross_amount(target_net_rp: int, fee_bps: int = GATEWAY_FEE_BPS) -> tuple[int, int]:
-    """Hitung total bayar (gross) agar setelah dipotong fee, penerimaan bersih == target_net_rp.
-
-    Formula: gross = ceil(target_net * 10000 / (10000 - fee_bps))
-    Fee dihitung dari gross (Axiom mengambil fee% dari total invoice QRIS).
-    Mengembalikan (gross_amount, fee_amount).
-    """
     target = int(target_net_rp)
     if target <= 0:
         return 0, 0
@@ -59,8 +28,6 @@ def calculate_gross_amount(target_net_rp: int, fee_bps: int = GATEWAY_FEE_BPS) -
     fee = gross - target
     return gross, fee
 
-# Presets configuration: price_rp -> (credit_base, credit_bonus, duration_days)
-# Skala 300 chat per Rp 3.000 (Rp 1 = 100 credit):
 PRESET_PACKAGES: dict[int, dict[str, int]] = {
     3000:  {"price": 3000,  "base": 300000,  "bonus": 0,      "total": 300000,  "days": 7},
     5000:  {"price": 5000,  "base": 500000,  "bonus": 10000,  "total": 510000,  "days": 10},
@@ -73,16 +40,13 @@ CUSTOM_MIN_AMOUNT = 3000
 CUSTOM_MAX_AMOUNT = 200000
 ALLOWED_CUSTOM_DAYS = (7, 14, 21, 30)
 
-# Chat gate thresholds
 MIN_CREDITS_TO_CHAT = int(os.getenv("CACA_MIN_CREDITS_TO_CHAT", "50"))
 RESERVE_AMOUNT = int(os.getenv("CACA_RESERVE_AMOUNT", "2000"))
 
-# In-memory cached freecaca state
 _FREECACA_CACHE: bool | None = None
 
 
 def init_db():
-    """Create all billing tables and indexes atomically."""
     with db_session(DB_PATH) as con:
         con.execute(
             """
@@ -109,7 +73,6 @@ def init_db():
             )
             """
         )
-        # Safe migration for pre-existing installs: add new columns if missing.
         for col, ddl in (
             ("base_amount", "ALTER TABLE caca_invoices ADD COLUMN base_amount INTEGER NOT NULL DEFAULT 0"),
             ("gateway_fee", "ALTER TABLE caca_invoices ADD COLUMN gateway_fee INTEGER NOT NULL DEFAULT 0"),
@@ -193,7 +156,6 @@ def init_db():
             """
         )
 
-        # Indices
         con.execute("CREATE INDEX IF NOT EXISTS idx_caca_lots_user ON caca_credit_lots(user_id, status, expires_at)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_caca_invoices_user ON caca_invoices(user_id, status)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_caca_reservations_user ON caca_reservations(user_id, status)")
@@ -201,10 +163,7 @@ def init_db():
         con.commit()
 
 
-# ── Global Settings & /freecaca ──────────────────────────────────────────────
-
 def is_freecaca_enabled() -> bool:
-    """Return True if free Caca access is active for everyone. Self-healing DB check."""
     global _FREECACA_CACHE
     if _FREECACA_CACHE is not None:
         return _FREECACA_CACHE
@@ -236,10 +195,7 @@ def set_freecaca_enabled(enabled: bool) -> None:
         con.commit()
 
 
-# ── Package Calculation ──────────────────────────────────────────────────────
-
 def calculate_preset_package(amount: int) -> dict[str, Any] | None:
-    """Return preset info or None if amount is not an exact preset."""
     pkg = PRESET_PACKAGES.get(int(amount))
     if not pkg:
         return None
@@ -247,7 +203,6 @@ def calculate_preset_package(amount: int) -> dict[str, Any] | None:
 
 
 def calculate_custom_package(amount: int, duration_days: int) -> dict[str, Any]:
-    """Validate & calculate custom top-up package."""
     amount = int(amount)
     duration_days = int(duration_days)
     if not (CUSTOM_MIN_AMOUNT <= amount <= CUSTOM_MAX_AMOUNT):
@@ -256,7 +211,7 @@ def calculate_custom_package(amount: int, duration_days: int) -> dict[str, Any]:
         raise ValueError(f"Durasi hari harus salah satu dari: {ALLOWED_CUSTOM_DAYS}.")
 
     base_credit = amount * RATE_CREDIT_PER_RUPIAH
-    bonus_credit = 0  # Custom package never receives preset bonus
+    bonus_credit = 0
     total_credit = base_credit
 
     return {
@@ -268,8 +223,6 @@ def calculate_custom_package(amount: int, duration_days: int) -> dict[str, Any]:
         "is_custom": 1,
     }
 
-
-# ── Invoices ─────────────────────────────────────────────────────────────────
 
 def save_invoice(
     *,
@@ -290,10 +243,6 @@ def save_invoice(
     gateway_fee: int = 0,
     fee_bps: int = 0,
 ) -> dict[str, Any]:
-    """`amount` = total yang dibayar user (gross, sudah termasuk fee gateway).
-
-    `base_amount` = harga paket/nominal yang owner tetapkan (net yang diterima).
-    """
     base_target = int(base_amount) if base_amount is not None else int(amount)
     with db_session(DB_PATH) as con:
         con.execute(
@@ -331,7 +280,6 @@ def set_invoice_message_id(short_id: str, message_id: int | None):
 
 
 def active_invoice_for_user(user_id: int) -> dict[str, Any] | None:
-    """Return newest PENDING invoice still inside its deadline."""
     with db_session(DB_PATH) as con:
         con.row_factory = __import__("sqlite3").Row
         row = con.execute(
@@ -352,10 +300,6 @@ def set_invoice_status(short_id: str, status: str):
 
 
 def fulfill_payment(short_id: str, paid_at: float | None = None) -> bool:
-    """Idempotently fulfill invoice: mark PAID and create FEFO credit lot.
-
-    Returns True if newly fulfilled, False if already PAID or not found.
-    """
     now = float(paid_at or time.time())
     with db_session(DB_PATH) as con:
         con.row_factory = __import__("sqlite3").Row
@@ -368,7 +312,6 @@ def fulfill_payment(short_id: str, paid_at: float | None = None) -> bool:
 
         try:
             con.execute("BEGIN IMMEDIATE")
-            # Re-check status inside transaction
             check_inv = con.execute("SELECT status FROM caca_invoices WHERE short_id = ?", (short_id,)).fetchone()
             if not check_inv or check_inv[0] == "PAID":
                 con.execute("ROLLBACK")
@@ -405,22 +348,17 @@ def fulfill_payment(short_id: str, paid_at: float | None = None) -> bool:
             raise
 
 
-# ── Credit Balances & Multi-Lot FEFO Ledger ──────────────────────────────────
-
 def get_user_balance(user_id: int) -> dict[str, Any]:
-    """Calculate active available credits, reserved credits, and expired lots."""
     now = time.time()
     with db_session(DB_PATH) as con:
         con.row_factory = __import__("sqlite3").Row
 
-        # Expire any lots whose time is up
         con.execute(
             "UPDATE caca_credit_lots SET status = 'EXPIRED' WHERE user_id = ? AND status = 'ACTIVE' AND expires_at <= ?",
             (int(user_id), now),
         )
         con.commit()
 
-        # Active lots
         rows = con.execute(
             """
             SELECT * FROM caca_credit_lots
@@ -433,7 +371,6 @@ def get_user_balance(user_id: int) -> dict[str, Any]:
         active_lots = [dict(r) for r in rows]
         available_credits = sum(lot["credit_remaining"] for lot in active_lots)
 
-        # Expired credits sum
         row_exp = con.execute(
             """
             SELECT SUM(credit_remaining) as exp_sum FROM caca_credit_lots
@@ -443,7 +380,6 @@ def get_user_balance(user_id: int) -> dict[str, Any]:
         ).fetchone()
         expired_credits = int(row_exp["exp_sum"] or 0) if row_exp else 0
 
-        # Pending reservations (clean stale reservations > 3 minutes)
         stale_cutoff = now - 180
         con.execute(
             "UPDATE caca_reservations SET status = 'RELEASED' WHERE user_id = ? AND status = 'PENDING' AND expires_at <= ?",
@@ -480,13 +416,6 @@ def admin_add_credit(
     *,
     extend_latest_lot: bool = False,
 ) -> dict:
-    """Beri credit ke user dengan audit log.
-
-    `extend_latest_lot=True` (dipakai kompensasi tarif): kalau user punya lot
-    AKTIF, credit ditambahkan ke lot itu (remaining + total naik, expiry
-    diperpanjang bila perlu) supaya tidak bikin lot baru yang bikin bingung.
-    Kalau tidak ada lot aktif, lot baru dibuat.
-    """
     now = time.time()
     credits = int(credits)
     if credits <= 0:
@@ -560,7 +489,6 @@ def admin_add_credit(
 
 
 def paid_preset_user_ids(price: int | None = None) -> list[int]:
-    """User id yang punya invoice PAID (opsional difilter per harga base_amount)."""
     with db_session(DB_PATH) as con:
         if price is None:
             rows = con.execute(
@@ -575,7 +503,6 @@ def paid_preset_user_ids(price: int | None = None) -> list[int]:
 
 
 def has_active_credit(user_id: int, min_credits: int = 1) -> bool:
-    """Quick check whether user has active, unexpired credits."""
     now = time.time()
     with db_session(DB_PATH) as con:
         row = con.execute(
@@ -589,10 +516,7 @@ def has_active_credit(user_id: int, min_credits: int = 1) -> bool:
         return tot >= min_credits
 
 
-# ── Concurrent Reservation & Settlement ──────────────────────────────────────
-
 def reserve_credits(user_id: int, amount: int = 2000, timeout_sec: int = 120) -> str | None:
-    """Reserve up to `amount` credits atomically. Returns reservation_id or None if insufficient."""
     now = time.time()
     res_id = f"res_{uuid.uuid4().hex[:12]}"
     exp_time = now + timeout_sec
@@ -600,12 +524,10 @@ def reserve_credits(user_id: int, amount: int = 2000, timeout_sec: int = 120) ->
     with db_session(DB_PATH) as con:
         try:
             con.execute("BEGIN IMMEDIATE")
-            # Clean stale reservations
             con.execute(
                 "UPDATE caca_reservations SET status = 'RELEASED' WHERE user_id = ? AND status = 'PENDING' AND expires_at <= ?",
                 (int(user_id), now),
             )
-            # Check available
             row_avail = con.execute(
                 """
                 SELECT SUM(credit_remaining) FROM caca_credit_lots
@@ -646,7 +568,6 @@ def reserve_credits(user_id: int, amount: int = 2000, timeout_sec: int = 120) ->
 
 
 def release_reservation(reservation_id: str | None) -> None:
-    """Release reservation on error without deducting credits."""
     if not reservation_id:
         return
     with db_session(DB_PATH) as con:
@@ -667,10 +588,6 @@ def settle_usage(
     model: str,
     is_billed: bool = True,
 ) -> int:
-    """Settle actual token usage via FEFO deduction from credit lots.
-
-    Returns the actual cost in credits.
-    """
     now = time.time()
     prompt_tokens = max(0, int(prompt_tokens))
     completion_tokens = max(0, int(completion_tokens))
@@ -685,10 +602,8 @@ def settle_usage(
         try:
             con.execute("BEGIN IMMEDIATE")
 
-            # 1. Deduct credits via FEFO if billed
             remaining_to_deduct = cost_credits
             if remaining_to_deduct > 0:
-                # Select unexpired lots ordered by closest expiration
                 lots = con.execute(
                     """
                     SELECT lot_id, credit_remaining, credit_used, expires_at FROM caca_credit_lots
@@ -716,14 +631,12 @@ def settle_usage(
                     if remaining_to_deduct <= 0:
                         break
 
-            # 2. Release reservation
             if reservation_id:
                 con.execute(
                     "UPDATE caca_reservations SET status = 'SETTLED' WHERE reservation_id = ?",
                     (reservation_id,),
                 )
 
-            # 3. Log usage
             con.execute(
                 """
                 INSERT INTO caca_usage_logs (
@@ -749,8 +662,6 @@ def settle_usage(
             raise
 
 
-# ── Admin & Audit Operations ─────────────────────────────────────────────────
-
 def admin_grant_credit(
     admin_id: int,
     target_user_id: int,
@@ -758,7 +669,6 @@ def admin_grant_credit(
     duration_days: int,
     reason: str,
 ) -> int:
-    """Manually issue a credit lot with audit log."""
     now = time.time()
     credits = int(credits)
     duration_days = int(duration_days)
@@ -791,9 +701,7 @@ def admin_grant_credit(
 
 
 def get_admin_overview() -> dict[str, Any]:
-    """Overview statistics for owner dashboard."""
     with db_session(DB_PATH) as con:
-        # Invoices stats
         row_inv = con.execute(
             """
             SELECT
@@ -807,7 +715,6 @@ def get_admin_overview() -> dict[str, Any]:
             """
         ).fetchone()
 
-        # Credits stats
         row_lots = con.execute(
             """
             SELECT
@@ -817,7 +724,6 @@ def get_admin_overview() -> dict[str, Any]:
             """
         ).fetchone()
 
-        # Token stats
         row_usage = con.execute(
             """
             SELECT
@@ -844,7 +750,6 @@ def get_admin_overview() -> dict[str, Any]:
         }
 
 
-# Auto-initialize database on module load
 try:
     init_db()
 except Exception:

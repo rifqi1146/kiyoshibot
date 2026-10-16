@@ -1,13 +1,3 @@
-"""nHentai API client, detail view, dan callback handler.
-
-Menangani fitur nHentai (premium-only):
-- Detail gallery -> dibangun `fetch_detail_view`, dikirim sebagai foto cover
-  oleh layer search (`search.py`).
-- Reader & navigasi halaman (`nhread_`, `nhnav_`)
-- Unduh PDF (`pdfnh_`)
-
-`NH_HEADERS` dibangun di `constants.py` dari env `NH_API_KEY`.
-"""
 import asyncio
 import logging
 
@@ -43,7 +33,6 @@ def build_nh_keyboard(data) -> InlineKeyboardMarkup:
 
 
 async def fetch_detail_view(gallery_id: str):
-    """-> (rich_html, plain_html, keyboard, cover_url) untuk detail nHentai."""
     g_data = await fetch_json(f"{NH_API_URL}/galleries/{gallery_id}", custom_headers=NH_HEADERS)
     if not g_data or "title" not in g_data:
         return None, None, None, None
@@ -61,7 +50,6 @@ async def handle_nhentai_callback(query, context, data: str):
         if not rich_html:
             return await query.answer("❌ Server error.")
         if getattr(query.message, "photo", None):
-            # Dari reader (pesan foto): hapus lalu kirim rich detail baru sebagai reply.
             from .http import send_detail_view
             chat_id = query.message.chat_id
             thread_id = getattr(query.message, "message_thread_id", None)
@@ -129,7 +117,6 @@ async def handle_nhentai_callback(query, context, data: str):
         reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
         is_edit = bool(getattr(query.message, "photo", None)) and data.startswith("nhnav_")
         if not is_edit:
-            # Entry dari detail (nhread_): pesan detail hilang, reader dikirim sebagai reply.
             try:
                 await query.message.delete()
             except Exception:
@@ -168,7 +155,6 @@ async def handle_nhentai_callback(query, context, data: str):
                 urls.append(f"{img_server}/galleries/{g_data['media_id']}/{i + 1}.{ext}")
         title = g_data["title"]["pretty"] or g_data["title"]["english"]
         reply_to = get_reply_target(query.message.chat_id, query.message.message_id)
-        # Pesan detail hilang, PDF dikirim sebagai reply ke pesan command user.
         try:
             await query.message.delete()
         except Exception:

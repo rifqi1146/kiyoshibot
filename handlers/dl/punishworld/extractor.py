@@ -1,15 +1,3 @@
-"""Scraper PunishWorld (punishworld.com) — video MP4 langsung, tanpa packer.
-
-FLOW SCRAPER
-------------
-1. Fetch halaman post via curl_cffi (impersonate Chrome).
-2. Parse `<video>` tag → ambil `<source>` berkualitas tertinggi (prefer `high`).
-3. Ambil poster/thumbnail dari atribut `poster` atau `og:image`.
-4. Judul dari `<h1>` atau `og:title`.
-5. `download_to_file` stream MP4 langsung dari CDN dengan progress bar (3s interval)
-   dan backoff RetryAfter.
-6. `extract_audio` via ffmpeg untuk mode mp3.
-"""
 import os
 import re
 import html as html_mod
@@ -61,7 +49,6 @@ async def _safe_edit_status(bot, chat_id, status_msg_id, text: str) -> float:
 
 
 def _flood_wait(error) -> float:
-    """Deteksi RetryAfter / 'Flood control exceeded' -> detik tunggu."""
     text = str(error or "")
     m = re.search(r"[Rr]etr[yY] in (\d+)", text)
     if m:
@@ -89,23 +76,13 @@ def _content_length(resp) -> int:
         return 0
 
 
-# ─────────────────────────── scrape ───────────────────────────
-
 def scrape_post(url: str) -> dict:
-    """Parse halaman post PunishWorld.
-
-    Return dict:
-        title    : str
-        thumbnail: str (URL)
-        sources  : list[{url, label, type, size}]  — urut dari kualitas tertinggi
-    """
     r = curl_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome", timeout=HTTP_TIMEOUT)
     if r.status_code != 200:
         raise RuntimeError(f"Failed to fetch PunishWorld page ({r.status_code})")
 
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # Judul
     h1 = soup.find("h1")
     title = h1.get_text(strip=True) if h1 else ""
     if not title:
@@ -113,14 +90,12 @@ def scrape_post(url: str) -> dict:
     if not title:
         title = "PunishWorld"
 
-    # Thumbnail
     thumb = _meta(soup, "og:image")
     if not thumb:
         vid_tag = soup.find("video")
         if vid_tag and vid_tag.get("poster"):
             thumb = vid_tag["poster"]
 
-    # Video sources dari <video> tag
     sources = []
     vid = soup.find("video")
     if vid:
@@ -131,13 +106,11 @@ def scrape_post(url: str) -> dict:
             if src_url:
                 sources.append({"url": src_url, "label": src_label or "default", "type": src_type})
 
-    # Fallback: JWPlayer/KVS-style sources: [{file:"...",label:"..."}]
     if not sources:
         text = r.text
         for m in re.finditer(r'\{file\s*:\s*"([^"]+)"\s*,\s*label\s*:\s*"([^"]*)"', text):
             sources.append({"url": m.group(1), "label": m.group(2).strip().lower(), "type": ""})
 
-    # Urutkan: high > low > default
     priority = {"high": 0, "1080p": 0, "720p": 1, "low": 2, "480p": 2, "default": 3}
     sources.sort(key=lambda s: priority.get(s["label"], 9))
 
@@ -149,11 +122,8 @@ def scrape_post(url: str) -> dict:
 
 
 def pick_best(sources: list) -> dict:
-    """Ambil source terbaik (sudah diurutkan oleh scrape_post)."""
     return sources[0]
 
-
-# ─────────────────────────── download ───────────────────────────
 
 async def download_to_file(
     url: str,
@@ -163,14 +133,9 @@ async def download_to_file(
     status_msg_id,
     title: str,
 ) -> int:
-    """MP4 ke `out_path` dengan progress bar + limit 2GB.
-
-    Mesin utama: aria2c multi-koneksi. Fallback: streaming curl_cffi.
-    """
     headers = {"User-Agent": UA, "Referer": "https://punishworld.com/"}
     interval = PROGRESS_MIN_INTERVAL
 
-    # Probe ukuran untuk pre-check limit 2GB.
     try:
         from curl_cffi import requests as _probe_req
         _probe = await asyncio.to_thread(
@@ -293,8 +258,6 @@ async def download_to_file(
     return downloaded
 
 
-# ─────────────────────────── thumb & audio ───────────────────────────
-
 def download_thumb(url: str, out_path: str) -> str | None:
     if not url:
         return None
@@ -313,7 +276,6 @@ def download_thumb(url: str, out_path: str) -> str | None:
 
 
 def extract_audio(src_path: str, out_path: str) -> str:
-    """Ekstrak audio dari video ke MP3 via ffmpeg."""
     import subprocess
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",

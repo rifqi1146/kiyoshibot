@@ -14,12 +14,8 @@ log=logging.getLogger(__name__)
 FFPROBE_TIMEOUT=int(os.getenv("FFPROBE_TIMEOUT","30"))
 FFMPEG_REMUX_TIMEOUT=int(os.getenv("FFMPEG_REMUX_TIMEOUT","180"))
 FFMPEG_THUMB_TIMEOUT=int(os.getenv("FFMPEG_THUMB_TIMEOUT","45"))
-# Timeout unduhan HLS penuh (bukan remux lokal). Video 6 menit ~163s @ CDN
-# 35 segmen/menit; 900s cukup longgar untuk post 10+ menit.
 FFMPEG_HLS_TIMEOUT=int(os.getenv("FFMPEG_HLS_TIMEOUT","900"))
 
-# Batasi fan-out ffprobe/ffmpeg saat menyiapkan album (items banyak). Tanpa ini
-# album 30 video men-spawn ~60 proses ffmpeg sekaligus -> CPU & thread-pool habis.
 _PREP_ITEM_SEM = asyncio.Semaphore(max(1, min(4, (os.cpu_count() or 2))))
 
 def _run_cmd(cmd:list[str],timeout:int|float|None=None)->str:
@@ -71,11 +67,6 @@ def _ffprobe_data(path:str)->dict:
         return {}
 
 def video_meta(path:str)->dict:
-    """Get metadata with short TTL cache to avoid duplicate ffprobe calls.
-
-    Same file is probed 2-3x during download (remux pre/post, then service).
-    Cache keyed by path + mtime + size so a rewrite invalidates.
-    """
     try:
         st = os.stat(path)
         cache_key = f"{path}:{st.st_mtime_ns}:{st.st_size}"
@@ -104,7 +95,6 @@ def video_meta(path:str)->dict:
     }
     if cache_key:
         _VIDEO_META_CACHE[cache_key] = (time.monotonic(), meta)
-        # keep cache small
         if len(_VIDEO_META_CACHE) > 256:
             _VIDEO_META_CACHE.clear()
     return meta
@@ -127,10 +117,7 @@ def remux_video_for_telegram(src_path:str, delete_src:bool=True)->str:
             remux_path,
         ],timeout=FFMPEG_REMUX_TIMEOUT)
         
-        # Optimal: hindari ffprobe kedua. ffmpeg returncode==0 dengan -c copy
-        # mempertahankan durasi, resolusi, dan codec persis seperti 'before'.
         if os.path.exists(remux_path) and os.path.getsize(remux_path)>0:
-            # Seed cache untuk remux_path memakai metadata 'before'
             try:
                 st = os.stat(remux_path)
                 ck = f"{remux_path}:{st.st_mtime_ns}:{st.st_size}"
@@ -185,12 +172,6 @@ def make_video_thumbnail(src_path:str)->str|None:
     return None
 
 async def remux_and_thumbnail_parallel(src_path:str)->tuple[str, str|None, dict]:
-    """Jalankan faststart remux dan pembuatan thumbnail secara paralel.
-    
-    Menghilangkan delay sekuensial (hemat ~0.3s) dan menjamin video tetap di-remux
-    (tidak ada issue blank hitam di Telegram).
-    Mengembalikan (final_video_path, thumb_path, meta_dict).
-    """
     if not src_path or not os.path.exists(src_path):
         return src_path, None, {}
     if detect_media_type(src_path) != "video":
@@ -198,19 +179,16 @@ async def remux_and_thumbnail_parallel(src_path:str)->tuple[str, str|None, dict]
     
     meta = await asyncio.to_thread(video_meta, src_path)
     
-    # Jalankan remux dan thumbnail bersamaan dari src_path
     remux_fut = asyncio.to_thread(remux_video_for_telegram, src_path, False)
     thumb_fut = asyncio.to_thread(make_video_thumbnail, src_path)
     remuxed_path, thumb_path = await asyncio.gather(remux_fut, thumb_fut)
     
-    # Bersihkan source jika remux berhasil menghasilkan file baru
     if remuxed_path != src_path and os.path.exists(src_path):
         _delete_file(src_path, "original video after parallel remux")
         
     return remuxed_path, thumb_path, meta
 
 def convert_gif_to_mp4(src_path:str, delete_src:bool=True)->str:
-    """Konversi animasi GIF ke MP4 (H.264/yuv420p) agar kompatibel dengan Telegram video/album."""
     if not src_path or not os.path.exists(src_path):
         return src_path
     out_path = f"{TMP_DIR}/{uuid.uuid4().hex}_gif.mp4"
@@ -253,12 +231,6 @@ async def download_hls_aes_ffmpeg(
     audio_only: bool = False,
     timeout: float | None = None,
 ) -> str:
-    """Download HLS AES-128 via ffmpeg (ffmpeg dekripsi sendiri tanpa dependensi crypto).
-
-    `timeout` terpisah dari `FFMPEG_REMUX_TIMEOUT` (180s): remux itu operasi
-    lokal beberapa detik, sedangkan unduhan HLS 6-menit butuh beberapa menit.
-    Default `FFMPEG_HLS_TIMEOUT` (env, 900s).
-    """
     if timeout is None:
         timeout = FFMPEG_HLS_TIMEOUT
     headers = f"User-Agent: {user_agent}\r\nReferer: {referer or playlist_url}\r\n"
@@ -273,8 +245,6 @@ async def download_hls_aes_ffmpeg(
         cmd += ["-c", "copy", "-movflags", "+faststart", out_path]
 
     log.info("HLS AES-128 ffmpeg start | audio=%s url=%s", audio_only, playlist_url[:80])
-    # uvloop create_subprocess_exec -> libuv fork() -> SIGSEGV(-11). Pakai
-    # spawn_process (subprocess.Popen via thread / posix_spawn) yang aman.
     proc = await spawn_process(
         *cmd,
         stdout=PIPE,
@@ -310,8 +280,6 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
                 item["path"] = p
             if detect_media_type(p) == "video":
                 item["type"] = "animation" if was_gif else "video"
-                # Jalur cepat: downloader sudah menghasilkan MP4 faststart
-                # (ditandai "remux_done": True) -> lewati ffmpeg kedua.
                 if item.get("remux_done"):
                     meta = await asyncio.to_thread(video_meta, p)
                     thumb_path = item.get("thumb")
@@ -347,9 +315,6 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
                 result["type"] = "animation"
                 result["is_animation"] = True
             if detect_media_type(p)=="video":
-                # Jalur cepat: downloader sudah menghasilkan MP4 faststart
-                # (ditandai "remux_done": True) -> lewati ffmpeg remux kedua,
-                # cukup ambil metadata + thumbnail.
                 if result.get("remux_done"):
                     result["meta"]=await asyncio.to_thread(video_meta,p)
                     thumb_path=result.get("thumb")

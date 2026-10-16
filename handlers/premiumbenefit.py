@@ -41,12 +41,10 @@ NOTE_NSFW = (
 
 
 def _display_domains(domains) -> list[str]:
-    """Displayed domains; wildcards still apply in the router but are hidden from the list."""
     return [domain for domain in sorted(set(domains)) if "*" not in domain]
 
 
 def _domain_rows(domains: list[str]) -> str:
-    """Render a two-column domain table to keep long lists compact."""
     rows = []
     for index in range(0, len(domains), 2):
         left = escape(domains[index])
@@ -56,7 +54,6 @@ def _domain_rows(domains: list[str]) -> str:
 
 
 def _build_rich_message() -> dict:
-    """Build an InputRichMessage using Rich HTML from Bot API 10.3."""
     plain = _display_domains(PREMIUM_ONLY_DOMAINS | PREMIUM_NO_NSFW_DOMAINS)
     total = len(plain)
 
@@ -95,7 +92,6 @@ def _build_rich_message() -> dict:
 
 
 def _build_plain_text() -> str:
-    """Plain HTML version as fallback for older Bot API servers."""
     plain = _display_domains(PREMIUM_ONLY_DOMAINS | PREMIUM_NO_NSFW_DOMAINS)
     total = len(plain)
 
@@ -120,7 +116,6 @@ def _build_plain_text() -> str:
 
 
 async def premiumbenefit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send the Premium benefits list via the Rich Message endpoint."""
     message = update.effective_message
     if message is None:
         return

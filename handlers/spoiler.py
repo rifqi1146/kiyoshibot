@@ -9,7 +9,6 @@ from utils.config import OWNER_ID
 from database.spoiler_db import spoiler_db_init, is_spoiler_enabled, set_spoiler
 from database.download_db import is_premium_required
 
-# dipanggil di bot.py walaupun tidak ada handler khusus, biar DB siap
 try:
     spoiler_db_init()
 except Exception:
@@ -46,7 +45,6 @@ async def spoiler_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # enable/disable: butuh admin/owner
     if arg in ("enable", "disable"):
         if not await _is_admin_or_owner(update, context):
             return await update.message.reply_text(

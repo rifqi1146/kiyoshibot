@@ -1,11 +1,3 @@
-"""Konstanta scraper CosXplay (cosxplay.com)
-
-FLOW KONSTANTA
---------------
-1. UA dan timeout untuk request curl_cffi (impersonate Chrome).
-2. Domain cosxplay.com untuk deteksi URL dan routing download.
-3. Interval progress adaptif untuk edit pesan Telegram (menghindari RetryAfter).
-"""
 import os
 
 UA = (

@@ -14,35 +14,22 @@ from database.join_status_db import (
 
 log=logging.getLogger(__name__)
 
-MEMBERSHIP_TTL=600          # verifikasi ulang status member setiap 10 menit
-_RETRY_DELAYS=(0.6,1.5)     # jeda sebelum retry ke-2 dan ke-3
-# BadRequest/Forbidden adalah error permanen. Wajib dicek lebih dulu karena di
-# PTB keduanya mewarisi NetworkError.
+MEMBERSHIP_TTL=600
+_RETRY_DELAYS=(0.6,1.5)
 _PERMANENT_ERRORS=(BadRequest,Forbidden)
 _TRANSIENT_ERRORS=(NetworkError,TimedOut,RetryAfter)
 
-
-# ---------------------------------------------------------------- helpers
 
 def _is_member_status(status:str|None)->bool:
     return str(status or "").strip().lower() in MEMBER_STATUSES
 
 
 def _is_stale(status:str)->bool:
-    """Status selain left/kicked boleh dipakai tanpa verifikasi ulang."""
     st=str(status or "").strip().lower()
     return st in ("", "unknown")
 
 
-# ------------------------------------------------- event-driven (realtime)
-
 async def chat_member_update(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    """Simpan perubahan keanggotaan channel support secara realtime.
-
-    Dipanggil Telegram setiap kali status member berubah (join/leave/kick),
-    sehingga begitu user keluar dari channel, akses bot dicabut pada detik itu
-    juga tanpa menunggu TTL cache.
-    """
     if not SUPPORT_CHANNEL_ID:
         return
     cm=update.chat_member
@@ -54,9 +41,6 @@ async def chat_member_update(update:Update,context:ContextTypes.DEFAULT_TYPE):
         chat_id=0
     if chat_id!=int(SUPPORT_CHANNEL_ID):
         return
-    # Ambil objek member yang statusnya berubah (bukan pelaku aksinya).
-    # Saat admin mengeluarkan user, from_user=admin sedangkan targetnya ada
-    # di new_chat_member.user.
     member=getattr(cm,"new_chat_member",None)
     user=getattr(member,"user",None)
     user_id=getattr(user,"id",None)
@@ -72,7 +56,6 @@ async def chat_member_update(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
 
 def register_join_handlers(app):
-    """Daftarkan handler event keanggotaan. Idempotent."""
     from telegram.ext import ChatMemberHandler
     if getattr(app,"_join_handlers_registered",False):
         return
@@ -84,13 +67,7 @@ def register_join_handlers(app):
     log.info("Join membership handlers registered")
 
 
-# ------------------------------------------------------------ verifikasi
-
 async def _fetch_member_status(user_id:int,context:ContextTypes.DEFAULT_TYPE):
-    """Panggil get_chat_member dengan retry singkat untuk error jaringan.
-
-    Return ``(status, error, transient)``. ``status`` None berarti gagal.
-    """
     last_err=None
     transient=False
     for attempt,sleep_for in enumerate((0.0,)+_RETRY_DELAYS):
@@ -115,12 +92,6 @@ async def _fetch_member_status(user_id:int,context:ContextTypes.DEFAULT_TYPE):
 
 
 async def is_joined_support_channel(user_id:int,context:ContextTypes.DEFAULT_TYPE)->bool:
-    """Cek keanggotaan channel support.
-
-    Sumber utama adalah database yang di-update realtime oleh
-    ``chat_member_update``. Baris ``left``/``kicked`` langsung memblokir user
-    pada detik itu juga. Status member diverifikasi ulang setelah TTL tertentu.
-    """
     if not SUPPORT_CHANNEL_ID:
         return True
 
@@ -132,8 +103,6 @@ async def is_joined_support_channel(user_id:int,context:ContextTypes.DEFAULT_TYP
                 await _recheck_member(user_id,context)
                 status,is_member=get_member_status(user_id)
             return bool(is_member)
-        # Terakhir diketahui bukan member: verifikasi ulang agar user yang
-        # baru join langsung bisa (tanpa menunggu event).
         fetched,err,transient=await _fetch_member_status(user_id,context)
         if fetched is not None:
             return set_member_status(user_id,fetched)
@@ -143,7 +112,6 @@ async def is_joined_support_channel(user_id:int,context:ContextTypes.DEFAULT_TYP
         log.warning("[JOIN CHECK ERROR] Permanent failure | user_id=%s err=%r",user_id,err)
         return False
 
-    # Belum ada data / status belum diketahui -> tanya Telegram langsung.
     fetched,err,transient=await _fetch_member_status(user_id,context)
     if fetched is not None:
         return set_member_status(user_id,fetched)
@@ -180,14 +148,6 @@ async def require_join_or_block(
     context:ContextTypes.DEFAULT_TYPE,
     silent:bool=False,
 )->bool:
-    """Gate keanggotaan channel support.
-
-    ``silent=True`` -> user yang belum join ditolak TANPA mengirim pesan apa pun
-    ke chat. Dipakai oleh handler PASIF (mis. klik tombol milik orang lain,
-    auto-detect link) supaya bot tidak pernah mem-broadcast pesan
-    "join support channel" ke grup hanya karena ada yang iseng menekan tombol
-    atau mengirim link tanpa command.
-    """
     if update.callback_query:
         user=update.callback_query.from_user
         reply_target=update.callback_query.message
@@ -210,8 +170,6 @@ async def require_join_or_block(
     text="<b>To use the feature</b>\nyou must join the support channel first."
     try:
         if update.callback_query:
-            # Di callback query, tampilkan alert popup ke layar user yang menekan tombol.
-            # JANGAN kirim pesan baru ke grup agar tidak mengotori percakapan!
             await update.callback_query.answer("Please join the support channel first",show_alert=True)
             chat_type=getattr(getattr(reply_target,"chat",None),"type","")
             if chat_type=="private":

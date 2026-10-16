@@ -1,27 +1,3 @@
-"""Renderer Rich Message (Bot API 10.3) + plain HTML fallback untuk `/nekopoi`.
-
-Setiap builder mengembalikan tuple `(rich_html, plain_html, markup)`.
-
-Grammar callback `nk:`:
-- `nk:menu`                        -> menu utama
-- `nk:prompt:search`               -> instruksi search
-- `nk:latest`                      -> Episode Terbaru (beranda)
-- `nk:cat:<slug>`                  -> listing kategori
-- `nk:cats:<page>`                 -> picker kategori
-- `nk:genres:<page>`               -> picker genre
-- `nk:genre:<slug>`                -> listing genre
-- `nk:az:<kind>:<page>`            -> picker huruf A-Z
-- `nk:azl:<kind>:<letter>:<page>`  -> daftar series satu huruf
-- `nk:schedule`                    -> jadwal rilis
-- `nk:nav:<sid>:<page>`            -> pindah halaman listing
-- `nk:back:<sid>`                  -> balik ke listing
-- `nk:view:<sid>:<idx>`            -> detail (series -> episode picker, post -> format)
-- `nk:eps:<sid>:<idx>:<page>`      -> halaman episode picker
-- `nk:pick:<sid>:<idx>:<ep>`       -> pilih format (series)
-- `nk:epdl:<sid>:<idx>:<fmt>`      -> unduh post langsung (episode page)
-- `nk:dl:<sid>:<idx>:<ep>:<fmt>`   -> unduh episode series
-- `nk:close`
-"""
 import html
 import math
 import re
@@ -107,14 +83,6 @@ def build_menu_content() -> tuple[str, str]:
 
 
 def build_results_content(session_id: str, data: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Listing (search/kategori/genre/A-Z satu huruf/latest), 5 kartu per halaman.
-
-    Memakai helper bersama `utils.rich_search.build_search_content` supaya
-    tampilan identik dengan search command lain (`/lendirqu`, `/punish`,
-    `/simontok`, `/becekku`): heading + tabel `#`/`Title`/`Info` + aside.
-    Bedanya cuma aksi tombol angka (`view` -> detail) & tombol tengah (`menu`).
-    """
-    # Isi `meta` untuk kolom Info: genre dulu, lalu deskripsi pendek.
     for it in data.get("results") or []:
         if it.get("meta"):
             continue
@@ -229,7 +197,6 @@ def build_genres_content(page: int) -> tuple[str, str, InlineKeyboardMarkup]:
 
 
 def build_az_letters_content(kind: str, az: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Picker huruf A-Z untuk hentai-list / jav-list."""
     letters = list((az.get("letters") or {}).keys())
     label = "Hentai List" if kind == "hentai" else "JAV List"
     total = len(az.get("flat") or [])
@@ -294,7 +261,6 @@ def build_schedule_content(months: list[dict]) -> tuple[str, str, InlineKeyboard
 
 
 def build_detail_content(detail: dict, session_id: str, idx: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Detail halaman SERIES: poster, meta, sinopsis, tombol Download."""
     title = html.escape(detail.get("title") or "Nekopoi")
     poster = detail.get("poster") or ""
     synopsis = detail.get("synopsis") or "No synopsis available."
@@ -343,7 +309,6 @@ def build_detail_content(detail: dict, session_id: str, idx: int) -> tuple[str, 
 
 
 def build_episodes_content(detail: dict, session_id: str, idx: int, page: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Episode picker grid untuk halaman SERIES."""
     episodes = detail.get("episodes") or []
     total = len(episodes)
     max_page = max(1, math.ceil(total / EPISODES_PER_PAGE))
@@ -395,10 +360,6 @@ def build_format_choice_content(
     episode: int = 0,
     direct: bool = False,
 ) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Pilih format Video/MP3.
-
-    `direct=True` -> post/EPISODE page (tidak ada episode picker).
-    """
     t_esc = html.escape(title)
     if direct:
         sub = "<p><b>Source:</b> Episode page (direct post)</p>"
@@ -430,13 +391,11 @@ def build_format_choice_content(
         ],
     ]
     if direct:
-        # Post/EPISODE page: tidak ada episode picker -> tombol Back ke listing.
         rows.append([
             InlineKeyboardButton("Back", callback_data=f"{PREFIX}:back:{session_id}"),
             InlineKeyboardButton("Close", callback_data=f"{PREFIX}:close"),
         ])
     else:
-        # Series: sama seperti `/drakorid` — Change Episode + Close (tanpa Back).
         rows.append([
             InlineKeyboardButton("Change Episode", callback_data=f"{PREFIX}:eps:{session_id}:{idx}:0"),
             InlineKeyboardButton("Close", callback_data=f"{PREFIX}:close"),

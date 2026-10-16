@@ -1,23 +1,3 @@
-#!/usr/bin/env python3
-"""Instagram mobile-device login (one-shot).
-
-Creates a persistent Android-app session for an Instagram account and stores it
-in ``data/ig_session.json``. That file is a full device fingerprint (device_id,
-phone_id, uuid, cookies, authorization token, Android UA) so the bot can later
-reuse it WITHOUT logging in again — Instagram then treats the bot as the same
-physical phone for weeks/months instead of expiring like a browser cookie.
-
-Usage (run from the repo root, with the venv interpreter):
-
-    venv/bin/python scripts/ig_login.py
-
-Credentials resolution order:
-    1. ``IG_LOGIN_USERNAME`` / ``IG_LOGIN_PASSWORD`` / ``IG_LOGIN_2FA`` env vars
-       (also read from ``.env`` automatically).
-    2. Interactive prompt.
-
-The password is never written to disk; only the resulting session is.
-"""
 
 import getpass
 import os
@@ -83,13 +63,6 @@ def main() -> int:
             return 0
 
     cl = Client()
-    # Do NOT override app_version with an arbitrary string: instagrapi only has
-    # bloks_versioning_id / version_code for the versions listed in its
-    # config.APP_SETTINGS table. Passing an unknown app_version leaves the
-    # profile incomplete and login fails with:
-    #   "CAA login requires bloks_versioning_id for the saved app profile"
-    # The library default (Pixel 8 Pro / 449.0.0.52.84) is self-consistent, so
-    # we just keep it. Only tweak the *hardware* fields, which carry no app hash.
     cl.set_device({
         "android_version": 33,
         "android_release": "13",
@@ -102,7 +75,6 @@ def main() -> int:
     })
     cl.delay_range = [1, 3]
 
-    # 2FA / challenge prompts fall back to interactive input when env is empty.
     cl.challenge_code_handler = lambda _u, _c=None: (
         two_factor or _prompt("Instagram 2FA / security code (6 digits)")
     )
@@ -121,7 +93,7 @@ def main() -> int:
         print("Open Instagram on your phone, approve the login attempt, then retry.")
         print(f"Detail: {exc}")
         return 3
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"Login failed: {type(exc).__name__}: {exc}")
         return 4
 
@@ -147,7 +119,6 @@ def main() -> int:
     print("The bot reuses this file; it never calls login() again.")
     print("=" * 60)
 
-    # Smoke-test the private mobile endpoint that unlocks age-gated media.
     probe = os.getenv("IG_LOGIN_PROBE_SHORTCODE", "").strip()
     if probe:
         print(f"\nProbing media/{probe} via the private mobile API...")
@@ -156,7 +127,7 @@ def main() -> int:
             info = cl.media_info(pk)
             print(f"  media_pk={pk} type={info.media_type} "
                   f"video={'yes' if info.video_url else 'no'}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"  probe failed: {type(exc).__name__}: {exc}")
 
     return 0

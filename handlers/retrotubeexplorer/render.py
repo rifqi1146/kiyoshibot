@@ -1,24 +1,3 @@
-"""Renderer Rich Message (Bot API 10.3) + plain HTML fallback untuk explorer RetroTube.
-
-Dipakai bersama oleh `/becekku` (`bq:`) dan `/lendirqu` (`lq:`) — struktur HTML
-kedua situs identik (tema WP-Script `retrotube`).
-
-Setiap builder mengembalikan tuple `(rich_html, plain_html, markup)`.
-
-Grammar callback (4 segmen: `prefix:action:arg1:arg2`):
-- `menu:0:0`            -> menu utama
-- `close:0:0`           -> hapus pesan
-- `cats:<page>:0`       -> picker kategori
-- `tags:<page>:0`       -> picker tag cloud
-- `latest:0:0`          -> listing `?filter=latest`
-- `viewed:0:0`          -> listing `?filter=most-viewed`
-- `cat:<slug>:0`        -> listing kategori
-- `tag:<slug>:0`        -> listing tag
-- `nav:<sid>:<page>`    -> pindah halaman listing
-- `back:<sid>:0`        -> balik ke listing
-- `info:<sid>:<idx>`    -> detail post (read-only + tombol Download)
-- `dl:<sid>:<idx>`      -> unduh (langsung, tanpa resolution picker)
-"""
 import html
 import math
 
@@ -54,7 +33,6 @@ def menu_markup(prefix: str) -> InlineKeyboardMarkup:
 
 
 def build_search_prompt_content(label: str, prefix: str) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Layar instruksi search (tombol `Search` di menu)."""
     lbl = html.escape(label)
     cmd = COMMANDS.get(prefix, prefix)
     rich_html = (
@@ -110,16 +88,6 @@ def build_menu_content(label: str) -> tuple[str, str]:
 
 
 def build_results_content(label: str, prefix: str, session_id: str, data: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Listing (search/kategori/tag/filter), 5 kartu per halaman.
-
-    Memakai helper bersama `utils.rich_search.build_search_content` supaya
-    tampilan identik dengan `/punish`, `/simontok`, `/nekopoi`. Tombol angka ->
-    `info` (detail), tombol tengah -> `menu`.
-
-    Kalau listing dibuka dari daftar tag/kategori (`data["origin"]`), tombol
-    **Back** dikirim lebih dulu supaya user bisa balik ke daftar asal — bukan
-    langsung lompat ke menu. `origin` = `{"action": "tags"/"cats", "page": int}`.
-    """
     for it in data.get("results") or []:
         if not it.get("meta"):
             parts = []
@@ -155,11 +123,6 @@ def build_results_content(label: str, prefix: str, session_id: str, data: dict) 
 
 
 def _pair_table(chunk: list, prefix: str, action: str, picker_page: int = 0) -> tuple[list, str]:
-    """Bikin baris tombol 2 kolom + tabel rich 2 kolom dari daftar item.
-
-    `picker_page` dititipkan di segmen ke-4 callback supaya listing hasil bisa
-    mengirim tombol `Back` ke halaman picker yang sama.
-    """
     rows = []
     for i in range(0, len(chunk), 2):
         row = [InlineKeyboardButton(chunk[i]["name"][:28], callback_data=f"{prefix}:{action}:{chunk[i]['slug']}:{picker_page}")]
@@ -245,7 +208,6 @@ def build_tags_content(label: str, prefix: str, page: int) -> tuple[str, str, In
 
 
 def build_detail_content(label: str, prefix: str, detail: dict, session_id: str, idx: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Detail post (read-only): judul, views, tanggal, kategori/tag, tombol Download."""
     title = html.escape(detail.get("title") or label)
     rows_table = []
     if detail.get("views"):

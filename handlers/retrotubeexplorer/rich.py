@@ -1,14 +1,3 @@
-"""Pengiriman Rich Message (Bot API 10.3) dengan fallback plain HTML.
-
-- `send_rich(bot, ...)`  -> `sendRichMessage`, fallback `bot.send_message`.
-- `edit_rich(bot, ...)`  -> `editMessageText` + `rich_message`, fallback
-  `bot.edit_message_text` (plain HTML).
-
-`do_api_request` dibungkus `warnings.catch_warnings()` karena PTB 22.8
-memunculkan `PTBUserWarning` untuk endpoint yang belum punya wrapper native.
-Jangan pakai `q.bot` (CallbackQuery tidak punya atribut itu) — selalu kirim
-`bot` eksplisit.
-"""
 import logging
 import warnings
 
@@ -60,9 +49,6 @@ async def edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_ht
             warnings.simplefilter("ignore")
             return await bot.do_api_request("editMessageText", payload)
     except Exception as e:
-        # "message is not modified" = pesan SUDAH benar; jangan jatuh ke fallback
-        # plain HTML (itu bikin rich message hilang saat user menekan tombol yang
-        # menghasilkan layar identik, mis. Menu dua kali / back ke halaman sama).
         if is_message_not_modified(e):
             log.debug("editMessageText rich not modified, no-op")
             return None

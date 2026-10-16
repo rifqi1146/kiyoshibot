@@ -1,23 +1,3 @@
-"""Renderer Rich Message (Bot API 10.3) + plain HTML fallback untuk explorer CosXplay.
-
-Setiap builder mengembalikan tuple `(rich_html, plain_html, markup)`.
-
-Grammar callback (4 segmen: `cx:action:arg1:arg2[:arg3]`):
-- `menu:0:0`             -> menu utama
-- `close:0:0`            -> hapus pesan
-- `prompt:0:0`           -> prompt instruksi pencarian
-- `latest:0:0`           -> listing video terbaru
-- `cats:<page>:0`        -> picker 176 kategori
-- `cat:<path>:<ppage>`   -> listing kategori
-- `tags:<page>:0`        -> picker 900+ tag
-- `tag:<slug>:<ppage>`   -> listing tag
-- `actors:<page>:0`      -> picker cosplay models
-- `actor:<slug>:<ppage>` -> listing aktris
-- `nav:<sid>:<page>`     -> pindah halaman listing
-- `back:<sid>:0`         -> balik ke listing
-- `info:<sid>:<idx>`     -> detail post (read-only + tombol Video / Audio)
-- `dl:<sid>:<idx>:<fmt>` -> unduh (fmt = video / mp3)
-"""
 import html
 import math
 
@@ -118,12 +98,6 @@ def build_menu_content(label: str) -> tuple[str, str]:
 
 
 def build_results_content(label: str, prefix: str, session_id: str, data: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Listing (search/kategori/tag/aktor/latest), 5 kartu per halaman.
-
-    Memakai helper bersama `utils.rich_search.build_search_content` supaya
-    tampilan identik dengan search command lain (`/lendirqu`, `/punish`,
-    `/simontok`, `/nekopoi`, `/moviebox`): heading + tabel `#`/`Title`/`Info`.
-    """
     for it in data.get("results") or []:
         if not it.get("meta"):
             parts = []
@@ -332,7 +306,6 @@ def build_actors_content(label: str, prefix: str, page: int) -> tuple[str, str, 
 
 
 def build_detail_content(label: str, prefix: str, detail: dict, session_id: str, idx: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Detail post (read-only): judul, durasi, views, rating, kategori, tags + tombol Video/Audio."""
     title = html.escape(detail.get("title") or label)
     rows_table = []
     if detail.get("duration"):

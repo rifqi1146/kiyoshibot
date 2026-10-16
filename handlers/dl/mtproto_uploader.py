@@ -140,11 +140,6 @@ async def _resolve_entity(client,chat_id):
     return chat_id
 
 async def fetch_messages_raw(chat_id,ids):
-    """Read-only fetch of messages by id for consumers that need chat history
-    (e.g. rebuilding reply chains the Bot API strips out of nested updates).
-
-    `ids` may be a single int (returns one Message or None) or a list of ints
-    (returns a list of Messages)."""
     client=await _get_client()
     entity=await _resolve_entity(client,chat_id)
     return await client.get_messages(entity,ids=ids)
@@ -208,7 +203,6 @@ def _make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_pro
         pct=(current/total*100) if total else 0
         stats.total=total
         stats.sample(current,now=now)
-        # Terminal log: always on (silent mode included), throttled by size-based interval.
         if stats.should_log(interval,now=now):
             stats.log("MTProto upload",label=label)
         if not show_progress:

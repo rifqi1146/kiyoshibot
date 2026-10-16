@@ -1,13 +1,3 @@
-"""Downloader CosXplay (cosxplay.com)
-
-FLOW DOWNLOADER
----------------
-1. `is_cosxplay_url(url)`: Cocokkan host cosxplay.com dan slug post.
-2. `probe_cosxplay(url)`: Ekstrak resolusi dan simpan ke `_VARIANT_CACHE` (TTL 5 menit).
-3. `cosxplay_download(...)`: Unduh resolusi pilihan (high/low) atau format terbaik.
-4. Mendukung konversi mp3 (libmp3lame via ffmpeg) jika `fmt_key == 'mp3'`.
-5. Silent download mode aman: picker resolusi dihapus otomatis saat dipilih, status message ditangani terpisah.
-"""
 import os
 import time
 import uuid
@@ -40,7 +30,6 @@ def is_cosxplay_url(url: str) -> bool:
     if host != "cosxplay.com":
         return False
     path = (parsed.path or "").strip("/")
-    # Slug format: digits-slug
     return bool(path and any(char.isdigit() for char in path.split("/")[0]))
 
 
@@ -100,7 +89,6 @@ async def cosxplay_download(
     title = probe.get("title") or "CosXplay Video"
     variants = probe.get("variants") or []
     
-    # Pilih varian format_id yang dipilih atau varian pertama (terbaik)
     chosen_fid = (format_id or "").strip().lower()
     target_var = next((v for v in variants if v["format_id"] == chosen_fid), None)
     if not target_var and variants:
@@ -132,7 +120,6 @@ async def cosxplay_download(
 
         final_path = res["path"]
         
-        # Jika mode audio / mp3
         if fmt_key == "mp3":
             mp3_path = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp3")
             ffmpeg_cmd = [
@@ -154,7 +141,6 @@ async def cosxplay_download(
                 "artist": "CosXplay"
             }
             
-        # Pindahkan file ke TMP_DIR agar tidak ikut terhapus di finally
         out_video = os.path.join(TMP_DIR, f"{sanitize_filename(title, 80)}.mp4")
         shutil.move(final_path, out_video)
         return {

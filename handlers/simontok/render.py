@@ -1,19 +1,3 @@
-"""Renderer Rich Message (Bot API 10.3) + plain HTML fallback untuk explorer Simontok.
-
-Setiap builder mengembalikan tuple `(rich_html, plain_html, markup)`.
-
-Grammar callback (4 segmen: `sm:action:arg1:arg2`):
-- `menu:0:0`            -> menu utama
-- `close:0:0`           -> hapus pesan
-- `prompt:0:0`          -> prompt instruksi pencarian
-- `sec:<slug>:0`        -> listing seksi (terbaru, trending, vip, indo, jav, semi, hentai)
-- `cats:<page>:0`       -> picker kategori
-- `cat:<slug>:<ppage>`  -> listing kategori/genre
-- `nav:<sid>:<page>`    -> pindah halaman listing
-- `back:<sid>:0`        -> balik ke listing
-- `info:<sid>:<idx>`    -> detail post (read-only + tombol Download Video / Audio)
-- `dl:<sid>:<idx>:<fmt>`-> unduh (fmt = video / mp3)
-"""
 import html
 import math
 
@@ -111,11 +95,6 @@ def build_menu_content(label: str) -> tuple[str, str]:
 
 
 def build_results_content(label: str, prefix: str, session_id: str, data: dict) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Listing (search/kategori/seksi), 5 kartu per halaman.
-
-    Memakai helper bersama `utils.rich_search.build_search_content`.
-    Tombol angka -> `info` (detail), tombol tengah -> `menu`.
-    """
     for it in data.get("results") or []:
         if not it.get("meta"):
             parts = []
@@ -201,7 +180,6 @@ def build_categories_content(label: str, prefix: str, page: int) -> tuple[str, s
 
 
 def build_detail_content(label: str, prefix: str, detail: dict, session_id: str, idx: int) -> tuple[str, str, InlineKeyboardMarkup]:
-    """Detail post (read-only): judul, durasi, views, badge, kategori + tombol Video/Audio."""
     title = html.escape(detail.get("title") or label)
     rows_table = []
     if detail.get("duration"):

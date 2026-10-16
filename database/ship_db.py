@@ -31,13 +31,10 @@ def _ship_db_init():
             )
             """
         )
-        # Index untuk query pool /ship (WHERE chat_id ORDER BY updated_at DESC).
-        # Tanpa ini tiap /ship men-scan + sort seluruh anggota grup.
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_chat_updated "
             "ON users(chat_id, updated_at DESC)"
         )
-        # Bersihkan sisa data DM (id positif) yang pernah masuk pool ship
         con.execute("DELETE FROM users WHERE chat_id > 0")
         con.execute("DELETE FROM ship_state WHERE chat_id > 0")
         con.commit()
@@ -50,14 +47,12 @@ def add_user(chat_id: int, user):
 
     cid = int(chat_id)
     if cid > 0:
-        # Private chat (DM) bukan anggota grup, jangan masuk pool ship
         return
 
     uid = int(user.id)
     name = str(getattr(user, "first_name", "") or "")
     now = time.time()
 
-    # Throttle frequent updates for same user in same chat if name unchanged
     cached = _RECENT_UPDATES.get((cid, uid))
     if cached and cached[0] == name and (now - cached[1]) < 1800:
         return
@@ -133,7 +128,6 @@ def set_ship_last_time(chat_id: int, last_time: int):
 
 
 def get_users_pool(chat_id: int, limit: int = 150) -> list[dict]:
-    """Ambil kandidat ship, diurutkan dari member yang paling baru aktif."""
     _ship_db_init()
     limit = max(10, int(limit))
     with db_session(SHIP_DB) as con:
@@ -156,7 +150,6 @@ def get_users_pool(chat_id: int, limit: int = 150) -> list[dict]:
 
 
 def touch_user(chat_id: int, user_id: int) -> None:
-    """Perbarui updated_at tanpa mengubah nama (nandai user aktif)."""
     cid = int(chat_id)
     if cid > 0:
         return

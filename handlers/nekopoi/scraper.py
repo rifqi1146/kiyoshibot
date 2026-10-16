@@ -1,22 +1,3 @@
-"""HTTP client + parser + fetcher untuk Nekopoi (`nekopoi.care`).
-
-FLOW SCRAPER
-------------
-1. `http_get(url)` -> HTML mentah (curl_cffi impersonate Chrome, terkunci IPv4
-   agar token `i=<ip>` streampoi konsisten dengan jalur unduh).
-2. `parse_cards(html)` -> kartu listing `div.nk-search-results ul li >
-   a.nk-search-item` (judul, url, thumb, genre, deskripsi). Struktur ini dipakai
-   SAMA oleh search, kategori, dan genre.
-3. `fetch_paginated(url_template)` -> gabungkan beberapa halaman server sampai
-   `MAX_RESULTS` (search / kategori / genre).
-4. `fetch_genres()` -> 78 genre dari `/genre-list/` (cache 1 jam).
-5. `fetch_az(kind)` -> daftar A-Z `hentai-list` / `jav-list` (~1MB, cache 1 jam):
-   `{"letters": {letter: [items]}, "flat": [items]}`.
-6. `fetch_schedule()` -> jadwal rilis per bulan dari `/jadwal-new-hentai/`
-   (cache 1 jam). Murni informasi, tidak ada link unduh.
-7. `fetch_detail(url)` -> metadata halaman SERIES (`div.nk-series-info` +
-   `a.nk-episode-card`) ATAU halaman EPISODE/post (`div.nk-download-row`).
-"""
 import logging
 import math
 import re
@@ -39,7 +20,6 @@ from .state import AZ_CACHE, GENRES_CACHE, SCHEDULE_CACHE
 
 log = logging.getLogger(__name__)
 
-# Satu session bersama (thread-local curl handle), IPv4-locked seperti downloader.
 _session = None
 
 
@@ -49,7 +29,7 @@ def _http():
         if FORCE_IPV4:
             _session = curl_requests.Session(
                 impersonate="chrome",
-                curl_options={CurlOpt.IPRESOLVE: 1},  # CURL_IPRESOLVE_V4
+                curl_options={CurlOpt.IPRESOLVE: 1},
             )
         else:
             _session = curl_requests.Session(impersonate="chrome")
@@ -57,7 +37,6 @@ def _http():
 
 
 def http_get(url: str) -> str:
-    """Ambil HTML halaman Nekopoi; kosong kalau gagal."""
     try:
         r = _http().get(url, headers={"User-Agent": UA, "Referer": f"{BASE_URL}/"}, timeout=HTTP_TIMEOUT)
         return r.text if r.status_code == 200 else ""
@@ -72,12 +51,6 @@ def _bg(style: str) -> str:
 
 
 def parse_cards(html_text: str) -> list[dict]:
-    """Kartu listing search/kategori/genre.
-
-    -> [{title, url, thumbnail, genres, desc, type}]
-    `type` = "series" kalau path `/hentai/<slug>/` atau `/jav/<slug>/`
-             (listing episode, bukan video) else "post".
-    """
     if not html_text:
         return []
     soup = BeautifulSoup(html_text, "html.parser")
@@ -112,11 +85,6 @@ def parse_cards(html_text: str) -> list[dict]:
 
 
 def fetch_paginated(url_template: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Kumpulkan kartu dari beberapa halaman server sampai `max_items`.
-
-    `url_template` memakai `{page}`. Berhenti saat halaman kosong, semua
-    duplikat, atau target tercapai.
-    """
     results: list[dict] = []
     seen: set[str] = set()
     max_pages = max(1, math.ceil(max_items / 10) + 1)
@@ -140,9 +108,6 @@ def fetch_paginated(url_template: str, max_items: int = MAX_RESULTS) -> list[dic
 
 
 def search(query: str, max_items: int = MAX_RESULTS) -> list[dict]:
-    """Cari di `/search/<q>`; kalau ada paginasi ikut sampai `max_items`."""
-    # Nekopoi memakai path-encoded slug (`%20` untuk spasi, BUKAN `+`).
-    # `quote_plus` mengubah spasi jadi `+` -> server balas 0 hasil.
     slug = quote((query or "").strip(), safe="")
     first = f"{BASE_URL}/search/{slug}"
     raw = http_get(first)
@@ -176,7 +141,6 @@ def search(query: str, max_items: int = MAX_RESULTS) -> list[dict]:
 
 
 def fetch_genres() -> list[dict]:
-    """78 genre dari `/genre-list/` (cache 1 jam). -> [{slug, name}]"""
     now = time.time()
     if GENRES_CACHE.get("list") and now - GENRES_CACHE.get("ts", 0) < 3600:
         return GENRES_CACHE["list"]
@@ -205,11 +169,6 @@ def fetch_genres() -> list[dict]:
 
 
 def fetch_az(kind: str) -> dict:
-    """Daftar A-Z dari `/hentai-list/` (kind="hentai") atau `/jav-list/` (kind="jav").
-
-    -> {"letters": {letter: [{title, url}]}, "flat": [{title, url, letter}]}
-    Cache 1 jam karena satu fetch ~1MB.
-    """
     now = time.time()
     cached = AZ_CACHE.get(kind)
     if cached and now - cached.get("ts", 0) < AZ_TTL:
@@ -250,10 +209,6 @@ def fetch_az(kind: str) -> dict:
 
 
 def fetch_schedule() -> list[dict]:
-    """Jadwal rilis per bulan dari `/jadwal-new-hentai/` (cache 1 jam).
-
-    -> [{month, items: [{title, episode, release}]}]
-    """
     now = time.time()
     if SCHEDULE_CACHE.get("months") and now - SCHEDULE_CACHE.get("ts", 0) < 3600:
         return SCHEDULE_CACHE["months"]
@@ -290,10 +245,6 @@ def fetch_schedule() -> list[dict]:
 
 
 def fetch_latest() -> list[dict]:
-    """Episode Terbaru dari beranda (`div.nk-episodes-area div.nk-post-card`).
-
-    -> [{title, url, thumbnail, type}]
-    """
     raw = http_get(f"{BASE_URL}/")
     if not raw:
         return []
@@ -327,7 +278,6 @@ def fetch_latest() -> list[dict]:
 
 
 def _clean_series_title(raw: str) -> str:
-    """Buang pembungkus `Unduh "X" Indonesian Subbed/Dubbed Online`."""
     t = raw or ""
     m = re.search(r'Unduh\s+"([^"]+)"', t)
     if m:
@@ -341,13 +291,6 @@ def _ep_number(text: str) -> int:
 
 
 def fetch_detail(url: str) -> dict:
-    """Metadata halaman SERIES atau EPISODE.
-
-    Hasil selalu berisi `kind`:
-    - `kind="series"` -> {title, poster, synopsis, meta:{...}, episodes:[{ep,title,url,date}]}
-    - `kind="episode"` -> {title, thumbnail, download_rows:[...]}
-    - `kind="unknown"` -> {title}
-    """
     raw = http_get(url)
     if not raw:
         return {"kind": "unknown", "title": "", "url": url}
@@ -358,7 +301,6 @@ def fetch_detail(url: str) -> dict:
     if og and og.get("content"):
         og_title = og["content"].strip()
 
-    # ---- Halaman SERIES (/hentai/<slug>/, /jav/<slug>/) ----
     info = soup.select_one("div.nk-series-info")
     if info:
         title = _clean_series_title(
@@ -419,7 +361,6 @@ def fetch_detail(url: str) -> dict:
             "episodes": episodes,
         }
 
-    # ---- Halaman EPISODE / post (punya baris unduh) ----
     rows = soup.select("div.nk-download-row")
     thumb = ""
     ogi = soup.select_one('meta[property="og:image"]')

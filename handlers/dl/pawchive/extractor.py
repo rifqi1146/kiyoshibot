@@ -1,30 +1,3 @@
-"""Scraper Pawchive (arsip Patreon/Fanbox bergaya Kemono).
-
-FLOW SCRAPER
-------------
-1. Terima URL post Pawchive  ->  `scrape_post(url)`.
-2. Ambil HTML post (curl_cffi, impersonate Chrome) -> BeautifulSoup.
-3. Baca:
-     - judul            : `.post__title span` pertama
-     - creator          : `.post__user-name`
-     - video            : `.post__videos li` -> `<summary>` (nama) + `<source src>`
-     - lampiran/gambar  : `a[download][href]` (nama dari atribut `download`)
-4. Dedup lampiran berdasarkan URL.
-5. Kalau tidak ada media sama sekali -> fallback ke API JSON
-   `/api/v1/{service}/user/{user}/post/{post}` (`attachments[].path`).
-6. Klasifikasi URL -> video (mp4/webm/mkv) atau gambar (jpg/png/gif/webp).
-7. Pemilihan video:
-     - Ada label resolusi (`1080p`, `720p`, ...) -> ambil tertinggi.
-     - Hanya 1 file video -> file itu.
-     - Beberapa file tanpa label resolusi -> semua dianggap bagian -> album.
-8. `pick_best_video` mengembalikan dict {url, name, label, size}.
-9. `download_to_file` men-stream dari `file.pawchive.pw` ke disk dengan
-   pembatasan ukuran 2GB + progress bar di pesan status:
-   writer jalan di thread (to_thread), loop polling baca ukuran file tiap 0.7s,
-   edit status maksimal tiap 3s (env PAWCHIVE_PROGRESS_INTERVAL), hitung
-   speed/ETA dinamis, backoff saat kena RetryAfter (flood control).
-10. `download_album` dipakai untuk post gambar / multi-part (album Telegram).
-"""
 import os
 import re
 import html as html_mod
@@ -62,9 +35,7 @@ UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 _HTTP_TIMEOUT = 45
-# Interval edit progress (detik) — samakan skala dengan scraper lain (3s default).
 PAWCHIVE_PROGRESS_INTERVAL = float(os.getenv("PAWCHIVE_PROGRESS_INTERVAL", "3"))
-# Jumlah media album yang diunduh paralel (album sebelumnya serial 1-per-1).
 PAWCHIVE_ALBUM_CONCURRENCY = int(os.getenv("PAWCHIVE_ALBUM_CONCURRENCY", "6"))
 _VIDEO_EXT = (".mp4", ".webm", ".mkv", ".mov", ".m4v")
 _IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp")
@@ -83,7 +54,6 @@ async def _safe_edit_status(bot, chat_id, status_msg_id, text: str):
 
 
 def _flood_wait(error) -> float:
-    """Deteksi RetryAfter / 'Flood control exceeded' -> detik tunggu."""
     text = str(error or "")
     m = re.search(r"[Rr]etr[yY] in (\d+)", text)
     if m:
@@ -114,7 +84,6 @@ def _ext_of(url: str) -> str:
 
 
 def _name_of(url: str, fallback: str = "") -> str:
-    """Nama file asli dari query `?f=`, fallback ke basename path."""
     try:
         query = parse_qs(urlsplit(url or "").query)
         value = (query.get("f") or [""])[0]
@@ -150,23 +119,16 @@ def _quality_rank(name: str) -> int:
 
 
 def resolve_videos(videos: list) -> list:
-    """Mengembalikan daftar video final untuk post ini:
-    - Jika multi-part (video berbeda-beda), kembalikan SEMUA video.
-    - Jika ada varian resolusi, pilih varian terbaik untuk setiap video unik.
-    """
     if not videos:
         return []
     if len(videos) == 1:
         return [videos[0]]
 
-    # Cek apakah ada label varian (1080p, 720p, dsb)
     has_variants = any(_VARIANT_RE.search(v.get("name", "")) for v in videos)
     
     if not has_variants:
-        # Tidak ada label varian -> semua adalah video berbeda (multi-part)!
         return videos
 
-    # Jika ada label varian, kelompokkan berdasarkan base name
     groups = {}
     for v in videos:
         name = v.get("name", "")
@@ -181,14 +143,12 @@ def resolve_videos(videos: list) -> list:
     return result
 
 def pick_best_video(videos: list) -> dict:
-    """Pilih video terbaik: resolusi tertinggi dulu, lalu label varian."""
     if not videos:
         raise RuntimeError("No video in this post")
     if len(videos) == 1:
         return videos[0]
     ranked = sorted(videos, key=lambda v: _quality_rank(v.get("name", "")), reverse=True)
     top = ranked[0]
-    # Semua peringkat 0 dan tidak ada label varian -> kemungkinan multi-part.
     if _quality_rank(top.get("name", "")) == 0 and not any(
         _VARIANT_RE.search(v.get("name", "")) for v in videos
     ):
@@ -303,7 +263,6 @@ def _scrape_api(url: str) -> dict:
 
 
 def scrape_post(url: str) -> dict:
-    """-> {title, creator, videos:[{url,name,ext}], images:[{url,name,ext}]}"""
     r = curl_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome", timeout=_HTTP_TIMEOUT)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code} saat mengambil halaman Pawchive")
@@ -339,15 +298,6 @@ async def download_to_file(
     title: str,
     notify: bool = True,
 ) -> int:
-    """Stream file Pawchive ke `out_path` dengan progress + limit 2GB.
-
-    `notify=False` dipakai jalur album: unduh senyap tanpa sentuh pesan status,
-    supaya tidak menembak edit message sekali per file (rawan flood control).
-    Untuk file tunggal (`notify=True`), polling loop seperti scraper lain:
-    baca ukuran file tiap 0.7s, edit status maksimal tiap PAWCHIVE_PROGRESS_INTERVAL
-    (3s, bisa dioverride env), hitung speed/ETA dinamis, dan backoff saat kena
-    RetryAfter (flood control).
-    """
     headers = {"User-Agent": UA, "Referer": "https://pawchive.pw/"}
     interval = PAWCHIVE_PROGRESS_INTERVAL
 
@@ -466,10 +416,6 @@ def extract_audio(src_path: str, out_path: str) -> str:
 
 
 def _album_interval(total: int) -> float:
-    """Interval edit progress album (detik) — makin banyak foto makin jarang.
-
-    Sedikit foto (<=5) -> 3s, banyak foto (>=50) -> 5s, sisanya linear di antaranya.
-    """
     if total <= 5:
         return 3.0
     if total >= 50:
@@ -478,14 +424,6 @@ def _album_interval(total: int) -> float:
 
 
 async def download_album(medias_list: list, title: str, bot, chat_id, status_msg_id, out_dir: str, tag: str = "paw", media_type: str = "photo", item_label: str = "foto") -> dict:
-    """Unduh semua media (gambar atau video) menjadi album.
-
-    Pesan status hanya menampilkan jumlah media dan progres (misal '1/30 foto'),
-    diedit sekali per interval `_album_interval(total)` (3-5 detik, menyesuaikan
-    jumlah media: sedikit media -> 3s, banyak media -> 5s) supaya aman dari rate limit.
-    File diletakkan di `out_dir` (pakai TMP_DIR, bukan work_dir sementara) karena
-    folder kerja sementara dihapus di blok `finally` sebelum album dikirim.
-    """
     medias = [m for m in (medias_list or []) if m.get("url")]
     total = len(medias)
     if not total:
@@ -526,8 +464,6 @@ async def download_album(medias_list: list, title: str, bot, chat_id, status_msg
 
         async with sem:
             try:
-                # Untuk multiple media, progress bar individu akan mengganggu (rate limit).
-                # Jadi kita panggil download_to_file senyap (notify=False)
                 await download_to_file(item.get("url"), out, bot, chat_id, status_msg_id, title, notify=False)
             except Exception as e:
                 failures += 1

@@ -1,27 +1,3 @@
-"""Scraper Simontok (simontok.study)
-
-FLOW SCRAPER
-------------
-1. `scrape_post(url)`: ambil halaman post → judul + URL embed (iframe
-   putarin.*/puterin.* — ejaan & TLD berrotasi).
-2. `resolve_hls(embed_url)`: halaman embed memuat `window.__PX` = blob terenkripsi
-   AES-256-GCM. Kunci TIDAK ada di HTML — diambil sekali-pakai dari
-   `<origin>/api/pk?n=<nonce>`. Dekripsi menghasilkan config player JSON
-   berisi `file` (URL `/api/hls?t=...`) dan `image` (poster).
-   **Origin selalu diambil dinamis dari URL embed** — TLD putarin berotasi
-   (biz/xyz/...), memakai origin yang salah membuat `/api/pk` membalas 403.
-3. `parse_segments(m3u8_url, referer)`: playlist media HLS (tanpa `#EXT-X-STREAM-INF`,
-   tanpa `#EXT-X-KEY`) → daftar segmen `.ts` + total durasi dari `#EXTINF`.
-
-FLOW DOWNLOADER
----------------
-1. Segmen diunduh paralel (`SEG_CONCURRENCY`) dengan retry `SEG_RETRIES`.
-2. Progress pakai `TransferStats` + `render_progress_text` standar: proyeksi total
-   byte di-update tiap segmen dan dijaga monoton naik (`max(est, total_bytes, 1)`),
-   bar memakai rasio segmen, dipaksa 100.0 saat semua segmen selesai.
-3. Remux `ffmpeg -f concat -c copy` → mp4. Mode `mp3` → `libmp3lame`.
-4. Batas `MAX_TG_SIZE` dicek selama streaming segmen.
-"""
 import os
 import re
 import json
@@ -76,7 +52,6 @@ def _new_session():
 
 
 def scrape_post(url: str) -> dict:
-    """Ambil halaman post simontok.study → title + embed URL."""
     if not POST_RE.match((url or "").strip()):
         raise ValueError(f"Bukan URL post simontok.study: {url}")
 
@@ -121,7 +96,6 @@ def _fetch_pk(session, origin: str, nonce: str, referer: str) -> bytes:
 
 
 def resolve_hls(embed_url: str) -> dict:
-    """Decrypt config player (AES-256-GCM) → URL m3u8 + poster."""
     origin = _origin(embed_url)
     last_err = None
     for attempt in range(2):
@@ -143,7 +117,6 @@ def resolve_hls(embed_url: str) -> dict:
             blob = base64.b64decode(px["d"])
             if len(blob) <= 28:
                 raise RuntimeError("ciphertext embed terlalu pendek")
-            # Layout GCM: nonce/IV 12 byte | ciphertext | tag 16 byte.
             iv, ct, tag = blob[:12], blob[12:-16], blob[-16:]
             plain = AES.new(key, AES.MODE_GCM, nonce=iv).decrypt_and_verify(ct, tag)
             player = json.loads(plain.decode("utf-8"))
@@ -166,7 +139,6 @@ def resolve_hls(embed_url: str) -> dict:
 
 
 def parse_segments(m3u8_url: str, referer: str) -> dict:
-    """Ambil playlist media → daftar URL segmen + total durasi (detik)."""
     r = _new_session().get(
         m3u8_url,
         timeout=HTTP_TIMEOUT,
@@ -226,7 +198,6 @@ async def download_segments(
     status_msg_id,
     title_text: str,
 ) -> list:
-    """Unduh semua segmen paralel dengan progress standar downloader lain."""
     sem = asyncio.Semaphore(max(1, SEG_CONCURRENCY))
     total = len(seg_urls)
     done = 0
@@ -240,8 +211,6 @@ async def download_segments(
         now = time.monotonic()
         stats.sample(total_bytes, now=now)
         if done > 0 and total > 0:
-            # Proyeksi total byte dari rata-rata segmen yang sudah selesai,
-            # dijaga monoton naik supaya bar/persen tidak pernah >100%.
             est = int(total_bytes / done * total)
             stats.total = max(est, total_bytes, 1)
 
@@ -283,7 +252,6 @@ async def download_segments(
     try:
         results = await asyncio.gather(*(worker(i, u) for i, u in enumerate(seg_urls)))
     except BaseException:
-        # Edit pesan final (gagal/100%) tetap dikirim sebelum error merambat.
         async with emit_lock:
             await _emit(force=True)
         raise
@@ -294,7 +262,6 @@ async def download_segments(
 
 
 def concat_segments(seg_files: list, out_path: str, work_dir: str) -> str:
-    """Gabung segmen .ts jadi satu mp4 (copy, tanpa re-encode)."""
     lst = os.path.join(work_dir, "concat.txt")
     with open(lst, "w", encoding="utf-8") as f:
         for p in seg_files:
@@ -317,7 +284,6 @@ def concat_segments(seg_files: list, out_path: str, work_dir: str) -> str:
 
 
 def extract_audio(src_path: str, out_path: str) -> str:
-    """Ekstrak audio ke MP3 (libmp3lame) untuk mode mp3."""
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error", "-i", src_path,
         "-vn", "-acodec", "libmp3lame", "-q:a", "2", out_path,
@@ -333,13 +299,6 @@ def extract_audio(src_path: str, out_path: str) -> str:
 
 
 def has_video_stream(path: str) -> bool:
-    """True kalau file hasil remux memuat stream video yang dikenal ffmpeg.
-
-    Beberapa post simontok memakai codec video yang tidak dikenal build ffmpeg
-    (stream terbaca sebagai `bin_data`, ffprobe: "Unsupported codec with id").
-    Remux `-c copy` menghasilkan mp4 audio-only. Tanpa cek ini, file rusak
-    dikirim diam-diam ke user.
-    """
     try:
         res = subprocess.run(
             ["ffprobe", "-hide_banner", "-v", "error", "-select_streams", "v",
@@ -347,7 +306,7 @@ def has_video_stream(path: str) -> bool:
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60,
         )
     except Exception:
-        return True  # ffprobe gagal -> biarkan download lanjut
+        return True
     return any(line.strip() for line in (res.stdout or "").splitlines())
 
 

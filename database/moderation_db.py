@@ -64,12 +64,6 @@ def _sudo_db():
 
 
 def _open(path: str) -> sqlite3.Connection:
-    """Koneksi dengan PRAGMAs yang sama seperti helper init.
-
-    Tanpa `busy_timeout`, query yang bertabrakan dengan writer lain langsung
-    melempar `sqlite3.OperationalError: database is locked` (error ke user),
-    padahal menunggu 30 detik sudah cukup untuk menyelesaikannya.
-    """
     con = sqlite3.connect(path, timeout=30.0)
     try:
         con.execute("PRAGMA journal_mode=WAL;")

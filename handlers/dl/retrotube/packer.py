@@ -7,7 +7,6 @@ _PACKER_RE = re.compile(
     re.S,
 )
 
-# Base62 Dean Edwards: 0-9, a-z, A-Z
 _BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
@@ -22,7 +21,6 @@ def _to_base(num: int, base: int) -> str:
 
 
 def _unpack_eval(packed: str, radix: int, count: int, words: list) -> str:
-    """Unpack Dean Edwards packer (mendukung radix hingga 62)."""
     for i in range(count - 1, -1, -1):
         if i < len(words) and words[i]:
             packed = re.sub(
@@ -34,9 +32,6 @@ def _unpack_eval(packed: str, radix: int, count: int, words: list) -> str:
 
 
 def _deobfuscate_voe_json(html_text: str):
-    """Bongkar obfuscation script JSON dari player VOE (seperti miaw.lol)
-    menggunakan ROT13 -> replace patterns -> b64 -> shift(3) -> reverse -> b64 -> JSON.
-    """
     m = re.search(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html_text, re.S)
     if not m:
         return None, None

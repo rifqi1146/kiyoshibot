@@ -1,27 +1,3 @@
-"""Scraper FemdomVC (femdomvc.com).
-
-FLOW SCRAPER
-------------
-1. Terima URL post FemdomVC -> `scrape_post(url)`.
-2. Ambil HTML post (curl_cffi, impersonate Chrome). HTTP 404 -> `FileNotFoundError`.
-3. Baca metadata:
-   - Judul: `<h1>` post -> fallback `og:title` -> fallback `<title>`.
-   - Durasi: `meta[property="video:duration"]` (detik).
-   - Dimensi: `og:video:width`, `og:video:height`.
-   - Poster: `og:image` -> fallback preview screenshot.
-4. Temukan direct MP4 download link dari tab download:
-   - Tag `<a href="...">` dengan path `/get_file/1/...` dan `download=true` / `.mp4`.
-   - Pola: `https://www.femdomvc.com/get_file/1/<hash>/<sub_id>/<id>/<id>.mp4/?download_filename=...&download=true...`
-5. HEAD request / GET Range untuk verifikasi `Content-Length`.
-6. Return dict `{title, duration, thumbnail, width, height, download_url, filesize}`.
-
-FLOW DOWNLOADER
----------------
-1. `download_video(url, out_path, ...)` -> ambil download link via `scrape_post`.
-2. GET `stream=True` ke CDN dengan `Referer: url` dan `User-Agent: UA`.
-3. `TransferStats` untuk progress bar Telegram + speed/ETA + batas `MAX_TG_SIZE`.
-4. Return dict `{"path", "title"}`; pemanggil (`main.py`) menangani mp3.
-"""
 import os
 import re
 import shutil
@@ -43,7 +19,6 @@ _TITLE_SUFFIX_RE = re.compile(r"\s*[-|]\s*FemdomVC\s*$", re.I)
 
 
 def _probe_direct_size(url: str, referer: str, session: curl_requests.Session) -> int:
-    """Ambil ukuran file via HEAD request atau Range: bytes=0-0 fallback."""
     headers = {"User-Agent": UA, "Referer": referer}
     try:
         resp = session.head(url, headers=headers, timeout=HTTP_TIMEOUT)
@@ -82,7 +57,6 @@ def scrape_post(url: str) -> dict:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # 1. Judul
     title = ""
     h1 = soup.find("h1")
     if h1:
@@ -95,7 +69,6 @@ def scrape_post(url: str) -> dict:
         title = _TITLE_SUFFIX_RE.sub("", soup.title.get_text(strip=True))
     title = sanitize_filename(title or "FemdomVC Video", 100)
 
-    # 2. Durasi (detik)
     duration = 0
     dur_meta = soup.find("meta", property="video:duration")
     if dur_meta and dur_meta.get("content"):
@@ -104,7 +77,6 @@ def scrape_post(url: str) -> dict:
         except Exception:
             duration = 0
 
-    # 3. Dimensi video
     w_meta = soup.find("meta", property="og:video:width")
     h_meta = soup.find("meta", property="og:video:height")
     try:
@@ -116,15 +88,11 @@ def scrape_post(url: str) -> dict:
     except Exception:
         height = 720
 
-    # 4. Thumbnail / Poster
     thumbnail = ""
     img_meta = soup.find("meta", property="og:image")
     if img_meta and img_meta.get("content"):
         thumbnail = img_meta.get("content").strip()
 
-    # 5. Direct MP4 link dari tab download
-    # FemdomVC adalah KVS tube; tab download memiliki link:
-    # <a href="https://www.femdomvc.com/get_file/1/.../id.mp4/?download_filename=...&download=true...">
     dl_url = ""
     for a in soup.find_all("a", href=re.compile(r"/get_file/1/.*\.mp4")):
         href = a.get("href") or ""
@@ -134,7 +102,6 @@ def scrape_post(url: str) -> dict:
         if not dl_url and href.startswith("http"):
             dl_url = href
 
-    # Fallback: regex langsung pada HTML bila bs4 melewatkan
     if not dl_url:
         m = re.search(
             r'href=["\'](https?://(?:www\.)?femdomvc\.com/get_file/1/[^"\']+\.mp4[^"\']*)["\']',
@@ -174,7 +141,6 @@ async def _download_aria2c(
     title: str,
     notify: bool,
 ) -> bool:
-    """Download paralel multi-koneksi via aria2c (14s untuk 70MB vs 4+ menit single stream)."""
     from handlers.dl.aria2 import _resolve_aria2
     aria2 = _resolve_aria2()
     if not aria2:
@@ -199,8 +165,6 @@ async def _download_aria2c(
         dl_url,
     ]
 
-    # uvloop create_subprocess_exec -> libuv fork() -> SIGSEGV(-11). Pakai
-    # spawn_process (subprocess.Popen via thread / posix_spawn) yang aman.
     proc = await spawn_process(
         *cmd,
         stdout=DEVNULL,
@@ -283,7 +247,6 @@ async def download_video(
             f"File exceeds 2GB limit ({total / 1024 ** 3:.2f} GB). Download canceled."
         )
 
-    # 1. Coba aria2c paralel terlebih dahulu (CDN FemdomVC men-throttle koneksi tunggal ke ~250KB/s)
     try:
         ok = await _download_aria2c(
             dl_url=dl_url,
@@ -303,7 +266,6 @@ async def download_video(
     except Exception as e:
         log.warning("FemdomVC aria2c exception, fallback ke streaming | err=%r", e)
 
-    # 2. Fallback: streaming langsung via curl_cffi
     headers = {"User-Agent": UA, "Referer": url}
 
     def _get():

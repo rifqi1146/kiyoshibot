@@ -1,14 +1,3 @@
-"""Handler for /ask (via OpenCode proxy), /getmodel, /setmodel, /thinking, and /setsearch.
-
-Replaces the cloud Gemini implementation:
-  - No API key required (free upstream via local OpenCode proxy)
-  - Streaming drafts for private chats (DMs)
-  - Local RAG + rolling user memory (ai_memory)
-  - Upstream model controlled via /setmodel and listed via /getmodel
-  - Agentic grounding: model can call web_search / read_page
-    (Firecrawl / Jina AI) on demand; system prompt always injects real-time
-    date & Asia/Jakarta timezone.
-"""
 import asyncio
 import html
 import json
@@ -115,9 +104,6 @@ def _system_instruction() -> str:
     )
 
 
-# Tools exposed to the model. Only activated when a search backend is
-# available (FIRECRAWL_API_KEY or JINA_API_KEY) — without one the model
-# answers normally (no grounding) instead of failing.
 TOOLS = [
     {
         "type": "function",
@@ -174,19 +160,16 @@ _SEARCH_TRIGGERS = (
 
 
 def _needs_search(text: str) -> bool:
-    """True kalau prompt user terindikasi butuh data segar dari internet."""
     low = (text or "").lower()
     return any(t in low for t in _SEARCH_TRIGGERS)
 
 
 def _active_engine() -> str:
-    """Active grounding engine: 'firecrawl' | 'jina' (runtime)."""
     from handlers.proxy.client import get_search_engine
     return get_search_engine()
 
 
 async def _web_search(query: str) -> str:
-    """Pick the search backend based on SEARCH_ENGINE (runtime, not import-time)."""
     if _active_engine() == "jina":
         from utils.jina import web_search as _s
     else:
@@ -301,7 +284,6 @@ async def _reply_thread(bot, msg, text, parse_mode=None):
 
 
 async def _send_chunks(bot, msg, chunks: list[str]) -> Optional[int]:
-    """Send markdown output as a Rich Message, fallback to HTML sendMessage."""
     from utils.rich_stream import send_rich_message
 
     if not chunks:
@@ -331,17 +313,6 @@ async def _send_chunks(bot, msg, chunks: list[str]) -> Optional[int]:
 
 
 async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[dict] | None]:
-    """Build messages + tools.
-
-    Grounding dilakukan dengan pola PRE-SEARCH (bukan tool-calling native):
-    proxy free-tier OpenCode tidak bisa diandalkan untuk tool-calling gaya
-    agentic, jadi kalau prompt terindikasi butuh data segar, bot menjalankan
-    pencarian lebih dulu lalu menyuntikkan hasilnya ke system prompt sebagai
-    <web_search_results>.
-
-    `tools` tetap diisi kalau ada backend search supaya jalur agentic lama
-    (jika suatu saat tool-calling upstream kembali hidup) tetap tersedia.
-    """
     sys_text = _system_instruction()
     try:
         contexts = await retrieve_context(prompt, LOCAL_CONTEXTS, top_k=2)
@@ -356,12 +327,8 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
             len(contexts), len(injected),
         )
 
-    # Read at runtime (not import-by-value) so adding a key in .env + /reload
-    # takes effect without a full restart.
     has_backend = bool(app_config.FIRECRAWL_API_KEY) or bool(app_config.JINA_API_KEY)
 
-    # PRE-SEARCH: jalur tool-calling agentic tidak diandalkan di free tier,
-    # jadi pencarian dikerjakan bot lalu hasilnya disuntikkan ke system prompt.
     search_injected = False
     if has_backend and _needs_search(prompt):
         try:
@@ -380,7 +347,6 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
         except Exception as e:
             log.warning("Pre-search failed | err=%r", e)
 
-    # Jalur agentic lama tetap disiapkan (kalau backend mendukung tool-calling).
     tools = TOOLS if (has_backend and not search_injected) else None
 
     messages = [{"role": "system", "content": sys_text}]
@@ -396,12 +362,6 @@ async def _build_messages(history: list, prompt: str) -> tuple[list[dict], list[
 
 
 async def _run_agentic(messages: list[dict], tools: list[dict] | None, status_cb=None) -> str:
-    """Run one or more chat+tool rounds until the model finishes.
-
-    - tools None -> single non-stream call (legacy behavior).
-    - tools set  -> loop: if the model returns tool_calls, execute then continue.
-    Returns the final answer text.
-    """
     if not tools:
         return await proxy_chat(messages)
 
@@ -412,7 +372,6 @@ async def _run_agentic(messages: list[dict], tools: list[dict] | None, status_cb
         if not tool_calls:
             return (message.get("content") or "").strip()
 
-        # Append the assistant message carrying tool_calls, then each tool result.
         convo.append({
             "role": "assistant",
             "content": message.get("content") or "",
@@ -433,7 +392,6 @@ async def _run_agentic(messages: list[dict], tools: list[dict] | None, status_cb
                 "content": result,
             })
 
-    # Rounds exhausted: request the final answer without tools.
     return await proxy_chat(convo)
 
 
@@ -449,11 +407,6 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
         app.bot_data[stop_key] = gen_stop
 
     async def gen():
-        """Draft stream: no tools -> stream directly; with tools -> stream only
-        the final answer (tool-calling already finished BEFORE the draft opens,
-        so the draft stream never stalls and no status text leaks into the
-        delivered message).
-        """
         if final_convo is None:
             got = False
             async for chunk in proxy_chat_stream(messages):
@@ -464,14 +417,9 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
                 yield "Model did not provide an answer."
             return
 
-        # Stream the final answer (without tools).
         async for chunk in proxy_chat_stream(final_convo):
             yield chunk
 
-    # Agentic path: finish tool-calling FIRST with a typing indicator. The
-    # draft opens afterwards, so a long pause during search/page reads does
-    # not let the draft expire on the client (which looks like "message
-    # deleted then reappears").
     final_convo = None
     if tools:
         type_stop = asyncio.Event()
@@ -548,7 +496,6 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
 
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /ask — chat with the AI via the OpenCode proxy (free, no API key)."""
     if not await require_join_or_block(update, context):
         return
     msg = update.message
@@ -615,10 +562,6 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def getmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /getmodel — list free models from the OpenCode proxy.
-
-    Owner-only. Non-owner: silent (no response at all).
-    """
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:
@@ -656,10 +599,6 @@ async def getmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /setmodel <model_name> — pick the model used by /ask.
-
-    Owner-only. Non-owner: silent (no response at all).
-    """
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:
@@ -687,7 +626,6 @@ async def setmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         available = []
 
     if available and target not in available:
-        # Suggest similar names
         matches = [m for m in available if target.lower() in m.lower()][:5]
         hint = ""
         if matches:
@@ -712,11 +650,6 @@ async def setmodel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def thinking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /thinking [on|off|status] — toggle model reasoning.
-
-    Owner-only. Non-owner: silent (no response at all).
-    Default: OFF (fast responses, without reasoning tokens that add latency).
-    """
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:
@@ -769,17 +702,6 @@ async def thinking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setsearch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /setsearch — pick the web search engine & depth for /ask.
-
-    Owner-only. Non-owner: silent (no response at all).
-
-    Usage:
-      /setsearch                      -> current status
-      /setsearch firecrawl            -> use Firecrawl (default, fast)
-      /setsearch jina                 -> use Jina AI Reader
-      /setsearch fast                 -> Firecrawl SERP only (~1s/query)
-      /setsearch content              -> Firecrawl SERP + scrape (~8s/query)
-    """
     msg = update.effective_message
     user = update.effective_user
     if not msg or not user:

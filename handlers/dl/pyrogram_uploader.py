@@ -227,7 +227,6 @@ def _make_progress_callback(bot,chat_id,status_msg_id,file_size,started,show_pro
         pct=(current/total*100) if total else 0
         stats.total=total
         stats.sample(current,now=now)
-        # Terminal log: always on (silent mode included), throttled by size-based interval.
         if stats.should_log(interval,now=now):
             stats.log("Pyrofork upload",label=label)
         if not show_progress:
@@ -325,10 +324,6 @@ async def try_send_video_via_pyrogram(bot,chat_id,status_msg_id,file_path,captio
                 sent=await _send_video(client,kwargs)
             else:
                 raise
-        # Caption HTML sudah di-parse saat send_video (client parse_mode=HTML,
-        # entity identik dengan edit Bot API: <blockquote expandable> ->
-        # MessageEntityBlockquote collapsed=True). edit_caption tambahan dihapus:
-        # satu round-trip Bot API lebih sedikit per upload, tampilan tidak berubah.
         await _wait_last_progress_task(state)
         elapsed=time.monotonic()-started
         avg=file_size/max(elapsed,0.001)

@@ -43,7 +43,6 @@ async def kurs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if r.status != 200:
                     return await msg.reply_text("Failed to fetch currency list.")
                 data = await r.json()
-            # Bangun tabel 2 kolom (kode | nama) agar ringkas.
             items = sorted(data.items())
             rows = []
             for i in range(0, len(items), 2):

@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def _mode_allowed(user_id: int) -> bool:
-    """`/mode` butuh akses Caca: owner, `/freecaca`, atau punya credit aktif."""
     if int(user_id) in OWNER_ID:
         return True
     try:
@@ -78,8 +77,6 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await caca_memory.clear(user_id)
     except Exception as e:
-        # Memori gagal dibersihkan bukan alasan gagal ganti persona: mode sudah
-        # tersimpan. Cukup dicatat supaya konteks lama tidak menghalangi.
         logger.warning("Caca memory clear failed after mode change | user_id=%s err=%r", user_id, e)
     return await msg.reply_text(
         f"🎭 Persona changed to <b>{mode}</b> ✨",

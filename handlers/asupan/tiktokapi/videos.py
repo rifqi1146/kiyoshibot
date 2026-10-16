@@ -1,26 +1,3 @@
-"""Video endpoints: details, media files, comments, comment replies, related
-videos, transcript and resolve.
-
-`video` is {"id": ..., "short_link": ...} from refs.resolve_video. A share
-link (vm.tiktok.com/…, tiktok.com/t/…) carries no id: it is followed once
-(memoised) and the id read off the page it lands on.
-
-Upstream (all signed, probed 2026-10-05):
-  * /api/item/detail      one itemStruct, videos and photo posts alike;
-                          status 10204 = no such video
-  * /api/comment/list     up to 50 a page, offset cursor, `total`; an
-                          unknown video answers `comments: null` with no
-                          total, which is told apart from "no comments yet"
-                          by one detail call
-  * /api/comment/list/reply  20 a page
-  * /api/related/item_list   one page of 8-16
-  * subtitles: itemStruct.video.subtitleInfos[] -> WebVTT files on the CDN
-    (auto captions as "ASR", machine translations as "MT"), no cookies needed
-
-`country` picks the exit the video is fetched through (the default exit
-serves everything; a video that is unavailable in one region can still be
-read through another).
-"""
 import re
 import threading
 import time
@@ -34,14 +11,13 @@ COMMENTS_PAGE = 50
 REPLIES_PAGE = 20
 SHORT_TTL = 3600
 _short_lock = threading.Lock()
-_short_links = {}       # share link -> (expires, video id)
+_short_links = {}
 
 _CUE_TIME_RE = re.compile(r"(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{3})")
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def video_id(video, country=None):
-    """The numeric id of a resolved ref, following a share link if needed."""
     if video.get("id"):
         return video["id"]
     link = video["short_link"]
@@ -71,29 +47,25 @@ def _item(video, country):
 
 
 def get_details(video, country=None):
-    """Everything about one video or photo post."""
     return P.video(_item(video, country))
 
 
 def get_media(video, country=None):
-    """Only the files: every video rendition, photo, cover, subtitle and the sound."""
     return P.media(_item(video, country))
 
 
 def resolve(video, country=None):
-    """Any accepted reference -> the video's id, canonical link, type and author."""
     parsed = P.video(_item(video, country))
     return {"id": parsed["id"], "link": parsed["link"], "type": parsed["type"],
             "created_at": parsed["created_at"], "author": parsed["author"]}
 
 
 def get_comments(video, cursor=None, country=None):
-    """Top-level comments, ranked as the site shows them."""
     vid = video_id(video, country)
     payload = api("/api/comment/list/", {"aweme_id": vid, "count": COMMENTS_PAGE, "cursor": cursor or 0},
                   country=country, label=f"comments of video {vid}")
     if payload.get("comments") is None and payload.get("total") is None and not cursor:
-        _item({"id": vid}, country)          # raises TikTokNotFound for an unknown video
+        _item({"id": vid}, country)
     comments = P.comments(payload.get("comments"))
     next_cursor = shared.next_cursor(payload)
     return {
@@ -107,7 +79,6 @@ def get_comments(video, cursor=None, country=None):
 
 
 def get_comment_replies(video, comment_id, cursor=None, country=None):
-    """Replies under one comment, oldest first."""
     vid = video_id(video, country)
     payload = api("/api/comment/list/reply/", {"item_id": vid, "comment_id": comment_id, "count": REPLIES_PAGE,
                                                "cursor": cursor or 0},
@@ -126,7 +97,6 @@ def get_comment_replies(video, comment_id, cursor=None, country=None):
 
 
 def get_related(video, country=None):
-    """Videos TikTok recommends next to this one."""
     vid = video_id(video, country)
     payload = api("/api/related/item_list/", {"itemID": vid, "count": 16, "cursor": 0},
                   country=country, label=f"videos related to {vid}")
@@ -134,14 +104,11 @@ def get_related(video, country=None):
     return {"video_id": vid, "video_count": len(videos), "videos": videos}
 
 
-# ---- transcript ------------------------------------------------------------------------
-
 def _seconds(hours, minutes, seconds, millis):
     return round(int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds) + int(millis) / 1000, 3)
 
 
 def parse_webvtt(text):
-    """WebVTT -> [{start_seconds, end_seconds, text}]."""
     segments, current = [], None
     for line in (text or "").replace("\r", "").split("\n"):
         match = _CUE_TIME_RE.search(line)
@@ -158,8 +125,6 @@ def parse_webvtt(text):
     return [segment for segment in segments if segment["text"]]
 
 
-# TikTok labels caption tracks with ISO 639-3 + region ("eng-US", "spa-ES",
-# "cmn-Hans-CN"); callers pass the usual two-letter code.
 _ISO3 = {"en": "eng", "es": "spa", "pt": "por", "de": "deu", "fr": "fra", "it": "ita", "ja": "jpn", "ko": "kor",
          "id": "ind", "ru": "rus", "ar": "ara", "vi": "vie", "zh": "cmn", "tr": "tur", "th": "tha", "nl": "nld",
          "pl": "pol", "hi": "hin", "ms": "msa", "sv": "swe", "ro": "ron", "uk": "ukr", "he": "heb", "el": "ell",
@@ -185,8 +150,6 @@ def _pick_subtitle(tracks, language):
 
 
 def get_transcript(video, language=None, country=None):
-    """The video's captions as timed segments plus the joined text. Without
-    `language` the original (auto-generated) track is returned."""
     item = _item(video, country)
     tracks = [t for t in P.subtitles((item.get("video") or {}).get("subtitleInfos")) if (t["format"] or "").lower() == "webvtt"]
     available = sorted({track["language"] for track in tracks if track["language"]})

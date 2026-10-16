@@ -1,18 +1,3 @@
-"""Downloader Heavy-R (heavy-r.com)
-
-FLOW DOWNLOADER
----------------
-1. `is_heavyr_url(url)`: Cocokkan host heavy-r.com / embed.heavy-r.com
-   + path `/video/<digits>/...` atau `/embed(?:small)?/<digits>/...`.
-2. `probe_heavyr(url)`: Ekstrak metadata (title, duration, thumbnail,
-   download_url, filesize, source_type) dan simpan ke cache singkat
-   (TTL 300s). Metadata saja — URL unduh selalu di-resolve ulang saat
-   unduh karena playlist HLS ber-token time-limited.
-3. `heavyr_download(...)`: Unduh direct MP4 (via halaman post, fallback
-   embed, fallback file `.m4s` dari playlist). Mendukung konversi mp3
-   (`libmp3lame` via ffmpeg) jika `fmt_key == 'mp3'`. Hasil membawa
-   metadata untuk upload Telegram.
-"""
 import asyncio
 import logging
 import os

@@ -1,12 +1,5 @@
 
 def _extract_prompt_from_update(update, context) -> str:
-    """
-    Try common sources:
-     - context.args (list) -> join
-     - command text after dollar (update.message.text)
-     - reply_to_message.text or caption
-    Returns empty string if none found.
-    """
     try:
         if getattr(context, "args", None):
             joined = " ".join(context.args).strip()
