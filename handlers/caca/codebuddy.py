@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
+import uuid
 from typing import Any, Iterable
 
 import aiohttp
@@ -13,18 +15,28 @@ from . import codebuddy_store as store
 
 logger = logging.getLogger(__name__)
 
+BASE_HOST = "https://www.workbuddy.ai"
+
 CHAT_URL = os.getenv(
-    "CODEBUDDY_CHAT_URL", "https://www.codebuddy.ai/v2/chat/completions"
+    "CODEBUDDY_CHAT_URL", f"{BASE_HOST}/v2/chat/completions"
 ).strip()
 REFRESH_URL = os.getenv(
     "CODEBUDDY_REFRESH_URL", "https://www.codebuddy.ai/v2/plugin/auth/token/refresh"
 ).strip()
 DEFAULT_MODEL = os.getenv("CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip()
 
+CLIENT_VERSION = "5.8.4"
+CLI_VERSION = "2.161.0"
+PLATFORM_NAME = "WorkBuddy"
+PRODUCT_NAME = "workbuddy-ai"
+
+CHAT_USER_AGENT = f"{PLATFORM_NAME}/{CLIENT_VERSION} {PRODUCT_NAME}/{CLIENT_VERSION} CLI/{CLI_VERSION}"
+REFRESH_USER_AGENT = f"IDE/2.63.2 CodeBuddy/2.63.2"
+
 REFRESH_HEADERS = {
     "Content-Type": "application/json",
     "Accept": "application/json",
-    "User-Agent": "IDE/2.63.2 CodeBuddy/2.63.2",
+    "User-Agent": REFRESH_USER_AGENT,
     "X-Requested-With": "XMLHttpRequest",
     "X-Domain": "www.codebuddy.ai",
     "X-Auth-Refresh-Source": "plugin",
@@ -34,13 +46,21 @@ REFRESH_HEADERS = {
 CHAT_HEADERS = {
     "Content-Type": "application/json",
     "Accept": "text/event-stream",
-    "User-Agent": "IDE/2.108.1 CodeBuddy/2.108.1",
+    "User-Agent": CHAT_USER_AGENT,
     "X-Product": "SaaS",
-    "X-IDE-Type": "IDE",
-    "X-IDE-Name": "IDE",
+    "X-IDE-Type": PLATFORM_NAME,
+    "X-IDE-Name": PLATFORM_NAME,
+    "X-IDE-Version": CLIENT_VERSION,
+    "X-Private-Data": "false",
+    "X-Agent-Intent": "chat",
+    "X-Agent-Purpose": "chat",
+    "X-Agent-Type": "cli",
+    "X-Domain": "www.workbuddy.ai",
     "x-requested-with": "XMLHttpRequest",
     "x-codebuddy-request": "1",
 }
+
+_EPOCH_UUID_MS = 1_588_598_400_000
 
 
 class CodeBuddyError(RuntimeError):
@@ -72,6 +92,49 @@ def current_account_index() -> int:
 
 def _model() -> str:
     return _env("CODEBUDDY_MODEL") or DEFAULT_MODEL
+
+
+def _uuid7() -> str:
+    ms = int(time.time() * 1000)
+    rand = secrets.token_bytes(10)
+    value = ((ms - _EPOCH_UUID_MS) & ((1 << 48) - 1)) << 80
+    value |= 0x7 << 76
+    value |= (rand[0] & 0x0F) << 72
+    value |= int.from_bytes(rand[1:7], "big") << 28
+    value |= 0x2 << 62
+    value |= int.from_bytes(rand[7:10], "big")
+    return str(uuid.UUID(int=value))
+
+
+def _hex32() -> str:
+    return secrets.token_hex(16)
+
+
+def _conversation_headers() -> dict[str, str]:
+    request_id = _hex32()
+    message_id = _hex32()
+    trace_id = _hex32()
+    span_id = _hex32()[:16]
+    return {
+        "X-Conversation-ID": _uuid7(),
+        "X-Conversation-Request-ID": request_id,
+        "X-Root-Request-ID": request_id,
+        "X-Conversation-Message-ID": message_id,
+        "X-Request-ID": message_id,
+        "X-Trace-ID": trace_id,
+        "traceparent": f"00-{trace_id}-{span_id}-01",
+        "b3": f"{trace_id}-{span_id}-1",
+        "X-B3-TraceId": trace_id,
+        "X-B3-SpanId": span_id,
+        "X-B3-Sampled": "1",
+    }
+
+
+def _request_headers(token: str) -> dict[str, str]:
+    headers = dict(CHAT_HEADERS)
+    headers.update(_conversation_headers())
+    headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 _TOKEN_LOCK = asyncio.Lock()
@@ -211,6 +274,24 @@ async def bootstrap_account(account: dict) -> dict:
     return account
 
 
+def _classify_error(status: int, text: str) -> str:
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return ""
+    code = payload.get("code")
+    msg = str(payload.get("msg") or "")
+    if code == 11128:
+        if "conversation" in msg.lower():
+            return "channel_verification"
+        return "system_prompt"
+    if code == 11101:
+        return "content_blocks"
+    if code in (401, 403) or str(code).startswith("11-"):
+        return "auth"
+    return ""
+
+
 async def _iter_sse_account(
     session: aiohttp.ClientSession,
     account: dict,
@@ -219,8 +300,7 @@ async def _iter_sse_account(
     usage_out: dict | None = None,
 ) -> tuple[Iterable[str], dict]:
     token = await _bearer_token_for(session, account, timeout)
-    headers = dict(CHAT_HEADERS)
-    headers["Authorization"] = f"Bearer {token}"
+    headers = _request_headers(token)
 
     r = await session.post(
         CHAT_URL,
@@ -231,8 +311,16 @@ async def _iter_sse_account(
     if r.status != 200:
         raw = await r.text()
         r.close()
+        kind = _classify_error(r.status, raw)
+        hint = ""
+        if kind == "channel_verification":
+            hint = " [header sesi ditolak gateway]"
+        elif kind == "system_prompt":
+            hint = " [pesan pertama harus system]"
+        elif kind == "content_blocks":
+            hint = " [content user harus typed blocks]"
         raise CodeBuddyError(
-            f"chat HTTP {r.status} (account={account.get('label')}): {raw[:300]}"
+            f"chat HTTP {r.status} (account={account.get('label')}){hint}: {raw[:300]}"
         )
 
     async def _gen():
