@@ -30,6 +30,7 @@ _PYROFORK_STATE={
     "progress_small_interval":3.0,
     "progress_large_interval":10.0,
     "progress_step":5.0,
+    "start_timeout":20.0,
     "resolved_chats":{},
 }
 
@@ -118,7 +119,26 @@ async def _get_client():
             kwargs.pop("max_concurrent_transmissions",None)
             _CLIENT=Client(**kwargs)
             log.warning("Pyrofork max_concurrent_transmissions unsupported by installed version")
-        await _CLIENT.start()
+        try:
+            await asyncio.wait_for(_CLIENT.start(),timeout=_PYROFORK_STATE["start_timeout"])
+        except asyncio.TimeoutError:
+            log.warning(
+                "Pyrofork uploader start timeout %ss | lanjut tanpa Pyrofork",
+                _PYROFORK_STATE["start_timeout"],
+            )
+            try:
+                await _CLIENT.stop()
+            except Exception:
+                pass
+            _CLIENT=None
+            raise RuntimeError("Pyrofork start timeout")
+        except Exception:
+            try:
+                await _CLIENT.stop()
+            except Exception:
+                pass
+            _CLIENT=None
+            raise
         log.info(
             "Pyrofork uploader ready | session=%s workdir=%s no_updates=%s max_transmissions=%s",
             _PYROFORK_STATE["session_name"],

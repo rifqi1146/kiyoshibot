@@ -2,6 +2,7 @@
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -11,6 +12,8 @@ load_dotenv()
 
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
+
+BOT_API_PORT = 8081
 
 TGDATA_DIR = "tgdata"
 os.makedirs(TGDATA_DIR, exist_ok=True)
@@ -25,7 +28,7 @@ if USE_LOCAL_BOT_API:
         f"--api-id={API_ID}",
         f"--api-hash={API_HASH}",
         "--local",
-        "--http-port=8081",
+        f"--http-port={BOT_API_PORT}",
         f"--dir={TGDATA_DIR}",
     ]
 
@@ -33,6 +36,12 @@ BOT_CMD = [sys.executable, "bot.py"]
 
 bot_api_proc = None
 bot_proc = None
+
+
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1.0)
+        return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _terminate_proc(proc, name: str):
@@ -67,9 +76,12 @@ signal.signal(signal.SIGTERM, shutdown)
 
 
 if USE_LOCAL_BOT_API:
-    print("[+] Starting Telegram Bot API...")
-    bot_api_proc = subprocess.Popen(BOT_API_CMD)
-    time.sleep(2)
+    if _port_in_use(BOT_API_PORT):
+        print(f"[+] Telegram Bot API already running on port {BOT_API_PORT}, reusing existing instance")
+    else:
+        print("[+] Starting Telegram Bot API...")
+        bot_api_proc = subprocess.Popen(BOT_API_CMD)
+        time.sleep(2)
 else:
     if not BOT_API_BIN:
         print("[!] telegram-bot-api binary not found, using official Telegram Bot API")
