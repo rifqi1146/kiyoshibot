@@ -57,6 +57,7 @@ BOT_INTENT_KEYWORDS = {
     "donate", "settings", "uploadengine", "upload", "engine", "telethon", "pyrofork", "mtproto",
     "fasttelethon", "asahotak", "susunkata",
     "quiz", "quoteanime", "game", "permainan",
+    "vps", "server", "myvps",
 }
 
 BOT_INTENT_PHRASES = (

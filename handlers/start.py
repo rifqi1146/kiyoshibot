@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes
 from handlers.welcome import start_verify_pm
 from handlers.payment.buypremium import buypremium_pm_direct
 from handlers.caca.caca_billing import cacatopup_cmd
+from handlers.vps.commands import myvps_cmd, vps_cmd
 from database.share_db import get_share
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -16,6 +17,10 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await buypremium_pm_direct(update, context)
         if arg == "buycaca":
             return await cacatopup_cmd(update, context)
+        if arg == "vps":
+            return await vps_cmd(update, context)
+        if arg == "myvps":
+            return await myvps_cmd(update, context)
         if arg.startswith("share_"):
             share_id = arg.replace("share_", "")
             data = get_share(share_id)

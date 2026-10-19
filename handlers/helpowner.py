@@ -63,6 +63,20 @@ HELPOWNER_TEXT = {
         "- `/wlc` — Configure group welcome messages\n\n"
         "> Backup files and automated group media handlers."
     ),
+    "vps": (
+        "### VPS Management\n\n"
+        "- `/vpsadmin` — Open VPS owner panel (scans live AWS + bot stats + prices)\n"
+        "- `/vpslist` — List every EC2 in the account across all regions (managed + manual)\n"
+        "- `/vpsinfo <vps_id>` — Show full detail of a single instance\n"
+        "- `/vpsterminate <vps_id>` — Terminate an instance immediately\n"
+        "- `/vpsrenew <vps_id> <days>` — Extend an instance lifetime\n"
+        "- `/vpsgrant <user_id> <tier> <days> [region]` — Provision a free instance\n"
+        "- `/vpsstats` — Revenue, active servers, warranty claims\n"
+        "- `/vpsprice <plan> <30d|14d|7d> <amount>` — Change one period\n"
+        "- `/vpsprice <plan> <30d> <14d> <7d>` — Set all three periods\n"
+        "- `/vpsprice` — Open interactive pricing picker\n\n"
+        "> Tiers: `vps_1gb`, `vps_2gb`, `vps_4gb`, `vps_8gb`."
+    ),
 }
 
 def helpowner_main_keyboard():
@@ -77,6 +91,7 @@ def helpowner_main_keyboard():
         ],
         [
             InlineKeyboardButton("Data & Media", callback_data=f"{CALLBACK_PREFIX}:data"),
+            InlineKeyboardButton("AWS VPS", callback_data=f"{CALLBACK_PREFIX}:vps"),
         ],
         [
             InlineKeyboardButton("Close", callback_data=f"{CALLBACK_PREFIX}:close"),

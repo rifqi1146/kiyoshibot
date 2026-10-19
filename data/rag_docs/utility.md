@@ -2,6 +2,24 @@
 
 Kumpulan perintah utilitas, jaringan, pencarian, dan pengolahan gambar yang tersedia di KiyoshiBot.
 
+## VPS Cloud
+
+Bot menyediakan penjualan VPS instan (AWS EC2) yang aktif otomatis setelah pembayaran QRIS diterima. Semua paket punya garansi penuh 7 hari sejak aktivasi.
+
+- `/vps`: Buka menu paket VPS untuk membeli server baru.
+- `/myvps`: Lihat daftar dan detail server VPS milikmu.
+
+Detail layanan:
+- Paket tersedia: 1 GB (30 GB SSD), 2 GB (60 GB SSD), 4 GB (100 GB SSD), dan 8 GB RAM (160 GB SSD) — semua 2 vCPU.
+- Durasi: 30 hari, 14 hari (2 minggu), atau 7 hari per pembelian, bisa diperpanjang.
+- Region: user bebas memilih region datacenter AWS yang tersedia (tersedia 29 region seperti Singapura, Jakarta, Tokyo, Virginia, Frankfurt, dll).
+- Sistem operasi: Ubuntu 24.04 LTS, Ubuntu 22.04 LTS, atau Debian 12.
+- Akses: login SSH sebagai `root` memakai password (bukan file PEM). PORT 22.
+- Password dan IP dikirim ke chat setelah server aktif, sekitar 30 sampai 60 detik setelah pembayaran.
+- Pembayaran memakai QRIS dinamis (GoPay, OVO, DANA, ShopeePay, semua bank). Server dibuat otomatis setelah pembayaran terdeteksi.
+- Garansi 7 hari: kalau server bermasalah (port SSH tidak merespons), tekan tombol Klaim Garansi untuk membuat server pengganti otomatis.
+- Server otomatis dihentikan saat masa aktif habis.
+
 ## Jaringan & Informasi Server
 - `/ping`: Cek latensi dan respon bot ke Telegram dalam milidetik (ms).
 

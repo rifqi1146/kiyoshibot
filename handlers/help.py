@@ -52,6 +52,9 @@ def _help_cb(user_id: int, action: str) -> str:
 def help_main_keyboard(user_id: int):
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("AWS VPS", callback_data=_help_cb(user_id, "vps")),
+        ],
+        [
             InlineKeyboardButton("Features", callback_data=_help_cb(user_id, "features")),
             InlineKeyboardButton("AI Chat", callback_data=_help_cb(user_id, "ai")),
         ],
@@ -119,6 +122,32 @@ HELP_TEXT = {
         "Choose a category using the buttons below 👇\n"
     ),
 
+    "vps": (
+        "### 🖥️ AWS VPS\n"
+        "\n"
+        "High-performance cloud servers with low-latency global routing.\n"
+        "\n"
+        "**How to buy**\n"
+        "\n"
+        "- `/vps` — Open the plan menu and order a new server\n"
+        "- `/myvps` — Manage your servers\n"
+        "\n"
+        "**Service terms**\n"
+        "\n"
+        "- Full 7-day warranty on every plan\n"
+        "- Active period up to 30 days (buy 7, 14, or 30 days), renewable anytime\n"
+        "- Full root access over SSH with password login\n"
+        "- Operating system: Ubuntu 24.04, Ubuntu 22.04, or Debian 12\n"
+        "- Pick the region closest to your users\n"
+        "\n"
+        "**Payment**\n"
+        "\n"
+        "- Dynamic QRIS (GoPay, OVO, DANA, ShopeePay, all banks)\n"
+        "- Server activates automatically 30 to 60 seconds after payment is received\n"
+        "\n"
+        "> Credentials are sent straight to chat once the server is active."
+    ),
+
     "features": (
         "### 🤩 Main Features\n"
         "\n"
@@ -160,6 +189,7 @@ HELP_TEXT = {
         "- `/tr` — Translate text between languages\n"
         "- `/trlist` — List supported languages\n"
         "- `/upscale` — Upscale images\n"
+        "- `/vps` — Buy & manage AWS VPS\n"
         "- `/waifu` — Get a waifu\n"
         "- `/weather` — Get weather information\n"
         "\n"

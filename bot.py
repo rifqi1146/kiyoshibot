@@ -58,6 +58,8 @@ BOT_COMMANDS=[
     ("becekku","Browse, search & download from Becekku"),
     ("lendirqu","Browse, search & download from LendirQu"),
     ("drakorid","Browse & search Korean dramas"),
+    ("vps","Buy & manage AWS VPS"),
+    ("myvps","View my active servers"),
     ("moviebox","Browse, search & download from MovieBox"),
     ("anichin","Browse, search & download Donghua from Anichin"),
     ("firmware","Download Xiaomi/Redmi/POCO firmware"),

@@ -130,4 +130,12 @@ async def startup_tasks(app):
         ok = await tiktoksource.warmup()
         log.info("✓ tiktokapi asupan source %s", "ready" if ok else "TIDAK siap")
     _create_background_task(app,_warmup_tiktokapi(),"tiktokapi warmup")
+    try:
+        from database import vps_db
+        vps_db.init_db()
+        from handlers.vps import start_vps_sweeper
+        start_vps_sweeper(app)
+        log.info("✓ VPS DB & sweeper initialized")
+    except Exception:
+        log.exception("VPS initialization failed")
     log.info("✓ Startup background tasks scheduled")

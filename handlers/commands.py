@@ -6,6 +6,18 @@ from handlers.blacklist import blacklist_cmd
 from handlers.broadcast import broadcast_cmd
 from handlers.cookies import cookies_cmd
 from handlers.payment.buypremium import buypremium_cmd
+from handlers.vps import (
+    myvps_cmd,
+    vps_cmd,
+    vpsadmin_cmd,
+    vpsgrant_cmd,
+    vpsinfo_cmd,
+    vpslist_cmd,
+    vpsprice_cmd,
+    vpsrenew_cmd,
+    vpsstats_cmd,
+    vpsterminate_cmd,
+)
 from handlers.dl.router import dl_cmd, autodl_cmd
 from handlers.donate import donate_cmd
 from handlers.fasttelethon import fasttelethon_cmd
@@ -208,6 +220,16 @@ COMMAND_HANDLERS = [
     ("untag", untag_cmd, False),
     ("upscale", upscale_cmd, False),
     ("update", update_cmd, False),
+    ("vps", vps_cmd, False),
+    ("myvps", myvps_cmd, False),
+    ("vpsadmin", vpsadmin_cmd, False),
+    ("vpslist", vpslist_cmd, False),
+    ("vpsinfo", vpsinfo_cmd, False),
+    ("vpsterminate", vpsterminate_cmd, False),
+    ("vpsrenew", vpsrenew_cmd, False),
+    ("vpsgrant", vpsgrant_cmd, False),
+    ("vpsstats", vpsstats_cmd, False),
+    ("vpsprice", vpsprice_cmd, False),
     ("waifu", waifu_cmd, False),
     ("weather", weather_cmd, False),
     ("whoisdomain", whoisdomain_cmd, True),
