@@ -605,7 +605,8 @@ def _scan_region_sync(region: str, account: str | None = None) -> dict:
             "--filters", _LIVE_STATE_FILTER,
             "--query",
             "Reservations[].Instances[].[InstanceId,InstanceType,State.Name,PublicIpAddress,"
-            "Placement.AvailabilityZone,Tags[?Key==`Name`].Value|[0],LaunchTime,ImageId]",
+            "Placement.AvailabilityZone,Tags[?Key==`Name`].Value|[0],LaunchTime,ImageId,"
+            "Tags[?Key==`ManagedBy`].Value|[0]]",
         ], region=region, timeout=ACCOUNT_SCAN_TIMEOUT, account=account)
     except Exception as e:
         msg = str(e)
@@ -630,6 +631,7 @@ def _scan_region_sync(region: str, account: str | None = None) -> dict:
             "name": row[5] if len(row) > 5 else None,
             "launch_time": row[6] if len(row) > 6 else None,
             "image_id": row[7] if len(row) > 7 else None,
+            "managed_by": row[8] if len(row) > 8 else None,
         })
     return {"rows": out, "region": region, "account": account, "denied": False, "error": None}
 

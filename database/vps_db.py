@@ -589,20 +589,6 @@ def next_vps_id(user_id: int) -> str:
         return f"{base}-{n}"
     finally:
         con.close()
-    con = _db()
-    try:
-        total = con.execute("SELECT COUNT(*) FROM vps_instances").fetchone()[0]
-        active = con.execute("SELECT COUNT(*) FROM vps_instances WHERE status = 'active'").fetchone()[0]
-        rev = con.execute("SELECT SUM(price) FROM vps_instances WHERE status != 'replaced'").fetchone()[0] or 0
-        warr_claims = con.execute("SELECT COUNT(*) FROM vps_instances WHERE warranty_claimed = 1").fetchone()[0]
-        return {
-            "total_instances": total,
-            "active_instances": active,
-            "total_revenue": rev,
-            "warranty_claims": warr_claims,
-        }
-    finally:
-        con.close()
 
 
 def purge_old_terminated(retention_days: int = 7) -> dict:

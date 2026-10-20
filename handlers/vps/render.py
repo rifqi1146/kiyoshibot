@@ -207,7 +207,12 @@ def owner_list_keyboard(instances: list[dict], show_terminated: bool = False) ->
         )
         aws_state = inst.get("aws_state") or inst.get("status")
         mark = "" if aws_state == "running" else f" ({aws_state})"
-        tag = "" if is_managed else "[manual] "
+        if is_managed:
+            tag = ""
+        elif inst.get("tagged_bot") or inst.get("status") == "orphan":
+            tag = "[bot] "
+        else:
+            tag = "[manual] "
         if is_managed:
             cb = owner_cb("info", inst["vps_id"])
         elif inst.get("instance_id"):
@@ -802,19 +807,21 @@ def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated:
         if key in seen_ids:
             continue
         seen_ids.add(key)
+        is_bot_tagged = str(live_row.get("managed_by") or "").strip().lower() == "kiyoshibot"
         merged.append({
-            "vps_id": None,
+            "vps_id": (live_row.get("name") or None) if is_bot_tagged else None,
             "instance_id": iid,
             "instance_type": live_row.get("instance_type"),
             "region": live_row.get("region"),
             "account": live_row.get("account"),
-            "status": "unmanaged",
+            "status": "orphan" if is_bot_tagged else "unmanaged",
             "aws_state": live_row.get("state"),
             "ip_address": live_row.get("public_ip") or "",
             "user_id": None,
             "name": live_row.get("name"),
             "live": True,
             "managed": False,
+            "tagged_bot": is_bot_tagged,
         })
 
     merged.sort(

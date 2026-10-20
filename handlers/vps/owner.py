@@ -257,6 +257,9 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
+    vps_id = ""
+    created_instance = None
+    created_account = None
     try:
         vps_id = vps_db.next_vps_id(target_uid)
         res, password = await aws.launch_vps(
@@ -266,6 +269,8 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disk_gb=t["disk_gb"],
             tag_name=vps_id,
         )
+        created_instance = res["instance_id"]
+        created_account = res.get("account")
         account_used = res.get("account")
         ip = await aws.wait_for_public_ip(
             res["instance_id"], region=region, max_attempts=25, delay=3.0, account=account_used
@@ -313,8 +318,32 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning("Owner grant notice failed | vps_id=%s err=%r", vps_id, e)
     except Exception as e:
         log.error("Grant VPS failed | err=%r", e)
+        cleaned = ""
+        if created_instance:
+            try:
+                await aws.terminate_vps(created_instance, region=region, account=created_account)
+                cleaned = f"\n\nOrphan instance <code>{created_instance}</code> was terminated."
+                vps_db.log_audit(
+                    vps_id or None,
+                    "GRANT_ROLLBACK",
+                    user.id,
+                    f"aws={created_instance} region={region} account={created_account} err={str(e)[:200]}",
+                )
+            except Exception as term_err:
+                log.error(
+                    "Grant rollback failed | aws=%s err=%r", created_instance, term_err
+                )
+                cleaned = (
+                    f"\n\n⚠️ Orphan instance <code>{created_instance}</code> in "
+                    f"<code>{region}</code> could not be terminated automatically. "
+                    "Terminate it from the AWS console."
+                )
+        service.invalidate_account_scan()
         try:
-            await status_msg.edit_text(f"<b>Failed to create instance:</b>\n<code>{e}</code>", parse_mode="HTML")
+            await status_msg.edit_text(
+                f"<b>Failed to create instance:</b>\n<code>{e}</code>{cleaned}",
+                parse_mode="HTML",
+            )
         except Exception:
             pass
 
