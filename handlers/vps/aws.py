@@ -379,6 +379,12 @@ def _launch_instance_sync(
 
 def _humanize_launch_error(region: str, raw: str) -> str:
     low = raw.lower()
+    if "not eligible for free tier" in low:
+        return (
+            f"Your AWS account in {region} is on the Free plan, which only allows "
+            "Free Tier eligible instance types. Upgrade the AWS account plan to "
+            "Launch a larger plan, or pick a smaller plan."
+        )
     if "vcpulimitexceeded" in low:
         return (
             f"Region {region} has reached its vCPU quota limit. "
@@ -460,6 +466,13 @@ async def launch_vps(
     password = generate_root_password(16)
     user_data = build_cloud_config(password)
 
+    tier_for_type = None
+    for t in TIERS_SNAPSHOT():
+        if t["instance_type"] == instance_type:
+            tier_for_type = t
+            break
+    prefer = list((tier_for_type or {}).get("fallback_types") or [])
+
     chain = [account] if account else region_chain(region)
     if not chain:
         raise RuntimeError(
@@ -470,29 +483,57 @@ async def launch_vps(
     last_err: Exception | None = None
     tried: list[str] = []
     for acc in chain:
-        try:
-            vpc_id, subnets, sg_id = await asyncio.to_thread(resolve_network, region, acc)
-            vps_db.save_region_cache(region, vpc_id=vpc_id, subnet_ids=subnets, sg_id=sg_id, available=True)
-            image_id = await asyncio.to_thread(resolve_ami, region, os_id, acc)
-            res = await asyncio.to_thread(
-                _launch_instance_sync,
-                region=region,
-                subnets=subnets,
-                account=acc,
-                sg_id=sg_id,
-                image_id=image_id,
-                instance_type=instance_type,
-                disk_gb=disk_gb,
-                user_data=user_data,
-                tag_name=tag_name,
-            )
-            res["account"] = acc
-            return res, password
-        except Exception as e:
-            tried.append(acc)
-            last_err = e
-            log.warning("Launch attempt failed | region=%s account=%s err=%r", region, acc, e)
-            continue
+        attempt_type = instance_type
+        for _round in range(2):
+            try:
+                vpc_id, subnets, sg_id = await asyncio.to_thread(resolve_network, region, acc)
+                vps_db.save_region_cache(
+                    region, vpc_id=vpc_id, subnet_ids=subnets, sg_id=sg_id, available=True
+                )
+                image_id = await asyncio.to_thread(resolve_ami, region, os_id, acc)
+                res = await asyncio.to_thread(
+                    _launch_instance_sync,
+                    region=region,
+                    subnets=subnets,
+                    account=acc,
+                    sg_id=sg_id,
+                    image_id=image_id,
+                    instance_type=attempt_type,
+                    disk_gb=disk_gb,
+                    user_data=user_data,
+                    tag_name=tag_name,
+                )
+                res["account"] = acc
+                res["requested_instance_type"] = instance_type
+                res["instance_type"] = attempt_type
+                if attempt_type != instance_type:
+                    res["downgraded"] = True
+                    log.warning(
+                        "Launched on free-tier eligible type | region=%s account=%s "
+                        "requested=%s used=%s",
+                        region, acc, instance_type, attempt_type,
+                    )
+                return res, password
+            except Exception as e:
+                low = str(e).lower()
+                if "not eligible for free tier" in low and _round == 0:
+                    allowed = await asyncio.to_thread(_free_tier_eligible, region, acc)
+                    fallback = _free_tier_fallback(attempt_type, allowed or set(), prefer)
+                    if fallback and fallback != attempt_type:
+                        log.warning(
+                            "Free plan detected, retrying with eligible type | region=%s account=%s "
+                            "requested=%s fallback=%s",
+                            region, acc, attempt_type, fallback,
+                        )
+                        attempt_type = fallback
+                        continue
+                tried.append(acc)
+                last_err = e
+                log.warning(
+                    "Launch attempt failed | region=%s account=%s type=%s err=%r",
+                    region, acc, attempt_type, e,
+                )
+                break
 
     detail = str(last_err)
     if len(tried) > 1:
@@ -815,3 +856,67 @@ async def discover_account_regions(
     if ok:
         return ok
     return sorted(listed)
+
+
+FREE_TIER_ELIGIBLE_CACHE: dict[tuple[str, str], set[str]] = {}
+
+
+def _free_tier_eligible(region: str, account: str | None) -> set[str] | None:
+    key = (region, str(account or ""))
+    if key in FREE_TIER_ELIGIBLE_CACHE:
+        return FREE_TIER_ELIGIBLE_CACHE[key]
+    try:
+        res = _run_aws_cli([
+            "ec2", "describe-instance-types",
+            "--filters", "Name=free-tier-eligible,Values=true",
+            "--query", "InstanceTypes[].InstanceType",
+        ], region=region, timeout=30, account=account)
+    except Exception as e:
+        log.warning("Free tier probe failed | region=%s account=%s err=%r", region, account, e)
+        return None
+    types = {str(t) for t in res} if isinstance(res, list) else set()
+    FREE_TIER_ELIGIBLE_CACHE[key] = types
+    return types
+
+
+def _free_tier_fallback(instance_type: str, allowed: set[str], prefer: list[str] | None = None) -> str | None:
+    for candidate in (prefer or []) + [instance_type]:
+        if candidate in allowed:
+            return candidate
+    return None
+
+
+OS_AVAILABILITY_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def os_available(region: str, os_id: str, account: str | None = None) -> bool:
+    key = (region, os_id)
+    if key in OS_AVAILABILITY_CACHE:
+        return OS_AVAILABILITY_CACHE[key]
+    try:
+        resolve_ami(region, os_id, account)
+        OS_AVAILABILITY_CACHE[key] = True
+    except Exception:
+        OS_AVAILABILITY_CACHE[key] = False
+    return OS_AVAILABILITY_CACHE[key]
+
+
+async def available_os_images(region: str, account: str | None = None) -> list[dict]:
+    from .constants import OS_IMAGES
+
+    sem = asyncio.Semaphore(8)
+
+    async def _one(o: dict):
+        async with sem:
+            ok = await asyncio.to_thread(os_available, region, o["id"], account)
+            return o, ok
+
+    results = await asyncio.gather(*[_one(o) for o in OS_IMAGES])
+    return [o for o, ok in results if ok]
+
+
+
+def TIERS_SNAPSHOT() -> list[dict]:
+    from .constants import TIERS
+
+    return TIERS

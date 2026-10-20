@@ -127,9 +127,14 @@ def region_keyboard(tier_id: str, days: int, page: int, regions: list[str]) -> I
     return InlineKeyboardMarkup(rows)
 
 
-def os_keyboard(tier_id: str, days: int, region: str) -> InlineKeyboardMarkup:
+def os_keyboard(
+    tier_id: str,
+    days: int,
+    region: str,
+    os_list: list[dict] | None = None,
+) -> InlineKeyboardMarkup:
     rows = []
-    for o in OS_IMAGES:
+    for o in (os_list if os_list is not None else OS_IMAGES):
         rows.append([
             InlineKeyboardButton(
                 o["label"],
@@ -429,14 +434,19 @@ def region_content(tier_id: str, days: int, page: int, regions: list[str]) -> tu
     return rich, plain
 
 
-def os_content(tier_id: str, days: int, region: str) -> tuple[str, str]:
+def os_content(
+    tier_id: str,
+    days: int,
+    region: str,
+    os_list: list[dict] | None = None,
+) -> tuple[str, str]:
     t = get_tier(tier_id)
     price = _price_for(tier_id, days)
     if not t:
         return "<h1>Plan Not Found</h1>", "<b>Plan Not Found</b>"
     op_html = []
     op_plain = []
-    for o in OS_IMAGES:
+    for o in (os_list if os_list is not None else OS_IMAGES):
         op_html.append(f"<li><b>{html.escape(o['label'])}</b></li>")
         op_plain.append(f"• {o['label']}")
     rich = (

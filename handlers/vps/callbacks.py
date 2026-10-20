@@ -195,9 +195,15 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tier_id = parts[2]
         days = int(parts[3])
         region = parts[4]
-        rich, plain = render.os_content(tier_id, days, region)
         await _answer(q)
-        return await _render_and_edit(q, rich, plain, render.os_keyboard(tier_id, days, region))
+        account = aws.account_for_region(region)
+        os_list = await aws.available_os_images(region, account)
+        if not os_list:
+            os_list = list(render.OS_IMAGES)
+        rich, plain = render.os_content(tier_id, days, region, os_list)
+        return await _render_and_edit(
+            q, rich, plain, render.os_keyboard(tier_id, days, region, os_list)
+        )
 
     if action == "checkout":
         if len(parts) < 6:
