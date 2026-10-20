@@ -14,7 +14,7 @@ from database.join_status_db import (
 
 log=logging.getLogger(__name__)
 
-MEMBERSHIP_TTL=600
+MEMBERSHIP_TTL=120
 _RETRY_DELAYS=(0.6,1.5)
 _PERMANENT_ERRORS=(BadRequest,Forbidden)
 _TRANSIENT_ERRORS=(NetworkError,TimedOut,RetryAfter)
@@ -56,12 +56,16 @@ async def chat_member_update(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
 
 def register_join_handlers(app):
-    from telegram.ext import ChatMemberHandler
+    from telegram.ext import ChatMemberHandler, MessageHandler, filters
     if getattr(app,"_join_handlers_registered",False):
         return
     app.add_handler(
         ChatMemberHandler(chat_member_update,ChatMemberHandler.CHAT_MEMBER),
         group=-100,
+    )
+    app.add_handler(
+        MessageHandler(filters.COMMAND, command_join_gate),
+        group=-101,
     )
     app._join_handlers_registered=True
     log.info("Join membership handlers registered")
@@ -91,33 +95,52 @@ async def _fetch_member_status(user_id:int,context:ContextTypes.DEFAULT_TYPE):
     return None,last_err,transient
 
 
+def _is_bot_privilege_error(err)->bool:
+    text=str(err or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "chat_admin_required",
+            "not enough rights",
+            "bot is not a member",
+            "bot was kicked",
+            "chat not found",
+            "forbidden",
+        )
+    )
+
+
 async def is_joined_support_channel(user_id:int,context:ContextTypes.DEFAULT_TYPE)->bool:
     if not SUPPORT_CHANNEL_ID:
         return True
 
     status,is_member=get_member_status(user_id)
+    fresh_cached=bool(status) and not _is_stale(status) and not await _member_needs_recheck(user_id)
 
-    if status and not _is_stale(status):
-        if is_member:
-            if await _member_needs_recheck(user_id):
-                await _recheck_member(user_id,context)
-                status,is_member=get_member_status(user_id)
-            return bool(is_member)
-        fetched,err,transient=await _fetch_member_status(user_id,context)
-        if fetched is not None:
-            return set_member_status(user_id,fetched)
-        if transient:
-            log.warning("[JOIN CHECK ERROR] Transient failure, allowing access | user_id=%s err=%r",user_id,err)
-            return True
-        log.warning("[JOIN CHECK ERROR] Permanent failure | user_id=%s err=%r",user_id,err)
-        return False
+    if fresh_cached and is_member:
+        return True
 
     fetched,err,transient=await _fetch_member_status(user_id,context)
+
     if fetched is not None:
         return set_member_status(user_id,fetched)
-    if transient:
-        log.warning("[JOIN CHECK ERROR] Transient failure, allowing access | user_id=%s err=%r",user_id,err)
+
+    if _is_bot_privilege_error(err):
+        log.error(
+            "[JOIN CHECK BROKEN] Bot cannot read membership in the support channel. "
+            "Promote the bot to administrator, otherwise the gate silently fails open "
+            "for everyone | user_id=%s err=%r",
+            user_id,err,
+        )
         return True
+
+    if fresh_cached:
+        return bool(is_member)
+
+    if transient:
+        log.warning("[JOIN CHECK ERROR] Transient failure, falling back to cached state | user_id=%s err=%r",user_id,err)
+        return bool(is_member)
+
     log.warning("[JOIN CHECK ERROR] Permanent failure | user_id=%s err=%r",user_id,err)
     return False
 
@@ -179,3 +202,81 @@ async def require_join_or_block(
     except Exception as e:
         log.warning("[JOIN BLOCK ERROR] user_id=%s err=%r",user.id,e)
     return False
+
+
+OPEN_COMMANDS = {
+    "start",
+    "help",
+    "menu",
+    "ping",
+    "buycaca",
+    "cacasaldo",
+    "cacatopup",
+}
+
+PRIVILEGED_COMMANDS = {
+    "addcredit", "addawsaccount", "addsudo", "autobackup", "backup", "blacklist",
+    "broadcast", "buycaca", "cacaadmin", "cbacc", "cookies", "delawsaccount",
+    "freecaca", "getmodel", "helpowner", "premium", "providercaca", "reload",
+    "reboot", "restart", "restore", "rmsudo", "setmodel", "setsearch",
+    "sudolist", "stats", "thinking", "update", "uploadengine",
+    "vpsadmin", "vpsgrant", "vpsinfo", "vpslist", "vpsprice", "vpsrenew",
+    "vpsstats", "vpsterminate",
+    "ban", "unban", "kick", "mute", "unmute", "warn", "unwarn", "promote",
+    "demote", "tag", "untag", "moderation", "nsfw", "spoiler", "settings",
+    "wlc", "autodel", "speedtest",
+}
+
+
+def _command_name(update: Update) -> str:
+    msg = update.effective_message
+    text = (getattr(msg, "text", None) or "").strip()
+    if not text.startswith("/"):
+        return ""
+    head = text.split()[0][1:]
+    head = head.split("@", 1)[0]
+    return head.lower()
+
+
+def _is_exempt_command(name: str) -> bool:
+    if not name:
+        return True
+    if name in OPEN_COMMANDS or name in PRIVILEGED_COMMANDS:
+        return True
+    if name.startswith("vps"):
+        return True
+    return False
+
+
+async def command_join_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from telegram.ext import ApplicationHandlerStop
+
+    name = _command_name(update)
+    if not name:
+        return
+    if _is_exempt_command(name):
+        return
+
+    user = update.effective_user
+    if not user:
+        return
+    try:
+        from utils.config import OWNER_ID
+
+        if int(user.id) in OWNER_ID:
+            return
+    except Exception:
+        pass
+
+    joined = await is_joined_support_channel(user.id, context)
+    if joined:
+        return
+
+    msg = update.effective_message
+    text = "<b>To use the bot</b>\nyou must join the support channel first."
+    try:
+        if msg:
+            await msg.reply_text(text, reply_markup=join_required_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        log.warning("[JOIN GATE ERROR] user_id=%s err=%r", user.id, e)
+    raise ApplicationHandlerStop

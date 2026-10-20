@@ -928,7 +928,9 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if _is_caca_call:
-        if not await require_join_or_block(update, context, silent=True):
+        if not await require_join_or_block(update, context, silent=bool(
+            chat and chat.type in ("group", "supergroup")
+        )):
             return
 
     if chat and chat.type in ("group", "supergroup"):
