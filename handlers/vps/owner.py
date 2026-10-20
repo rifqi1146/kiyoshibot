@@ -10,7 +10,7 @@ from database import vps_db
 from handlers.moderation.helpers import resolve_target_user_id
 from utils.config import OWNER_ID
 
-from . import aws, render, service
+from . import aws, notify, render, service
 from .constants import DEFAULT_REGION, MAX_DAYS, WARRANTY_DAYS, get_tier
 from .rich import send_rich
 
@@ -298,6 +298,19 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service.invalidate_account_scan()
         rich, plain = render.provisioned_content(inst)
         await send_rich(context.bot, chat.id, msg.message_id, rich, plain, render.owner_instance_keyboard(vps_id, "active"))
+
+        try:
+            target_name, target_username = await notify.buyer_label(context.bot, target_uid)
+            await notify.notify_owner(
+                context.bot,
+                inst,
+                source="grant",
+                buyer_name=target_name,
+                buyer_username=target_username,
+                note=f"Granted by owner {user.id}",
+            )
+        except Exception as e:
+            log.warning("Owner grant notice failed | vps_id=%s err=%r", vps_id, e)
     except Exception as e:
         log.error("Grant VPS failed | err=%r", e)
         try:

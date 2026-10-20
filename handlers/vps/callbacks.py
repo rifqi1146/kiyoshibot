@@ -12,7 +12,7 @@ from database import vps_db
 from utils import axiom
 from utils.config import AXIOM_BASE_URL, OWNER_ID
 
-from . import aws, render, service
+from . import aws, notify, render, service
 from .constants import DEFAULT_REGION, FEE_BPS, WARRANTY_DAYS, get_os, get_tier, normalize_tier
 from .rich import edit_rich
 
@@ -349,6 +349,20 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _render_and_edit(
                 q, rich, plain, render.instance_detail_keyboard(new_vps_id, "active", True)
             )
+
+            try:
+                buyer_name, buyer_username = await notify.buyer_label(context.bot, user.id)
+                await notify.notify_owner(
+                    context.bot,
+                    new_inst,
+                    source="warranty",
+                    buyer_name=buyer_name,
+                    buyer_username=buyer_username,
+                    note=f"Replaces {inst['vps_id']} ({inst.get('instance_id')}) after a failed warranty check",
+                )
+            except Exception as notice_err:
+                log.warning("Owner warranty notice failed | vps_id=%s err=%r", new_vps_id, notice_err)
+
             return await _answer(q, "Replacement server is ready.", show_alert=True)
         except Exception as e:
             log.error("Warranty replacement failed | err=%r", e)

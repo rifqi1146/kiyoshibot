@@ -10,7 +10,7 @@ from database import vps_db
 from utils import axiom
 from utils.config import AXIOM_BASE_URL
 
-from . import aws, render
+from . import aws, notify, render
 from .rich import send_rich
 from .constants import (
     DEFAULT_REGION,
@@ -218,8 +218,26 @@ async def provision_instance_for_invoice(context: ContextTypes.DEFAULT_TYPE, inv
             warranty_until=warranty_until,
         )
         vps_db.mark_invoice_paid(short_id, vps_id=vps_id)
-        vps_db.log_audit(vps_id, "PROVISION", inv["user_id"], f"tier={inv['tier']} region={region} ip={ip}")
+        vps_db.log_audit(
+            vps_id,
+            "PROVISION",
+            inv["user_id"],
+            f"tier={inv['tier']} region={region} ip={ip} account={account_used}",
+        )
         invalidate_account_scan()
+
+        try:
+            buyer_name, buyer_username = await notify.buyer_label(context.bot, inv["user_id"])
+            await notify.notify_owner(
+                context.bot,
+                inst,
+                source="purchase",
+                buyer_name=buyer_name,
+                buyer_username=buyer_username,
+                invoice=inv,
+            )
+        except Exception as e:
+            log.warning("Owner purchase notice failed | vps_id=%s err=%r", vps_id, e)
 
         try:
             rich, plain = render.provisioned_content(inst)
@@ -231,6 +249,10 @@ async def provision_instance_for_invoice(context: ContextTypes.DEFAULT_TYPE, inv
     except Exception as e:
         log.error("Provisioning failed | short_id=%s err=%r", short_id, e)
         vps_db.log_audit(None, "PROVISION_FAILED", inv.get("user_id"), f"short_id={short_id} err={e}")
+        try:
+            await notify.notify_owner_failure(context.bot, inv, str(e))
+        except Exception as notify_err:
+            log.warning("Owner failure notice failed | short_id=%s err=%r", short_id, notify_err)
         try:
             vps_db.set_invoice_status(short_id, "PAID")
         except Exception:
