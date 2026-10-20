@@ -74,7 +74,10 @@ HELPOWNER_TEXT = {
         "- `/vpsstats` — Revenue, active servers, warranty claims\n"
         "- `/vpsprice <plan> <30d|14d|7d> <amount>` — Change one period\n"
         "- `/vpsprice <plan> <30d> <14d> <7d>` — Set all three periods\n"
-        "- `/vpsprice` — Open interactive pricing picker\n\n"
+        "- `/vpsprice` — Open interactive pricing picker\n"
+        "- `/addawsaccount` — Open the AWS account manager (add, reveal, delete)\n"
+        "- `/addawsaccount <name> <access_key> <secret_key> <regions>` — Add an account in one line\n"
+        "- `/delawsaccount <name>` — Remove an AWS account\n\n"
         "> Tiers: `1g`, `2g`, `4g`, `8g`. Durations: `7d`, `14d`, `30d`."
     ),
 }

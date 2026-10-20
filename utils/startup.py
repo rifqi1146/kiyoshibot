@@ -134,6 +134,8 @@ async def startup_tasks(app):
         from database import vps_db
         vps_db.init_db()
         from handlers.vps import start_vps_sweeper
+        from handlers.vps import accounts as vps_accounts
+        vps_accounts.load_base_state()
         start_vps_sweeper(app)
         log.info("✓ VPS DB & sweeper initialized")
     except Exception:

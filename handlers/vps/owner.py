@@ -129,7 +129,9 @@ async def vpsterminate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text("<b>Instance not found.</b>", parse_mode="HTML")
 
     status = await msg.reply_text("<b>Terminating AWS instance...</b>", parse_mode="HTML")
-    ok = await aws.terminate_vps(inst["instance_id"], region=inst.get("region"))
+    ok = await aws.terminate_vps(
+        inst["instance_id"], region=inst.get("region"), account=inst.get("account")
+    )
     vps_db.terminate_instance_db(vps_id, reason=f"owner_terminate:{user.id}")
     vps_db.log_audit(vps_id, "TERMINATE_OWNER", user.id)
     service.invalidate_account_scan()
@@ -264,7 +266,10 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disk_gb=t["disk_gb"],
             tag_name=vps_id,
         )
-        ip = await aws.wait_for_public_ip(res["instance_id"], region=region, max_attempts=25, delay=3.0)
+        account_used = res.get("account")
+        ip = await aws.wait_for_public_ip(
+            res["instance_id"], region=region, max_attempts=25, delay=3.0, account=account_used
+        )
         now = time.time()
         inst = vps_db.save_instance(
             vps_id=vps_id,
@@ -282,8 +287,14 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             created_at=now,
             expires_at=now + (days * 86400),
             warranty_until=now + (WARRANTY_DAYS * 86400),
+            account=account_used,
         )
-        vps_db.log_audit(vps_id, "GRANT", user.id, f"target={target_uid} tier={tier_id} region={region} days={days}")
+        vps_db.log_audit(
+            vps_id,
+            "GRANT",
+            user.id,
+            f"target={target_uid} tier={tier_id} region={region} days={days} account={account_used}",
+        )
         service.invalidate_account_scan()
         rich, plain = render.provisioned_content(inst)
         await send_rich(context.bot, chat.id, msg.message_id, rich, plain, render.owner_instance_keyboard(vps_id, "active"))
@@ -293,3 +304,4 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(f"<b>Failed to create instance:</b>\n<code>{e}</code>", parse_mode="HTML")
         except Exception:
             pass
+

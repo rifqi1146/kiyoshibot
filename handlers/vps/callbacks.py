@@ -77,6 +77,7 @@ async def _start_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, ti
         gross_amount=gross,
         created_at=now,
         deadline=deadline,
+        account=aws.account_for_region(region),
     )
 
     rich, plain = render.invoice_content(inv, status="PENDING", remaining=300)
@@ -236,7 +237,9 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if int(user.id) != int(inst["user_id"]):
             return await _answer(q, "This is not your instance.", show_alert=True)
         await _answer(q, "Requesting restart...")
-        info = await aws.get_instance_info(inst["instance_id"], region=inst.get("region"))
+        info = await aws.get_instance_info(
+            inst["instance_id"], region=inst.get("region"), account=inst.get("account")
+        )
         state = (info or {}).get("state", "unknown")
         vps_db.log_audit(inst["vps_id"], "RESTART_REQUEST", user.id, f"aws_state={state}")
         return await _answer(q, f"AWS state: {state}. Restart via SSH or contact support.", show_alert=True)
@@ -306,8 +309,12 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 instance_type=t["instance_type"],
                 disk_gb=t["disk_gb"],
                 tag_name=new_vps_id,
+                account=inst.get("account"),
             )
-            ip = await aws.wait_for_public_ip(res["instance_id"], region=region, max_attempts=25, delay=3.0)
+            account_used = res.get("account") or inst.get("account")
+            ip = await aws.wait_for_public_ip(
+                res["instance_id"], region=region, max_attempts=25, delay=3.0, account=account_used
+            )
             if ip:
                 await aws.wait_for_ssh(ip, max_wait_sec=180, interval=5.0)
 
@@ -329,9 +336,12 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 created_at=now,
                 expires_at=inst["expires_at"],
                 warranty_until=now + (WARRANTY_DAYS * 86400),
+                account=account_used,
             )
             vps_db.mark_warranty_claimed(inst["vps_id"], replaced_by=new_vps_id)
-            await aws.terminate_vps(inst["instance_id"], region=region)
+            await aws.terminate_vps(
+                inst["instance_id"], region=region, account=inst.get("account")
+            )
             old_terminated = True
             service.invalidate_account_scan()
 
@@ -430,9 +440,72 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         scan, _ = await service.get_account_scan()
         live_instances = scan.get("instances", [])
         regions_live = len({i.get("region") for i in live_instances})
-        summary = {"count": len(live_instances), "regions": regions_live}
+        summary = {
+            "count": len(live_instances),
+            "regions": regions_live,
+            "accounts": scan.get("accounts") or {},
+        }
         rich, plain = render.owner_menu_content(live_summary=summary)
         return await _render_and_edit(q, rich, plain, render.owner_menu_keyboard())
+
+    if action == "accounts":
+        show_secrets = len(parts) > 2 and parts[2] == "1"
+        rich, plain = render.accounts_content(show_secrets=show_secrets)
+        await _answer(q)
+        return await _render_and_edit(q, rich, plain, render.accounts_keyboard(show_secrets))
+
+    if action == "accounts_secret":
+        show_secrets = len(parts) > 2 and parts[2] == "1"
+        rich, plain = render.accounts_content(show_secrets=show_secrets)
+        await _answer(q)
+        return await _render_and_edit(q, rich, plain, render.accounts_keyboard(show_secrets))
+
+    if action == "accounts_rescan":
+        await _answer(q, "Rescanning all accounts...")
+        await asyncio.to_thread(aws.invalidate_region_sources)
+        await asyncio.to_thread(aws._region_sources, True)
+        service.invalidate_account_scan()
+        rich, plain = render.accounts_content(show_secrets=False)
+        return await _render_and_edit(q, rich, plain, render.accounts_keyboard(False))
+
+    if action == "account":
+        if len(parts) < 3:
+            return
+        name = parts[2]
+        show_secrets = len(parts) > 3 and parts[3] == "1"
+        rich, plain = render.account_detail_content(name, show_secrets=show_secrets)
+        await _answer(q)
+        return await _render_and_edit(
+            q, rich, plain, render.account_detail_keyboard(name, show_secrets)
+        )
+
+    if action == "account_secret":
+        if len(parts) < 3:
+            return
+        name = parts[2]
+        show_secrets = len(parts) > 3 and parts[3] == "1"
+        rich, plain = render.account_detail_content(name, show_secrets=show_secrets)
+        await _answer(q)
+        return await _render_and_edit(
+            q, rich, plain, render.account_detail_keyboard(name, show_secrets)
+        )
+
+    if action == "account_toggle":
+        if len(parts) < 3:
+            return
+        name = parts[2]
+        from . import accounts as accounts_store
+
+        cfg = accounts_store.get_account(name) or {}
+        new_state = not bool(cfg.get("enabled", True))
+        await asyncio.to_thread(accounts_store.set_account_enabled, name, new_state)
+        await asyncio.to_thread(aws.invalidate_region_sources)
+        service.invalidate_account_scan()
+        await _answer(q, f"{name}: {'enabled' if new_state else 'disabled'}")
+        rich, plain = render.account_detail_content(name, show_secrets=False)
+        return await _render_and_edit(
+            q, rich, plain, render.account_detail_keyboard(name, False)
+        )
 
     if action == "stats":
         await _answer(q)
@@ -466,25 +539,33 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         instance_id = parts[2]
         region = parts[3]
+        account = parts[4] if len(parts) > 4 else None
         await _answer(q, "Fetching live info...")
-        info = await aws.get_instance_info(instance_id, region=region)
-        rich, plain = render.owner_live_info_content(instance_id, region, info)
+        info = await aws.get_instance_info(instance_id, region=region, account=account)
+        rich, plain = render.owner_live_info_content(instance_id, region, info, account)
         state = (info or {}).get("state", "unknown")
-        return await _render_and_edit(q, rich, plain, render.owner_live_keyboard(instance_id, region, state))
+        return await _render_and_edit(
+            q, rich, plain, render.owner_live_keyboard(instance_id, region, state, account)
+        )
 
     if action == "liveterm":
         if len(parts) < 4:
             return
         instance_id = parts[2]
         region = parts[3]
+        account = parts[4] if len(parts) > 4 else None
         await _answer(q, "Terminating AWS instance...")
-        await aws.terminate_vps(instance_id, region=region)
-        vps_db.log_audit(None, "TERMINATE_UNMANAGED", user.id, f"aws={instance_id} region={region}")
+        await aws.terminate_vps(instance_id, region=region, account=account)
+        vps_db.log_audit(
+            None, "TERMINATE_UNMANAGED", user.id, f"aws={instance_id} region={region} account={account}"
+        )
         service.invalidate_account_scan()
-        info = await aws.get_instance_info(instance_id, region=region)
-        rich, plain = render.owner_live_info_content(instance_id, region, info)
+        info = await aws.get_instance_info(instance_id, region=region, account=account)
+        rich, plain = render.owner_live_info_content(instance_id, region, info, account)
         state = (info or {}).get("state", "terminated")
-        return await _render_and_edit(q, rich, plain, render.owner_live_keyboard(instance_id, region, state))
+        return await _render_and_edit(
+            q, rich, plain, render.owner_live_keyboard(instance_id, region, state, account)
+        )
 
     if action == "info":
         if len(parts) < 3:
@@ -503,7 +584,9 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not inst:
             return await _answer(q, "Instance not found.", show_alert=True)
         await _answer(q, "Terminating instance...")
-        await aws.terminate_vps(inst["instance_id"], region=inst.get("region"))
+        await aws.terminate_vps(
+            inst["instance_id"], region=inst.get("region"), account=inst.get("account")
+        )
         vps_db.terminate_instance_db(inst["vps_id"], reason=f"owner_terminate:{user.id}")
         service.invalidate_account_scan()
         vps_db.log_audit(inst["vps_id"], "TERMINATE_OWNER", user.id)

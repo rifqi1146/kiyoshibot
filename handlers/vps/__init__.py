@@ -1,6 +1,12 @@
 from .callbacks import vps_callback, vpsowner_callback
 from .commands import myvps_cmd, vps_cmd, vpsprice_cmd
 from .constants import OWNER_PREFIX, USER_PREFIX
+from .account_cmd import (
+    account_callback,
+    addawsaccount_cmd,
+    capture_account_input,
+    delawsaccount_cmd,
+)
 from .owner import (
     vpsadmin_cmd,
     vpsgrant_cmd,
@@ -21,6 +27,10 @@ __all__ = [
     "start_vps_sweeper",
     "sweep_expired_once",
     "vps_cmd",
+    "account_callback",
+    "addawsaccount_cmd",
+    "capture_account_input",
+    "delawsaccount_cmd",
     "vps_callback",
     "vpsadmin_cmd",
     "vpsgrant_cmd",

@@ -101,6 +101,14 @@ def init_db():
             "SELECT 1 FROM pragma_table_info('vps_invoices') WHERE name = 'region'"
         ).fetchone() is None:
             con.execute("ALTER TABLE vps_invoices ADD COLUMN region TEXT NOT NULL DEFAULT 'ap-southeast-5'")
+        if con.execute(
+            "SELECT 1 FROM pragma_table_info('vps_invoices') WHERE name = 'account'"
+        ).fetchone() is None:
+            con.execute("ALTER TABLE vps_invoices ADD COLUMN account TEXT")
+        if con.execute(
+            "SELECT 1 FROM pragma_table_info('vps_instances') WHERE name = 'account'"
+        ).fetchone() is None:
+            con.execute("ALTER TABLE vps_instances ADD COLUMN account TEXT")
 
         con.execute(
             """
@@ -117,6 +125,42 @@ def init_db():
             "SELECT 1 FROM pragma_table_info('vps_pricing') WHERE name = 'price_14d'"
         ).fetchone() is None:
             con.execute("ALTER TABLE vps_pricing ADD COLUMN price_14d INTEGER NOT NULL DEFAULT 0")
+
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vps_accounts (
+                name             TEXT PRIMARY KEY,
+                label            TEXT,
+                access_key_id    TEXT NOT NULL,
+                secret_access_key TEXT NOT NULL,
+                session_token    TEXT,
+                regions          TEXT NOT NULL DEFAULT '[]',
+                priority         INTEGER NOT NULL DEFAULT 100,
+                enabled          INTEGER NOT NULL DEFAULT 1,
+                allow_default_regions INTEGER NOT NULL DEFAULT 0,
+                created_at       REAL NOT NULL,
+                updated_at       REAL NOT NULL
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vps_settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vps_region_prefs (
+                region     TEXT PRIMARY KEY,
+                chain      TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
 
         con.execute(
             """
@@ -234,6 +278,7 @@ def save_invoice(
     gross_amount: int,
     created_at: float,
     deadline: float,
+    account: str | None = None,
 ) -> dict:
     con = _db()
     try:
@@ -242,13 +287,14 @@ def save_invoice(
             INSERT OR REPLACE INTO vps_invoices (
                 short_id, vps_id, user_id, chat_id, message_id,
                 qris_id, trx_id, tier, os_image, region, days,
-                base_amount, gross_amount, status, created_at, paid_at, deadline
-            ) VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, NULL, ?)
+                base_amount, gross_amount, status, created_at, paid_at, deadline,
+                account
+            ) VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, NULL, ?, ?)
             """,
             (
                 short_id, int(user_id), int(chat_id), qris_id, trx_id,
                 tier, os_image, region, int(days), int(base_amount), int(gross_amount),
-                float(created_at), float(deadline),
+                float(created_at), float(deadline), account,
             ),
         )
         con.commit()
@@ -341,6 +387,7 @@ def save_instance(
     created_at: float,
     expires_at: float,
     warranty_until: float,
+    account: str | None = None,
 ) -> dict:
     con = _db()
     try:
@@ -350,13 +397,15 @@ def save_instance(
                 vps_id, user_id, instance_id, instance_type, region,
                 tier, os_image, disk_gb, ip_address, root_password,
                 price, days, created_at, expires_at, warranty_until,
-                status, warranty_claimed, replaced_by, terminated_at, termination_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, NULL, NULL, NULL)
+                status, warranty_claimed, replaced_by, terminated_at, termination_reason,
+                account
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, NULL, NULL, NULL, ?)
             """,
             (
                 vps_id, int(user_id), instance_id, instance_type, region,
                 tier, os_image, int(disk_gb), ip_address, root_password,
                 int(price), int(days), float(created_at), float(expires_at), float(warranty_until),
+                account,
             ),
         )
         con.commit()
@@ -714,6 +763,220 @@ def set_region_ami(region: str, os_id: str, ami_id: str):
                 """,
                 (region, json.dumps(amis), time.time()),
             )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _row_to_account(row) -> dict:
+    import json as _json
+
+    try:
+        regions = _json.loads(row["regions"] or "[]")
+    except Exception:
+        regions = []
+    return {
+        "name": row["name"],
+        "label": row["label"] or row["name"],
+        "access_key_id": row["access_key_id"] or "",
+        "secret_access_key": row["secret_access_key"] or "",
+        "session_token": row["session_token"] or "",
+        "regions": [str(r).strip().lower() for r in regions if str(r).strip()],
+        "priority": int(row["priority"] or 100),
+        "enabled": bool(row["enabled"]),
+        "allow_default_regions": bool(row["allow_default_regions"]),
+    }
+
+
+def list_accounts(include_disabled: bool = True) -> list[dict]:
+    init_db()
+    con = _db()
+    try:
+        sql = "SELECT * FROM vps_accounts"
+        if not include_disabled:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY priority ASC, name ASC"
+        rows = con.execute(sql).fetchall()
+        return [_row_to_account(r) for r in rows]
+    finally:
+        con.close()
+
+
+def get_account_row(name: str) -> dict | None:
+    init_db()
+    con = _db()
+    try:
+        row = con.execute(
+            "SELECT * FROM vps_accounts WHERE name = ?", (str(name).strip().lower(),)
+        ).fetchone()
+        return _row_to_account(row) if row else None
+    finally:
+        con.close()
+
+
+def upsert_account(
+    name: str,
+    access_key_id: str,
+    secret_access_key: str,
+    regions: list[str],
+    *,
+    label: str = "",
+    priority: int = 100,
+    session_token: str = "",
+    allow_default_regions: bool = False,
+) -> dict:
+    import json as _json
+
+    init_db()
+    key = str(name).strip().lower()
+    if not key:
+        raise ValueError("Account name required")
+    clean_regions = sorted({str(r).strip().lower() for r in (regions or []) if str(r).strip()})
+    now = time.time()
+    existing = get_account_row(key)
+    con = _db()
+    try:
+        con.execute(
+            """
+            INSERT INTO vps_accounts (
+                name, label, access_key_id, secret_access_key, session_token,
+                regions, priority, enabled, allow_default_regions, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                label = excluded.label,
+                access_key_id = excluded.access_key_id,
+                secret_access_key = excluded.secret_access_key,
+                session_token = excluded.session_token,
+                regions = excluded.regions,
+                priority = excluded.priority,
+                enabled = excluded.enabled,
+                allow_default_regions = excluded.allow_default_regions,
+                updated_at = excluded.updated_at
+            """,
+            (
+                key,
+                (label or (existing or {}).get("label") or key),
+                access_key_id,
+                secret_access_key,
+                session_token or "",
+                _json.dumps(clean_regions),
+                int(priority),
+                1 if (existing or {}).get("enabled", True) else 0,
+                1 if allow_default_regions else 0,
+                float((existing or {}).get("created_at") or now),
+                now,
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return get_account_row(key)
+
+
+def delete_account(name: str) -> bool:
+    init_db()
+    con = _db()
+    try:
+        cur = con.execute("DELETE FROM vps_accounts WHERE name = ?", (str(name).strip().lower(),))
+        con.commit()
+        return (cur.rowcount or 0) > 0
+    finally:
+        con.close()
+
+
+def set_account_enabled(name: str, enabled: bool) -> bool:
+    init_db()
+    con = _db()
+    try:
+        cur = con.execute(
+            "UPDATE vps_accounts SET enabled = ?, updated_at = ? WHERE name = ?",
+            (1 if enabled else 0, time.time(), str(name).strip().lower()),
+        )
+        con.commit()
+        return (cur.rowcount or 0) > 0
+    finally:
+        con.close()
+
+
+def set_account_regions(name: str, regions: list[str]) -> bool:
+    import json as _json
+
+    init_db()
+    clean = sorted({str(r).strip().lower() for r in (regions or []) if str(r).strip()})
+    con = _db()
+    try:
+        cur = con.execute(
+            "UPDATE vps_accounts SET regions = ?, updated_at = ? WHERE name = ?",
+            (_json.dumps(clean), time.time(), str(name).strip().lower()),
+        )
+        con.commit()
+        return (cur.rowcount or 0) > 0
+    finally:
+        con.close()
+
+
+def get_region_pref(region: str) -> list[str]:
+    import json as _json
+
+    init_db()
+    con = _db()
+    try:
+        row = con.execute(
+            "SELECT chain FROM vps_region_prefs WHERE region = ?", (str(region).strip().lower(),)
+        ).fetchone()
+        if not row:
+            return []
+        try:
+            return [str(x) for x in _json.loads(row["chain"] or "[]")]
+        except Exception:
+            return []
+    finally:
+        con.close()
+
+
+def set_region_pref(region: str, chain: list[str]) -> None:
+    import json as _json
+
+    init_db()
+    con = _db()
+    try:
+        con.execute(
+            """
+            INSERT INTO vps_region_prefs (region, chain, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(region) DO UPDATE SET chain = excluded.chain, updated_at = excluded.updated_at
+            """,
+            (
+                str(region).strip().lower(),
+                _json.dumps([str(x).strip().lower() for x in chain if str(x).strip()]),
+                time.time(),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_setting(key: str) -> str | None:
+    init_db()
+    con = _db()
+    try:
+        row = con.execute("SELECT value FROM vps_settings WHERE key = ?", (str(key),)).fetchone()
+        return row["value"] if row else None
+    finally:
+        con.close()
+
+
+def set_setting(key: str, value: str) -> None:
+    init_db()
+    con = _db()
+    try:
+        con.execute(
+            """
+            INSERT INTO vps_settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (str(key), str(value), time.time()),
+        )
         con.commit()
     finally:
         con.close()

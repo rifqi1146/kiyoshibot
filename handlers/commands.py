@@ -7,6 +7,8 @@ from handlers.broadcast import broadcast_cmd
 from handlers.cookies import cookies_cmd
 from handlers.payment.buypremium import buypremium_cmd
 from handlers.vps import (
+    addawsaccount_cmd,
+    delawsaccount_cmd,
     myvps_cmd,
     vps_cmd,
     vpsadmin_cmd,
@@ -230,6 +232,8 @@ COMMAND_HANDLERS = [
     ("vpsgrant", vpsgrant_cmd, False),
     ("vpsstats", vpsstats_cmd, False),
     ("vpsprice", vpsprice_cmd, False),
+    ("addawsaccount", addawsaccount_cmd, False),
+    ("delawsaccount", delawsaccount_cmd, False),
     ("waifu", waifu_cmd, False),
     ("weather", weather_cmd, False),
     ("whoisdomain", whoisdomain_cmd, True),

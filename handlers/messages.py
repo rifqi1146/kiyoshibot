@@ -3,6 +3,7 @@ from telegram.ext import MessageHandler, ChatMemberHandler, TypeHandler, Context
 
 from handlers.blacklist import blacklist_message_gate
 from handlers.caca import caca_cmd
+from handlers.vps.account_cmd import account_input_handler
 from handlers.caca.caca_billing import cacabill_text_handler
 from handlers.collector import collect_chat
 from handlers.delete import reply_del_handler
@@ -102,6 +103,10 @@ def register_messages(app):
     )
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, cacabill_text_handler),
+        group=-95,
+    )
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, account_input_handler),
         group=-95,
     )
     app.add_handler(

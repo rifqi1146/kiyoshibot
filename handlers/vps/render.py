@@ -184,6 +184,7 @@ def warranty_confirm_keyboard(vps_id: str) -> InlineKeyboardMarkup:
 def owner_menu_keyboard() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("All Instances", callback_data=owner_cb("list"))],
+        [InlineKeyboardButton("Accounts", callback_data=owner_cb("accounts"))],
         [InlineKeyboardButton("Statistics", callback_data=owner_cb("stats"))],
         [InlineKeyboardButton("Set Pricing", callback_data=owner_cb("price"))],
         [InlineKeyboardButton("Close", callback_data=owner_cb("close"))],
@@ -205,7 +206,15 @@ def owner_list_keyboard(instances: list[dict], show_terminated: bool = False) ->
         if is_managed:
             cb = owner_cb("info", inst["vps_id"])
         elif inst.get("instance_id"):
-            cb = owner_cb("live", inst["instance_id"], inst.get("region") or DEFAULT_REGION)
+            if inst.get("account"):
+                cb = owner_cb(
+                    "live",
+                    inst["instance_id"],
+                    inst.get("region") or DEFAULT_REGION,
+                    inst["account"],
+                )
+            else:
+                cb = owner_cb("live", inst["instance_id"], inst.get("region") or DEFAULT_REGION)
         else:
             continue
         rows.append([InlineKeyboardButton(f"{tag}{label}{mark}", callback_data=cb)])
@@ -683,6 +692,32 @@ def owner_menu_content(live_summary: dict | None = None) -> tuple[str, str]:
         live_line_html = f"<li>Total EC2 live in AWS: <b>{cnt}</b> across {reg} region(s)</li>"
         live_line_plain = f"\n• Total EC2 live in AWS: {cnt} across {reg} region(s)"
 
+    from . import accounts as accounts_store
+
+    acct_rows = accounts_store.describe()
+    if acct_rows:
+        parts_html = []
+        parts_plain = []
+        for a in acct_rows:
+            hits = (live_summary or {}).get("accounts", {}).get(a["name"], 0)
+            state = "" if a["enabled"] else " (disabled)"
+            parts_html.append(
+                f"<li>{html.escape(a['label'])}{state} — {a['region_count']} region(s) · "
+                f"{hits} live instance(s)</li>"
+            )
+            parts_plain.append(
+                f"• {a['label']}{state} — {a['region_count']} region(s) · {hits} live instance(s)"
+            )
+        acct_html = (
+            f"<h3>🔑 AWS Accounts ({len(acct_rows)})</h3><ul>"
+            + "".join(parts_html)
+            + "</ul>"
+        )
+        acct_plain = f"\n\nAWS Accounts ({len(acct_rows)})\n" + "\n".join(parts_plain)
+    else:
+        acct_html = "<h3>🔑 AWS Accounts (1)</h3><p>Using the default AWS CLI profile.</p>"
+        acct_plain = "\n\nAWS Accounts (1)\nUsing the default AWS CLI profile."
+
     rich = (
         "<h1>🛠️ VPS Owner Panel</h1>"
         "<p>Manage every VPS instance across all regions, review sales statistics, "
@@ -698,6 +733,7 @@ def owner_menu_content(live_summary: dict | None = None) -> tuple[str, str]:
             "<h3>🌍 Bot Instances by Region</h3><ul>" + "".join(region_html) + "</ul>"
             if region_html else "<p>No instances provisioned by the bot yet.</p>"
         )
+        + acct_html
     )
     plain = (
         "<b>🛠️ VPS Owner Panel</b>\n\n"
@@ -709,12 +745,19 @@ def owner_menu_content(live_summary: dict | None = None) -> tuple[str, str]:
             "\n\n<b>🌍 Bot Instances by Region</b>\n" + "\n".join(region_plain)
             if region_plain else "\n\nNo instances provisioned by the bot yet."
         )
+        + acct_plain
     )
     return rich, plain
 
 
+def _match_key(instance_id, account) -> tuple:
+    return (str(instance_id or ""), str(account or ""))
+
+
 def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated: bool = False) -> list[dict]:
-    live_by_id = {str(r.get("instance_id")): r for r in live if r.get("instance_id")}
+    live_by_id = {
+        _match_key(r.get("instance_id"), r.get("account")): r for r in live if r.get("instance_id")
+    }
     merged = []
     seen_ids = set()
 
@@ -722,13 +765,20 @@ def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated:
         iid = str(inst.get("instance_id") or "")
         row = dict(inst)
         row["managed"] = True
-        live_match = live_by_id.get(iid)
+        key = _match_key(iid, inst.get("account"))
+        live_match = live_by_id.get(key)
+        if live_match is None and not inst.get("account"):
+            for k, v in live_by_id.items():
+                if k[0] == iid:
+                    live_match = v
+                    row["account"] = v.get("account")
+                    break
         if live_match is not None:
             row["aws_state"] = live_match.get("state")
             row["live"] = True
             if live_match.get("public_ip"):
                 row["ip_address"] = live_match["public_ip"]
-            seen_ids.add(iid)
+            seen_ids.add(key)
         else:
             row["aws_state"] = None
             row["live"] = False
@@ -736,14 +786,18 @@ def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated:
 
     for live_row in live:
         iid = str(live_row.get("instance_id") or "")
-        if not iid or iid in seen_ids:
+        if not iid:
             continue
-        seen_ids.add(iid)
+        key = _match_key(iid, live_row.get("account"))
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
         merged.append({
             "vps_id": None,
             "instance_id": iid,
             "instance_type": live_row.get("instance_type"),
             "region": live_row.get("region"),
+            "account": live_row.get("account"),
             "status": "unmanaged",
             "aws_state": live_row.get("state"),
             "ip_address": live_row.get("public_ip") or "",
@@ -753,7 +807,14 @@ def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated:
             "managed": False,
         })
 
-    merged.sort(key=lambda r: (not r.get("live"), str(r.get("region") or ""), str(r.get("instance_id") or "")))
+    merged.sort(
+        key=lambda r: (
+            not r.get("live"),
+            str(r.get("region") or ""),
+            str(r.get("account") or ""),
+            str(r.get("instance_id") or ""),
+        )
+    )
 
     if not show_terminated:
         merged = [
@@ -892,11 +953,20 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
     return rich, plain
 
 
-def owner_live_info_content(instance_id: str, region: str, info: dict | None) -> tuple[str, str]:
+def owner_live_info_content(
+    instance_id: str,
+    region: str,
+    info: dict | None,
+    account: str | None = None,
+) -> tuple[str, str]:
     info = info or {}
     state = info.get("state") or "unknown"
     ip = info.get("public_ip") or "-"
     private_ip = info.get("private_ip") or "-"
+    acct_line_rich = (
+        f"<li>Account: <code>{html.escape(str(account))}</code></li>" if account else ""
+    )
+    acct_line_plain = f"Account: {account}\n" if account else ""
     rich = (
         f"<h1>🖥 {html.escape(instance_id)}</h1>"
         "<p>Unmanaged instance. This server is running in your AWS account but was "
@@ -905,6 +975,7 @@ def owner_live_info_content(instance_id: str, region: str, info: dict | None) ->
         "<ul>"
         f"<li>AWS ID: <code>{html.escape(instance_id)}</code></li>"
         f"<li>Region: {html.escape(region_display(region))}</li>"
+        f"{acct_line_rich}"
         f"<li>State: <b>{html.escape(str(state))}</b></li>"
         f"<li>Type: {html.escape(str(info.get('instance_type') or 'unknown'))}</li>"
         f"<li>Launched: {html.escape(str(info.get('launch_time') or '-'))}</li>"
@@ -920,6 +991,7 @@ def owner_live_info_content(instance_id: str, region: str, info: dict | None) ->
         "Unmanaged instance. Not provisioned by the bot.\n\n"
         f"AWS ID: <code>{instance_id}</code>\n"
         f"Region: {region_display(region)}\n"
+        f"{acct_line_plain}"
         f"State: {state}\n"
         f"Type: {info.get('instance_type') or 'unknown'}\n"
         f"Public IP: <code>{ip}</code>\n"
@@ -928,10 +1000,18 @@ def owner_live_info_content(instance_id: str, region: str, info: dict | None) ->
     return rich, plain
 
 
-def owner_live_keyboard(instance_id: str, region: str, state: str) -> InlineKeyboardMarkup:
+def owner_live_keyboard(
+    instance_id: str,
+    region: str,
+    state: str,
+    account: str | None = None,
+) -> InlineKeyboardMarkup:
     rows = []
     if str(state) in ("running", "stopped", "stopping", "pending"):
-        cb = owner_cb("liveterm", instance_id, region)
+        if account:
+            cb = owner_cb("liveterm", instance_id, region, account)
+        else:
+            cb = owner_cb("liveterm", instance_id, region)
         rows.append([InlineKeyboardButton("Terminate", callback_data=cb)])
     rows.append([InlineKeyboardButton("Back", callback_data=owner_cb("list"))])
     rows.append([InlineKeyboardButton("Close", callback_data=owner_cb("close"))])
@@ -1079,3 +1159,156 @@ def owner_price_content() -> tuple[str, str]:
     )
     plain = "<b>🏷 Set Plan Pricing</b>\n\nSelect a plan to modify its price.\n\n" + "\n".join(items_plain)
     return rich, plain
+
+
+def accounts_content(show_secrets: bool = False) -> tuple[str, str]:
+    from . import accounts as accounts_store
+
+    rows = accounts_store.describe()
+    if not rows:
+        rich = (
+            "<h1>🔑 AWS Accounts</h1>"
+            "<p>No extra AWS accounts configured. The bot is using the default "
+            "AWS CLI profile from <code>~/.aws/credentials</code>.</p>"
+            "<p>Add one with <code>/addawsaccount</code>.</p>"
+        )
+        plain = (
+            "<b>🔑 AWS Accounts</b>\n\n"
+            "No extra AWS accounts configured. Using the default AWS CLI profile.\n\n"
+            "Add one with:\n/addawsaccount"
+        )
+        return rich, plain
+
+    configured = [row for row in rows if not row.get("is_base")]
+    base_rows = [row for row in rows if row.get("is_base")]
+    total_regions = sorted({r for row in configured for r in row["regions"]})
+    shown_count = len(configured) + (1 if base_rows else 0)
+    rich_items = []
+    plain_items = []
+    for row in rows:
+        cfg = accounts_store.get_account(row["name"]) or {}
+        secret = cfg.get("secret_access_key") or ""
+        secret_show = secret if show_secrets else accounts_store.mask_key(secret)
+        regions = ", ".join(sorted(row["regions"])) or "none"
+        rich_items.append(
+            "<details open>"
+            f"<summary>{html.escape(row['label'])} "
+            f"({'enabled' if row['enabled'] else 'disabled'})</summary>"
+            "<ul>"
+            f"<li>Name: <code>{html.escape(row['name'])}</code></li>"
+            f"<li>Access key: <code>{html.escape(row['key_hint'])}</code></li>"
+            f"<li>Secret key: <code>{html.escape(secret_show)}</code></li>"
+            f"<li>Priority: {row['priority']}</li>"
+            f"<li>Regions ({row['region_count']}): <code>{html.escape(regions)}</code></li>"
+            "</ul>"
+            "</details>"
+        )
+        plain_items.append(
+            f"<b>{html.escape(row['label'])}</b> "
+            f"({'enabled' if row['enabled'] else 'disabled'})\n"
+            f"Name: {row['name']}\n"
+            f"Access key: <code>{row['key_hint']}</code>\n"
+            f"Secret key: <code>{secret_show}</code>\n"
+            f"Priority: {row['priority']}\n"
+            f"Regions ({row['region_count']}): {regions}"
+        )
+
+    mode = "revealed" if show_secrets else "masked"
+    rich = (
+        "<h1>🔑 AWS Accounts</h1>"
+        f"<p><b>{shown_count}</b> account(s) · {len(total_regions)} extra region(s) · "
+        f"secrets {mode}.</p>"
+        "<h3>Accounts</h3>"
+        + "".join(rich_items)
+        + "<aside>Regions are tried in account priority order. "
+        "If the first account fails capacity for a region, the next account that "
+        "serves it is used automatically.</aside>"
+    )
+    plain = (
+        f"<b>🔑 AWS Accounts</b>\n\n"
+        f"{shown_count} account(s) · {len(total_regions)} extra region(s) · secrets {mode}\n\n"
+        + "\n\n".join(plain_items)
+        + "\n\nRegions are tried in account priority order."
+    )
+    return rich, plain
+
+
+def accounts_keyboard(show_secrets: bool = False) -> InlineKeyboardMarkup:
+    from . import accounts as accounts_store
+
+    base_state = "Disable" if accounts_store.base_account_enabled() else "Enable"
+    rows = [
+        [
+            InlineKeyboardButton(
+                "Hide Keys" if show_secrets else "Reveal Keys",
+                callback_data="vpsacc:secret:0" if show_secrets else "vpsacc:secret:1",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                f"{base_state} Default Profile",
+                callback_data=f"vpsacc:toggle:{accounts_store.DEFAULT_ACCOUNT_NAME}",
+            )
+        ],
+        [InlineKeyboardButton("Delete Account", callback_data="vpsacc:delete_menu")],
+        [InlineKeyboardButton("Back", callback_data=owner_cb("menu"))],
+        [InlineKeyboardButton("Close", callback_data=owner_cb("close"))],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def account_detail_content(name: str, show_secrets: bool = False) -> tuple[str, str]:
+    from . import accounts as accounts_store
+
+    cfg = accounts_store.get_account(name)
+    if not cfg:
+        return "<h1>Account Not Found</h1>", "<b>Account Not Found</b>"
+
+    secret = cfg.get("secret_access_key") or ""
+    secret_show = secret if show_secrets else accounts_store.mask_key(secret)
+    regions = ", ".join(sorted(cfg.get("regions") or [])) or "none"
+    rich = (
+        f"<h1>🔑 {html.escape(cfg.get('label') or name)}</h1>"
+        "<ul>"
+        f"<li>Name: <code>{html.escape(name)}</code></li>"
+        f"<li>Access key: <code>{html.escape(cfg.get('access_key_id') or '-')}</code></li>"
+        f"<li>Secret key: <code>{html.escape(secret_show)}</code></li>"
+        f"<li>Priority: {cfg.get('priority', 100)}</li>"
+        f"<li>Enabled: {'yes' if cfg.get('enabled', True) else 'no'}</li>"
+        f"<li>Regions: <code>{html.escape(regions)}</code></li>"
+        "</ul>"
+    )
+    plain = (
+        f"<b>🔑 {cfg.get('label') or name}</b>\n\n"
+        f"Name: {name}\n"
+        f"Access key: <code>{cfg.get('access_key_id') or '-'}</code>\n"
+        f"Secret key: <code>{secret_show}</code>\n"
+        f"Priority: {cfg.get('priority', 100)}\n"
+        f"Enabled: {'yes' if cfg.get('enabled', True) else 'no'}\n"
+        f"Regions: {regions}"
+    )
+    return rich, plain
+
+
+def account_detail_keyboard(name: str, show_secrets: bool = False) -> InlineKeyboardMarkup:
+    from . import accounts as accounts_store
+
+    cfg = accounts_store.get_account(name) or {}
+    enabled = bool(cfg.get("enabled", True))
+    rows = [
+        [
+            InlineKeyboardButton(
+                "Hide Key" if show_secrets else "Reveal Key",
+                callback_data=owner_cb("account_secret", name, "0" if show_secrets else "1"),
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "Disable" if enabled else "Enable",
+                callback_data=owner_cb("account_toggle", name),
+            )
+        ],
+        [InlineKeyboardButton("Back", callback_data=owner_cb("accounts"))],
+        [InlineKeyboardButton("Close", callback_data=owner_cb("close"))],
+    ]
+    return InlineKeyboardMarkup(rows)

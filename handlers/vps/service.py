@@ -183,10 +183,14 @@ async def provision_instance_for_invoice(context: ContextTypes.DEFAULT_TYPE, inv
             instance_type=t["instance_type"],
             disk_gb=t["disk_gb"],
             tag_name=tag_name,
+            account=inv.get("account"),
         )
 
         instance_id = res["instance_id"]
-        ip = await aws.wait_for_public_ip(instance_id, region=region, max_attempts=25, delay=3.0)
+        account_used = res.get("account") or inv.get("account")
+        ip = await aws.wait_for_public_ip(
+            instance_id, region=region, max_attempts=25, delay=3.0, account=account_used
+        )
 
         if ip:
             await aws.wait_for_ssh(ip, max_wait_sec=180, interval=5.0)
@@ -208,6 +212,7 @@ async def provision_instance_for_invoice(context: ContextTypes.DEFAULT_TYPE, inv
             root_password=password,
             price=inv["base_amount"],
             days=inv["days"],
+            account=account_used,
             created_at=now,
             expires_at=expires_at,
             warranty_until=warranty_until,
