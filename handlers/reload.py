@@ -86,6 +86,11 @@ def _register_all(app):
     from handlers.join import register_join_handlers
     app.handlers.clear()
     app._join_handlers_registered = False
+    try:
+        from handlers import join as _join_mod
+        _join_mod._REGISTERED_COMMANDS = None
+    except Exception:
+        pass
     register_commands(app)
     register_messages(app)
     register_callbacks(app)

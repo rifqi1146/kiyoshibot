@@ -204,6 +204,28 @@ async def require_join_or_block(
     return False
 
 
+_REGISTERED_COMMANDS: set[str] | None = None
+
+
+def _registered_commands() -> set[str]:
+    global _REGISTERED_COMMANDS
+    if _REGISTERED_COMMANDS is None:
+        names: set[str] = set()
+        try:
+            from handlers.commands import COMMAND_HANDLERS
+
+            for entry in COMMAND_HANDLERS:
+                cmd = entry[0]
+                if isinstance(cmd, str):
+                    names.add(cmd.lower())
+                else:
+                    names.update(str(c).lower() for c in cmd)
+        except Exception as e:
+            log.warning("[JOIN GATE] command registry unavailable | err=%r", e)
+        _REGISTERED_COMMANDS = names
+    return _REGISTERED_COMMANDS
+
+
 def _command_name(update: Update) -> str:
     msg = update.effective_message
     text = (getattr(msg, "text", None) or "").strip()
@@ -228,6 +250,9 @@ async def command_join_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     name = _command_name(update)
     if not name:
+        return
+
+    if name not in _registered_commands():
         return
 
     if name == "start" and _is_verify_deeplink(update):
