@@ -204,30 +204,6 @@ async def require_join_or_block(
     return False
 
 
-OPEN_COMMANDS = {
-    "start",
-    "help",
-    "menu",
-    "ping",
-    "buycaca",
-    "cacasaldo",
-    "cacatopup",
-}
-
-PRIVILEGED_COMMANDS = {
-    "addcredit", "addawsaccount", "addsudo", "autobackup", "backup", "blacklist",
-    "broadcast", "buycaca", "cacaadmin", "cbacc", "cookies", "delawsaccount",
-    "freecaca", "getmodel", "helpowner", "premium", "providercaca", "reload",
-    "reboot", "restart", "restore", "rmsudo", "setmodel", "setsearch",
-    "sudolist", "stats", "thinking", "update", "uploadengine",
-    "vpsadmin", "vpsgrant", "vpsinfo", "vpslist", "vpsprice", "vpsrenew",
-    "vpsstats", "vpsterminate",
-    "ban", "unban", "kick", "mute", "unmute", "warn", "unwarn", "promote",
-    "demote", "tag", "untag", "moderation", "nsfw", "spoiler", "settings",
-    "wlc", "autodel", "speedtest",
-}
-
-
 def _command_name(update: Update) -> str:
     msg = update.effective_message
     text = (getattr(msg, "text", None) or "").strip()
@@ -238,14 +214,13 @@ def _command_name(update: Update) -> str:
     return head.lower()
 
 
-def _is_exempt_command(name: str) -> bool:
-    if not name:
-        return True
-    if name in OPEN_COMMANDS or name in PRIVILEGED_COMMANDS:
-        return True
-    if name.startswith("vps"):
-        return True
-    return False
+def _is_verify_deeplink(update: Update) -> bool:
+    msg = update.effective_message
+    text = (getattr(msg, "text", None) or "").strip()
+    parts = text.split()
+    if len(parts) < 2:
+        return False
+    return parts[1].startswith("verify_")
 
 
 async def command_join_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -254,7 +229,8 @@ async def command_join_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = _command_name(update)
     if not name:
         return
-    if _is_exempt_command(name):
+
+    if name == "start" and _is_verify_deeplink(update):
         return
 
     user = update.effective_user
