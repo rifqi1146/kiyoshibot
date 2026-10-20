@@ -484,19 +484,24 @@ async def launch_vps(
     tried: list[str] = []
     for acc in chain:
         attempt_type = instance_type
+        own_sg: str | None = None
         for _round in range(2):
             try:
                 vpc_id, subnets, sg_id = await asyncio.to_thread(resolve_network, region, acc)
                 vps_db.save_region_cache(
                     region, vpc_id=vpc_id, subnet_ids=subnets, sg_id=sg_id, available=True
                 )
+                if not own_sg:
+                    own_sg = await asyncio.to_thread(
+                        create_vps_security_group, region, vpc_id, tag_name, acc
+                    )
                 image_id = await asyncio.to_thread(resolve_ami, region, os_id, acc)
                 res = await asyncio.to_thread(
                     _launch_instance_sync,
                     region=region,
                     subnets=subnets,
                     account=acc,
-                    sg_id=sg_id,
+                    sg_id=own_sg,
                     image_id=image_id,
                     instance_type=attempt_type,
                     disk_gb=disk_gb,
@@ -504,6 +509,7 @@ async def launch_vps(
                     tag_name=tag_name,
                 )
                 res["account"] = acc
+                res["sg_id"] = own_sg
                 res["requested_instance_type"] = instance_type
                 res["instance_type"] = attempt_type
                 if attempt_type != instance_type:
@@ -529,6 +535,7 @@ async def launch_vps(
                         continue
                 tried.append(acc)
                 last_err = e
+                await asyncio.to_thread(delete_vps_security_group, own_sg, region, acc)
                 log.warning(
                     "Launch attempt failed | region=%s account=%s type=%s err=%r",
                     region, acc, attempt_type, e,
@@ -922,3 +929,438 @@ def TIERS_SNAPSHOT() -> list[dict]:
     from .constants import TIERS
 
     return TIERS
+
+
+def _vps_group_name(vps_id: str) -> str:
+    return f"kiyoshibot-vps-{str(vps_id).lower()}"[:255]
+
+
+def _instance_vpc_sync(
+    instance_id: str,
+    region: str,
+    account: str | None = None,
+    describe_account: str | None = None,
+) -> str | None:
+    env = _aws_env(region, describe_account)
+    cmd = [
+        "aws", "ec2", "describe-instances",
+        "--region", region,
+        "--instance-ids", instance_id,
+        "--query", "Reservations[].Instances[].VpcId",
+        "--output", "text",
+    ]
+    p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+    if p.returncode != 0:
+        return None
+    vpc = (p.stdout or "").strip().split()
+    return vpc[0] if vpc else None
+
+
+def attach_security_group_sync(
+    instance_id: str,
+    sg_id: str,
+    region: str,
+    account: str | None = None,
+) -> bool:
+    env = _aws_env(region, account)
+
+    def describe():
+        return subprocess.run(
+            [
+                "aws", "ec2", "describe-instances",
+                "--region", region,
+                "--instance-ids", instance_id,
+                "--query", "Reservations[].Instances[].[NetworkInterfaces[].NetworkInterfaceId,VpcId][]",
+                "--output", "json",
+            ],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+
+    d = describe()
+    if d.returncode != 0:
+        log.warning("attach_security_group describe failed | instance=%s err=%s",
+                    instance_id, (d.stderr or "").strip()[:200])
+        return False
+    try:
+        payload = json.loads(d.stdout or "[]")
+    except Exception:
+        payload = []
+    enis = []
+    for item in payload:
+        if isinstance(item, list):
+            for sub in item:
+                if isinstance(sub, list):
+                    enis.extend(x for x in sub if isinstance(x, str) and x.startswith("eni-"))
+                elif isinstance(sub, str) and sub.startswith("eni-"):
+                    enis.append(sub)
+        elif isinstance(item, str) and item.startswith("eni-"):
+            enis.append(item)
+    if not enis:
+        r = subprocess.run(
+            [
+                "aws", "ec2", "describe-instances",
+                "--region", region,
+                "--instance-ids", instance_id,
+                "--query", "Reservations[].Instances[].NetworkInterfaces[].NetworkInterfaceId",
+                "--output", "text",
+            ],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+        enis = (r.stdout or "").split()
+    if not enis:
+        log.warning("attach_security_group no ENI | instance=%s", instance_id)
+        return False
+
+    ok = True
+    for eni in enis:
+        r = subprocess.run(
+            [
+                "aws", "ec2", "modify-network-interface-attribute",
+                "--region", region,
+                "--network-interface-id", eni,
+                "--groups", sg_id,
+            ],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+        if r.returncode != 0:
+            log.warning("attach_security_group failed | instance=%s eni=%s err=%s",
+                        instance_id, eni, (r.stderr or "").strip()[:200])
+            ok = False
+    return ok
+
+
+def ensure_vps_security_group(
+    region: str,
+    vps_id: str,
+    instance_id: str | None = None,
+    account: str | None = None,
+) -> str:
+    if not instance_id:
+        raise RuntimeError(f"Instance id is required to attach a firewall for {vps_id}")
+
+    probe_account = None if account in (None, "default") else account
+    rows = _run_aws_cli([
+        "ec2", "describe-instances",
+        "--instance-ids", instance_id,
+        "--query", "Reservations[].Instances[].VpcId",
+    ], region=region, timeout=60, account=probe_account)
+    vpc_list = rows if isinstance(rows, list) else ([rows] if rows else [])
+    vpc_id = next((v for v in vpc_list if isinstance(v, str) and v.startswith("vpc-")), None)
+    if not vpc_id:
+        raise RuntimeError(f"Cannot resolve the VPC for instance {instance_id} in {region}")
+
+    rows = _run_aws_cli([
+        "ec2", "describe-security-groups",
+        "--filters",
+        f"Name=group-name,Values={_vps_group_name(vps_id)}",
+        f"Name=vpc-id,Values={vpc_id}",
+        "--query", "SecurityGroups[].GroupId",
+    ], region=region, timeout=45, account=probe_account)
+    ids = rows if isinstance(rows, list) else ([rows] if rows else [])
+    for gid in ids:
+        if not gid:
+            continue
+        if attach_security_group_sync(instance_id, gid, region, account):
+            log.info("ensure_sg reused existing | vps=%s sg=%s", vps_id, gid)
+            return gid
+        log.warning("ensure_sg attach existing failed | vps=%s sg=%s", vps_id, gid)
+
+    sg = create_vps_security_group(region, vpc_id, vps_id, account=account)
+    if not attach_security_group_sync(instance_id, sg, region, account):
+        raise RuntimeError(
+            f"Firewall {sg} was created but could not be attached to {instance_id}"
+        )
+    return sg
+
+
+async def create_vps_security_group_async(
+    region: str,
+    vpc_id: str,
+    vps_id: str,
+    account: str | None = None,
+) -> str:
+    return await asyncio.to_thread(create_vps_security_group, region, vpc_id, vps_id, account)
+
+
+async def attach_security_group_async(
+    instance_id: str,
+    sg_id: str,
+    region: str,
+    account: str | None = None,
+) -> bool:
+    return await asyncio.to_thread(attach_security_group_sync, instance_id, sg_id, region, account)
+
+
+async def add_firewall_rule(
+    sg_id: str,
+    region: str,
+    direction: str,
+    proto: str,
+    from_port: int,
+    to_port: int,
+    cidr: str,
+    account: str | None = None,
+) -> str | None:
+    return await asyncio.to_thread(
+        add_firewall_rule_sync, sg_id, region, direction, proto, from_port, to_port, cidr, account
+    )
+
+
+async def remove_firewall_rule(
+    sg_id: str,
+    region: str,
+    direction: str,
+    proto: str,
+    from_port: int,
+    to_port: int,
+    cidr: str,
+    account: str | None = None,
+) -> bool:
+    return await asyncio.to_thread(
+        remove_firewall_rule_sync, sg_id, region, direction, proto, from_port, to_port, cidr, account
+    )
+
+
+async def list_firewall_rules(
+    sg_id: str,
+    region: str,
+    account: str | None = None,
+) -> dict:
+    return await asyncio.to_thread(list_firewall_rules_sync, sg_id, region, account)
+
+
+async def instance_security_group(instance_id: str, region: str, account: str | None = None):
+    return await asyncio.to_thread(instance_security_group_sync, instance_id, region, account)
+
+
+def create_vps_security_group(
+    region: str,
+    vpc_id: str,
+    vps_id: str,
+    account: str | None = None,
+) -> str:
+    res = _run_aws_cli([
+        "ec2", "create-security-group",
+        "--group-name", _vps_group_name(vps_id),
+        "--description", f"KiyoshiBot VPS firewall for {vps_id}",
+        "--vpc-id", vpc_id,
+        "--tag-specifications",
+        json.dumps([
+            {
+                "ResourceType": "security-group",
+                "Tags": [
+                    {"Key": "ManagedBy", "Value": "kiyoshibot"},
+                    {"Key": "Name", "Value": _vps_group_name(vps_id)},
+                    {"Key": "VpsId", "Value": str(vps_id)},
+                ],
+            }
+        ]),
+    ], region=region, timeout=45, account=account)
+    sg_id = res.get("GroupId") if isinstance(res, dict) else None
+    if not sg_id:
+        raise RuntimeError(f"Failed to create firewall for {vps_id} in {region}")
+    _run_aws_cli([
+        "ec2", "authorize-security-group-ingress",
+        "--group-id", sg_id,
+        "--ip-permissions",
+        json.dumps([
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
+            }
+        ]),
+    ], region=region, timeout=45, account=account)
+    return sg_id
+
+
+def delete_vps_security_group(
+    sg_id: str,
+    region: str,
+    account: str | None = None,
+    attempts: int = 6,
+    delay: float = 5.0,
+) -> bool:
+    if not sg_id:
+        return False
+    last = None
+    for i in range(max(1, attempts)):
+        try:
+            _run_aws_cli([
+                "ec2", "delete-security-group",
+                "--group-id", sg_id,
+            ], region=region, timeout=45, account=account)
+            return True
+        except Exception as e:
+            last = e
+            low = str(e).lower()
+            if "invalidgroup.notfound" in low or "does not exist" in low:
+                return True
+            if "dependencyviolation" in low and i < attempts - 1:
+                time.sleep(delay)
+                continue
+            break
+    log.warning("Delete SG failed | sg=%s region=%s err=%r", sg_id, region, last)
+    return False
+
+
+def _port_permission(proto: str, from_port: int, to_port: int, cidr: str, description: str) -> dict:
+    if proto == "all":
+        return {
+            "IpProtocol": "-1",
+            "IpRanges": [{"CidrIp": cidr, "Description": description}],
+        }
+    if proto == "icmp":
+        return {
+            "IpProtocol": "icmp",
+            "FromPort": -1,
+            "ToPort": -1,
+            "IpRanges": [{"CidrIp": cidr, "Description": description}],
+        }
+    return {
+        "IpProtocol": proto,
+        "FromPort": int(from_port),
+        "ToPort": int(to_port),
+        "IpRanges": [{"CidrIp": cidr, "Description": description}],
+    }
+
+
+def instance_security_group_sync(instance_id: str, region: str, account: str | None = None) -> str | None:
+    env = _aws_env(region, account)
+    cmd = [
+        "aws", "ec2", "describe-instances",
+        "--region", region,
+        "--instance-ids", instance_id,
+        "--query", "Reservations[].Instances[].SecurityGroups[].GroupId",
+        "--output", "text",
+    ]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+    except Exception as e:
+        log.warning("instance_security_group_sync failed | instance=%s err=%r", instance_id, e)
+        return None
+    if p.returncode != 0:
+        log.warning("instance_security_group_sync error | instance=%s err=%s",
+                    instance_id, (p.stderr or "").strip()[:200])
+        return None
+    ids = (p.stdout or "").split()
+    if not ids:
+        return None
+    for gid in ids:
+        try:
+            count = _instance_count_for_sg(gid, region, account)
+        except Exception:
+            count = 999
+        if count <= 1:
+            return gid
+    return ids[0]
+
+
+def _instance_count_for_sg(sg_id: str, region: str, account: str | None = None) -> int:
+    env = _aws_env(region, account)
+    cmd = [
+        "aws", "ec2", "describe-instances",
+        "--region", region,
+        "--filters", f"Name=instance.group-id,Values={sg_id}",
+        "Name=instance-state-name,Values=pending,running,stopping,stopped",
+        "--query", "length(Reservations[].Instances[])",
+        "--output", "text",
+    ]
+    p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+    if p.returncode != 0:
+        return 999
+    try:
+        return int((p.stdout or "0").strip() or 0)
+    except Exception:
+        return 999
+
+
+def add_firewall_rule_sync(
+    sg_id: str,
+    region: str,
+    direction: str,
+    proto: str,
+    from_port: int,
+    to_port: int,
+    cidr: str,
+    account: str | None = None,
+) -> str | None:
+    perm = _port_permission(proto, from_port, to_port, cidr, "kiyoshibot user rule")
+    verb = "authorize-security-group-ingress" if direction == "in" else "authorize-security-group-egress"
+    res = _run_aws_cli([
+        "ec2", verb,
+        "--group-id", sg_id,
+        "--ip-permissions", json.dumps([perm]),
+    ], region=region, timeout=45, account=account)
+    rules = res.get("SecurityGroupRules", []) if isinstance(res, dict) else []
+    if rules:
+        return str(rules[0].get("SecurityGroupRuleId") or "") or None
+    return None
+
+
+def remove_firewall_rule_sync(
+    sg_id: str,
+    region: str,
+    direction: str,
+    proto: str,
+    from_port: int,
+    to_port: int,
+    cidr: str,
+    account: str | None = None,
+) -> bool:
+    perm = _port_permission(proto, from_port, to_port, cidr, "kiyoshibot user rule")
+    verb = "revoke-security-group-ingress" if direction == "in" else "revoke-security-group-egress"
+    try:
+        _run_aws_cli([
+            "ec2", verb,
+            "--group-id", sg_id,
+            "--ip-permissions", json.dumps([perm]),
+        ], region=region, timeout=45, account=account)
+        return True
+    except Exception as e:
+        low = str(e).lower()
+        if "invalidpermission" in low or "notfound" in low or "does not exist" in low:
+            return True
+        log.warning("Revoke firewall rule failed | sg=%s err=%r", sg_id, e)
+        return False
+
+
+def list_firewall_rules_sync(
+    sg_id: str,
+    region: str,
+    account: str | None = None,
+) -> dict:
+    res = _run_aws_cli([
+        "ec2", "describe-security-groups",
+        "--group-ids", sg_id,
+    ], region=region, timeout=45, account=account)
+    groups = res.get("SecurityGroups", []) if isinstance(res, dict) else []
+    if not groups:
+        return {"in": [], "out": []}
+
+    def _norm(perms) -> list[dict]:
+        out = []
+        for p in perms or []:
+            proto = str(p.get("IpProtocol") or "-1")
+            fr = p.get("FromPort")
+            to = p.get("ToPort")
+            for rng in p.get("IpRanges", []) or []:
+                out.append({
+                    "proto": proto,
+                    "from_port": fr,
+                    "to_port": to,
+                    "cidr": rng.get("CidrIp"),
+                })
+            for rng in p.get("Ipv6Ranges", []) or []:
+                out.append({
+                    "proto": proto,
+                    "from_port": fr,
+                    "to_port": to,
+                    "cidr": rng.get("CidrIpv6"),
+                })
+        return out
+
+    g = groups[0]
+    return {"in": _norm(g.get("IpPermissions")), "out": _norm(g.get("IpPermissionsEgress"))}
+

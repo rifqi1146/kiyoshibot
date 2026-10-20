@@ -109,6 +109,28 @@ def init_db():
             "SELECT 1 FROM pragma_table_info('vps_instances') WHERE name = 'account'"
         ).fetchone() is None:
             con.execute("ALTER TABLE vps_instances ADD COLUMN account TEXT")
+        if con.execute(
+            "SELECT 1 FROM pragma_table_info('vps_instances') WHERE name = 'sg_id'"
+        ).fetchone() is None:
+            con.execute("ALTER TABLE vps_instances ADD COLUMN sg_id TEXT")
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vps_firewall_rules (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                vps_id      TEXT NOT NULL,
+                direction   TEXT NOT NULL,
+                protocol    TEXT NOT NULL,
+                from_port   INTEGER NOT NULL,
+                to_port     INTEGER NOT NULL,
+                cidr        TEXT NOT NULL,
+                aws_rule_id TEXT,
+                created_at  REAL NOT NULL
+            )
+            """
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vps_fw_vps ON vps_firewall_rules(vps_id, direction)"
+        )
 
         con.execute(
             """
@@ -388,6 +410,7 @@ def save_instance(
     expires_at: float,
     warranty_until: float,
     account: str | None = None,
+    sg_id: str | None = None,
 ) -> dict:
     con = _db()
     try:
@@ -398,18 +421,40 @@ def save_instance(
                 tier, os_image, disk_gb, ip_address, root_password,
                 price, days, created_at, expires_at, warranty_until,
                 status, warranty_claimed, replaced_by, terminated_at, termination_reason,
-                account
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, NULL, NULL, NULL, ?)
+                account, sg_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, NULL, NULL, NULL, ?, ?)
             """,
             (
                 vps_id, int(user_id), instance_id, instance_type, region,
                 tier, os_image, int(disk_gb), ip_address, root_password,
                 int(price), int(days), float(created_at), float(expires_at), float(warranty_until),
-                account,
+                account, sg_id,
             ),
         )
         con.commit()
         return get_instance(vps_id)
+    finally:
+        con.close()
+
+
+def set_instance_sg(vps_id: str, sg_id: str) -> None:
+    con = _db()
+    try:
+        con.execute("UPDATE vps_instances SET sg_id = ? WHERE vps_id = ?", (sg_id, vps_id))
+        con.commit()
+    finally:
+        con.close()
+
+
+def list_instances_missing_sg() -> list[dict]:
+    con = _db()
+    try:
+        rows = con.execute(
+            "SELECT * FROM vps_instances WHERE (sg_id IS NULL OR sg_id = '') "
+            "AND status IN ('active', 'replaced') AND instance_id IS NOT NULL "
+            "AND instance_id <> ''"
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         con.close()
 
@@ -964,5 +1009,66 @@ def set_setting(key: str, value: str) -> None:
             (str(key), str(value), time.time()),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+def add_firewall_rule(
+    vps_id: str,
+    direction: str,
+    protocol: str,
+    from_port: int,
+    to_port: int,
+    cidr: str,
+    aws_rule_id: str | None = None,
+) -> dict:
+    init_db()
+    con = _db()
+    try:
+        cur = con.execute(
+            """
+            INSERT INTO vps_firewall_rules (
+                vps_id, direction, protocol, from_port, to_port, cidr, aws_rule_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(vps_id), str(direction), str(protocol), int(from_port), int(to_port),
+                str(cidr), aws_rule_id, time.time(),
+            ),
+        )
+        con.commit()
+        row = con.execute(
+            "SELECT * FROM vps_firewall_rules WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return dict(row) if row else {}
+    finally:
+        con.close()
+
+
+def list_firewall_rules(vps_id: str) -> list[dict]:
+    init_db()
+    con = _db()
+    try:
+        rows = con.execute(
+            "SELECT * FROM vps_firewall_rules WHERE vps_id = ? ORDER BY id ASC",
+            (str(vps_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def delete_firewall_rule(rule_id: int) -> dict | None:
+    init_db()
+    con = _db()
+    try:
+        row = con.execute(
+            "SELECT * FROM vps_firewall_rules WHERE id = ?", (int(rule_id),)
+        ).fetchone()
+        if not row:
+            return None
+        con.execute("DELETE FROM vps_firewall_rules WHERE id = ?", (int(rule_id),))
+        con.commit()
+        return dict(row)
     finally:
         con.close()

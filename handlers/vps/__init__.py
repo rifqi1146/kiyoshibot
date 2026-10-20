@@ -1,4 +1,5 @@
 from .callbacks import vps_callback, vpsowner_callback
+from .firewall import firewall_callback, firewall_input_handler
 from .commands import myvps_cmd, vps_cmd, vpsprice_cmd
 from .constants import OWNER_PREFIX, USER_PREFIX
 from .account_cmd import (
@@ -37,6 +38,8 @@ __all__ = [
     "vpsinfo_cmd",
     "vpslist_cmd",
     "vpsowner_callback",
+    "firewall_callback",
+    "firewall_input_handler",
     "vpsprice_cmd",
     "vpsrenew_cmd",
     "vpsstats_cmd",

@@ -404,6 +404,10 @@ async def account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _answer(q)
 
 
+def cancel_pending(user_id: int) -> bool:
+    return _PENDING.pop(int(user_id), None) is not None
+
+
 async def account_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from telegram.ext import ApplicationHandlerStop
 

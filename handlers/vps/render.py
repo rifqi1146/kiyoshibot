@@ -167,9 +167,12 @@ def myvps_keyboard(instances: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def instance_detail_keyboard(vps_id: str, status: str, warranty_active: bool) -> InlineKeyboardMarkup:
+def instance_detail_keyboard(
+    vps_id: str, status: str, warranty_active: bool, has_firewall: bool = True
+) -> InlineKeyboardMarkup:
     rows = []
-    if status == "active":
+    if status == "active" and has_firewall:
+        rows.append([InlineKeyboardButton("Firewall", callback_data=f"fwr:{vps_id}:menu")])
         rows.append([InlineKeyboardButton("Restart", callback_data=user_cb("restart", vps_id))])
     if warranty_active:
         rows.append([InlineKeyboardButton("Claim Warranty", callback_data=user_cb("warranty", vps_id))])
@@ -926,9 +929,13 @@ def _account_label(inst: dict) -> str:
     from . import accounts as accounts_store
 
     raw = inst.get("account")
-    if not raw:
-        return "default"
-    return accounts_store.account_label(raw) or str(raw)
+    if not raw or raw == "default":
+        enabled = accounts_store.base_account_enabled()
+        return "default (aws credentials)" if enabled else "default (disabled)"
+    label = accounts_store.account_label(raw)
+    if label and label != raw:
+        return f"{label} ({raw})"
+    return str(label or raw)
 
 
 def owner_info_content(inst: dict) -> tuple[str, str]:
@@ -945,13 +952,7 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
         f"<li>Type: {html.escape(inst['instance_type'])}</li>"
         f"<li>Region: {html.escape(region_display(region))} "
         f"(<code>{html.escape(region)}</code>)</li>"
-        f"<li>Account: <b>{html.escape(_account_label(inst))}</b>"
-        + (
-            f" (<code>{html.escape(str(inst['account']))}</code>)"
-            if inst.get("account") and _account_label(inst) != inst["account"]
-            else ""
-        )
-        + "</li>"
+        f"<li>Account: <b>{html.escape(_account_label(inst))}</b></li>"
         f"<li>Status: <b>{html.escape(inst['status'])}</b></li>"
         "</ul>"
         "<h3>Owner</h3>"
@@ -1351,4 +1352,129 @@ def account_detail_keyboard(name: str, show_secrets: bool = False) -> InlineKeyb
         [InlineKeyboardButton("Back", callback_data=owner_cb("accounts"))],
         [InlineKeyboardButton("Close", callback_data=owner_cb("close"))],
     ]
+    return InlineKeyboardMarkup(rows)
+
+
+PRESET_PORTS = [
+    ("HTTP", 80),
+    ("HTTPS", 443),
+    ("MySQL", 3306),
+    ("PostgreSQL", 5432),
+    ("Redis", 6379),
+    ("MongoDB", 27017),
+    ("RDP", 3389),
+]
+
+
+def _rule_text(rule: dict) -> str:
+    proto = str(rule.get("protocol") or rule.get("proto") or "tcp").lower()
+    fr = rule.get("from_port")
+    to = rule.get("to_port")
+    cidr = rule.get("cidr") or "0.0.0.0/0"
+    if proto in ("all", "-1"):
+        return f"All traffic · {cidr}"
+    if proto == "icmp":
+        return f"ICMP (ping) · {cidr}"
+    if fr is None:
+        return f"{proto} · {cidr}"
+    if fr == to:
+        return f"{proto}/{fr} · {cidr}"
+    return f"{proto}/{fr}-{to} · {cidr}"
+
+
+def firewall_content(inst: dict, rules: dict | None = None) -> tuple[str, str]:
+    inst = inst or {}
+    rules = rules or {"in": [], "out": []}
+    inbound = rules.get("in") or []
+    outbound = rules.get("out") or []
+
+    in_html = "".join(f"<li>{html.escape(_rule_text(r))}</li>" for r in inbound)
+    out_html = "".join(f"<li>{html.escape(_rule_text(r))}</li>" for r in outbound)
+    in_plain = "\n".join(f"• {_rule_text(r)}" for r in inbound) or "• none"
+    out_plain = "\n".join(f"• {_rule_text(r)}" for r in outbound) or "• none"
+
+    rich = (
+        f"<h1>🛡️ Firewall — {html.escape(str(inst.get('vps_id')))}</h1>"
+        f"<p>IP <code>{html.escape(str(inst.get('ip_address') or '-'))}</code> · "
+        f"{html.escape(region_display(inst.get('region') or '-'))}</p>"
+        "<h3>Inbound</h3><ul>" + (in_html or "<li>none</li>") + "</ul>"
+        "<h3>Outbound</h3><ul>" + (out_html or "<li>none</li>") + "</ul>"
+        "<aside>SSH port 22 is added automatically and cannot be removed. "
+        "Changes apply immediately, no restart needed.</aside>"
+    )
+    plain = (
+        f"<b>🛡️ Firewall — {inst.get('vps_id')}</b>\n\n"
+        f"IP: <code>{inst.get('ip_address') or '-'}</code>\n"
+        f"Region: {region_display(inst.get('region') or '-')}\n\n"
+        f"<b>Inbound</b>\n{in_plain}\n\n"
+        f"<b>Outbound</b>\n{out_plain}\n\n"
+        "SSH port 22 is added automatically and cannot be removed."
+    )
+    return rich, plain
+
+
+def firewall_keyboard(vps_id: str) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("Add Inbound Rule", callback_data=f"fwr:{vps_id}:add:in"),
+            InlineKeyboardButton("Add Outbound Rule", callback_data=f"fwr:{vps_id}:add:out"),
+        ],
+        [InlineKeyboardButton("Remove a Rule", callback_data=f"fwr:{vps_id}:del:menu")],
+        [InlineKeyboardButton("Back", callback_data=user_cb("detail", vps_id))],
+        [InlineKeyboardButton("Close", callback_data=user_cb("close"))],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def firewall_pick_content(inst: dict, direction: str) -> tuple[str, str]:
+    label = "Inbound" if direction == "in" else "Outbound"
+    rich = (
+        f"<h1>🛡️ Add {label} Rule</h1>"
+        f"<p>Server <b>{html.escape(str(inst.get('vps_id')))}</b>. "
+        "Pick a common port or choose Custom port.</p>"
+    )
+    plain = (
+        f"<b>🛡️ Add {label} Rule</b>\n\n"
+        f"Server: {inst.get('vps_id')}\n"
+        "Pick a common port or choose Custom port."
+    )
+    return rich, plain
+
+
+def firewall_pick_keyboard(vps_id: str, direction: str) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for name, port in PRESET_PORTS:
+        row.append(
+            InlineKeyboardButton(
+                f"{name} {port}",
+                callback_data=f"fwr:{vps_id}:preset:{direction}:{port}",
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [InlineKeyboardButton("Custom port", callback_data=f"fwr:{vps_id}:custom:{direction}")]
+    )
+    rows.append(
+        [InlineKeyboardButton("Custom range", callback_data=f"fwr:{vps_id}:range:{direction}")]
+    )
+    rows.append([InlineKeyboardButton("Back", callback_data=f"fwr:{vps_id}:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def firewall_delete_keyboard(vps_id: str, rules: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, r in enumerate(rules):
+        direction = "IN" if r.get("direction") == "in" else "OUT"
+        rows.append([
+            InlineKeyboardButton(
+                f"Remove {direction} {r.get('_text')}",
+                callback_data=f"fwr:{vps_id}:rm:{r.get('id')}",
+            )
+        ])
+    rows.append([InlineKeyboardButton("Back", callback_data=f"fwr:{vps_id}:menu")])
     return InlineKeyboardMarkup(rows)

@@ -56,7 +56,7 @@ from handlers.drakor import drakorid_cmd
 from handlers.moviebox import moviebox_cmd
 from handlers.anichin import anichin_cmd
 from handlers.susunkata import susunkata_cmd
-from handlers.ping import ping_cmd
+from handlers.ping import cancel_cmd, ping_cmd
 from handlers.premium import premium_cmd
 from handlers.quiz import quiz_cmd
 from handlers.quoteanime import quoteanime_cmd
@@ -185,6 +185,7 @@ COMMAND_HANDLERS = [
     ("nsfw", nsfw_cmd, False),
     ("spoiler", spoiler_cmd, False),
     ("ping", ping_cmd, True),
+    ("cancel", cancel_cmd, False),
     ("premium", premium_cmd, False),
     ("premiumbenefit", premiumbenefit_cmd, False),
     ("promote", promote_cmd, False),

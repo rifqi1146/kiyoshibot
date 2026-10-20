@@ -213,6 +213,7 @@ async def provision_instance_for_invoice(context: ContextTypes.DEFAULT_TYPE, inv
             price=inv["base_amount"],
             days=inv["days"],
             account=account_used,
+            sg_id=res.get("sg_id"),
             created_at=now,
             expires_at=expires_at,
             warranty_until=warranty_until,

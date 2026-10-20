@@ -232,7 +232,12 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rich, plain = render.instance_detail_content(inst)
         warranty_active = inst["status"] == "active" and time.time() < inst["warranty_until"] and not inst["warranty_claimed"]
         await _answer(q)
-        return await _render_and_edit(q, rich, plain, render.instance_detail_keyboard(inst["vps_id"], inst["status"], warranty_active))
+        return await _render_and_edit(
+            q, rich, plain,
+            render.instance_detail_keyboard(
+                inst["vps_id"], inst["status"], warranty_active, bool(inst.get("sg_id"))
+            ),
+        )
 
     if action == "restart":
         if len(parts) < 3:
@@ -343,11 +348,16 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 expires_at=inst["expires_at"],
                 warranty_until=now + (WARRANTY_DAYS * 86400),
                 account=account_used,
+                sg_id=res.get("sg_id"),
             )
             vps_db.mark_warranty_claimed(inst["vps_id"], replaced_by=new_vps_id)
             await aws.terminate_vps(
                 inst["instance_id"], region=region, account=inst.get("account")
             )
+            if inst.get("sg_id"):
+                await asyncio.to_thread(
+                    aws.delete_vps_security_group, inst["sg_id"], region, inst.get("account")
+                )
             old_terminated = True
             service.invalidate_account_scan()
 
@@ -607,6 +617,10 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await aws.terminate_vps(
             inst["instance_id"], region=inst.get("region"), account=inst.get("account")
         )
+        if inst.get("sg_id"):
+            await asyncio.to_thread(
+                aws.delete_vps_security_group, inst["sg_id"], inst.get("region"), inst.get("account")
+            )
         vps_db.terminate_instance_db(inst["vps_id"], reason=f"owner_terminate:{user.id}")
         service.invalidate_account_scan()
         vps_db.log_audit(inst["vps_id"], "TERMINATE_OWNER", user.id)

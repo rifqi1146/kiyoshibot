@@ -25,6 +25,10 @@ async def sweep_expired_once() -> int:
             await aws.terminate_vps(
                 inst["instance_id"], region=inst.get("region"), account=inst.get("account")
             )
+            if inst.get("sg_id"):
+                await asyncio.to_thread(
+                    aws.delete_vps_security_group, inst["sg_id"], inst.get("region"), inst.get("account")
+                )
             vps_db.terminate_instance_db(inst["vps_id"], reason="expired")
             vps_db.log_audit(inst["vps_id"], "TERMINATE_EXPIRED", None, "auto sweep")
             terminated += 1

@@ -12,3 +12,17 @@ async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+    from handlers.vps import account_cmd, firewall
+
+    cleared = firewall.cancel_pending(int(msg.chat_id), int(user.id))
+    cleared = account_cmd.cancel_pending(int(user.id)) or cleared
+    if cleared:
+        await msg.reply_text("<b>Cancelled.</b>", parse_mode="HTML")
+    else:
+        await msg.reply_text("<b>Nothing to cancel.</b>", parse_mode="HTML")

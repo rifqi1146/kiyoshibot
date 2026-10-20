@@ -132,6 +132,10 @@ async def vpsterminate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok = await aws.terminate_vps(
         inst["instance_id"], region=inst.get("region"), account=inst.get("account")
     )
+    if inst.get("sg_id"):
+        await asyncio.to_thread(
+            aws.delete_vps_security_group, inst["sg_id"], inst.get("region"), inst.get("account")
+        )
     vps_db.terminate_instance_db(vps_id, reason=f"owner_terminate:{user.id}")
     vps_db.log_audit(vps_id, "TERMINATE_OWNER", user.id)
     service.invalidate_account_scan()
@@ -293,6 +297,7 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             expires_at=now + (days * 86400),
             warranty_until=now + (WARRANTY_DAYS * 86400),
             account=account_used,
+            sg_id=res.get("sg_id"),
         )
         vps_db.log_audit(
             vps_id,

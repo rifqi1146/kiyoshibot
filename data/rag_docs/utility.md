@@ -60,3 +60,7 @@ Detail layanan:
 - `/ship`: Pasangkan dua anggota grup secara acak untuk jodoh seru-seruan.
 - `/share`: Bagikan media secara anonim via tautan rahasia PM deep-link (reply media dengan `/share`).
 - `/donate`: Info donasi sukarela untuk mendukung kelangsungan server bot.
+
+## Batalkan Input (/cancel)
+
+- `/cancel`: membatalkan input bertahap yang sedang menunggu teks dari user, misalnya port firewall VPS atau kredensial akun AWS.
