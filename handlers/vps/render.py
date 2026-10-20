@@ -782,11 +782,12 @@ def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated:
         row["managed"] = True
         key = _match_key(iid, inst.get("account"))
         live_match = live_by_id.get(key)
-        if live_match is None and not inst.get("account"):
+        if live_match is None:
             for k, v in live_by_id.items():
-                if k[0] == iid:
+                if k[0] == iid and k not in seen_ids:
                     live_match = v
-                    row["account"] = v.get("account")
+                    row["account"] = v.get("account") or inst.get("account")
+                    key = k
                     break
         if live_match is not None:
             row["aws_state"] = live_match.get("state")
@@ -794,9 +795,12 @@ def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated:
             if live_match.get("public_ip"):
                 row["ip_address"] = live_match["public_ip"]
             seen_ids.add(key)
+            seen_ids.add(_match_key(iid, None))
+            seen_ids.add(_match_key(iid, live_match.get("account")))
         else:
             row["aws_state"] = None
             row["live"] = False
+            seen_ids.add(_match_key(iid, None))
         merged.append(row)
 
     for live_row in live:
@@ -804,9 +808,10 @@ def merge_with_live(db_instances: list[dict], live: list[dict], show_terminated:
         if not iid:
             continue
         key = _match_key(iid, live_row.get("account"))
-        if key in seen_ids:
+        if key in seen_ids or _match_key(iid, None) in seen_ids:
             continue
         seen_ids.add(key)
+        seen_ids.add(_match_key(iid, None))
         is_bot_tagged = str(live_row.get("managed_by") or "").strip().lower() == "kiyoshibot"
         merged.append({
             "vps_id": (live_row.get("name") or None) if is_bot_tagged else None,
@@ -917,6 +922,15 @@ def owner_list_content(instances: list[dict], scan_meta: dict | None = None) -> 
     return rich, plain
 
 
+def _account_label(inst: dict) -> str:
+    from . import accounts as accounts_store
+
+    raw = inst.get("account")
+    if not raw:
+        return "default"
+    return accounts_store.account_label(raw) or str(raw)
+
+
 def owner_info_content(inst: dict) -> tuple[str, str]:
     t = get_tier(inst["tier"])
     o = get_os(inst["os_image"])
@@ -929,7 +943,15 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
         "<ul>"
         f"<li>AWS ID: <code>{html.escape(inst['instance_id'])}</code></li>"
         f"<li>Type: {html.escape(inst['instance_type'])}</li>"
-        f"<li>Region: {html.escape(region_display(region))}</li>"
+        f"<li>Region: {html.escape(region_display(region))} "
+        f"(<code>{html.escape(region)}</code>)</li>"
+        f"<li>Account: <b>{html.escape(_account_label(inst))}</b>"
+        + (
+            f" (<code>{html.escape(str(inst['account']))}</code>)"
+            if inst.get("account") and _account_label(inst) != inst["account"]
+            else ""
+        )
+        + "</li>"
         f"<li>Status: <b>{html.escape(inst['status'])}</b></li>"
         "</ul>"
         "<h3>Owner</h3>"
@@ -955,7 +977,8 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
         f"<b>🖥 {inst['vps_id'].upper()}</b>\n\n"
         f"AWS ID: <code>{inst['instance_id']}</code>\n"
         f"Type: {inst['instance_type']}\n"
-        f"Region: {region_display(region)}\n"
+        f"Region: {region_display(region)} ({region})\n"
+        f"Account: {_account_label(inst)}\n"
         f"Status: {inst['status']}\n"
         f"User: <code>{inst['user_id']}</code>\n"
         f"Plan: {tier_label} / {inst['days']} days\n"
