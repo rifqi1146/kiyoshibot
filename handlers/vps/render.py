@@ -15,6 +15,7 @@ from .constants import (
     WARRANTY_DAYS,
     get_os,
     get_tier,
+    normalize_tier,
     region_display,
     sort_regions,
 )
@@ -45,7 +46,7 @@ def _pricing() -> dict[str, dict[str, int]]:
 
 
 def _price_for(tier_id: str, days: int) -> int:
-    pr = _pricing().get(tier_id, {})
+    pr = _pricing().get(normalize_tier(tier_id), {})
     key = {30: "price_30d", 14: "price_14d", 7: "price_7d"}.get(int(days), "price_30d")
     return int(pr.get(key, 0) or 0)
 
@@ -346,6 +347,7 @@ def packages_content() -> tuple[str, str]:
 
 
 def duration_content(tier_id: str) -> tuple[str, str]:
+    tier_id = normalize_tier(tier_id)
     t = get_tier(tier_id)
     pricing = _pricing()
     pr = pricing.get(tier_id, {})
@@ -455,7 +457,7 @@ def invoice_content(inv: dict, *, status: str, remaining: int) -> tuple[str, str
     t = get_tier(inv["tier"])
     o = get_os(inv["os_image"])
     rem_m, rem_s = divmod(max(0, remaining), 60)
-    tier_label = t["label"] if t else inv["tier"]
+    tier_label = t["label"] if t else normalize_tier(inv["tier"])
     os_label = o["label"] if o else inv["os_image"]
     region = inv.get("region") or "-"
     rich = (
@@ -489,7 +491,7 @@ def invoice_content(inv: dict, *, status: str, remaining: int) -> tuple[str, str
 def provisioning_content(inv: dict) -> tuple[str, str]:
     t = get_tier(inv["tier"])
     o = get_os(inv["os_image"])
-    tier_label = t["label"] if t else inv["tier"]
+    tier_label = t["label"] if t else normalize_tier(inv["tier"])
     os_label = o["label"] if o else inv["os_image"]
     region = inv.get("region") or "-"
     rich = (
@@ -523,7 +525,7 @@ def provisioning_content(inv: dict) -> tuple[str, str]:
 def provisioned_content(inst: dict) -> tuple[str, str]:
     t = get_tier(inst["tier"])
     o = get_os(inst["os_image"])
-    tier_label = t["label"] if t else inst["tier"]
+    tier_label = t["label"] if t else normalize_tier(inst["tier"])
     os_label = o["label"] if o else inst["os_image"]
     region = inst.get("region") or "-"
     rich = (
@@ -607,7 +609,7 @@ def myvps_content(instances: list[dict]) -> tuple[str, str]:
 def instance_detail_content(inst: dict) -> tuple[str, str]:
     t = get_tier(inst["tier"])
     o = get_os(inst["os_image"])
-    tier_label = t["label"] if t else inst["tier"]
+    tier_label = t["label"] if t else normalize_tier(inst["tier"])
     os_label = o["label"] if o else inst["os_image"]
     status = inst["status"]
     region = inst.get("region") or "-"
@@ -840,7 +842,7 @@ def owner_list_content(instances: list[dict], scan_meta: dict | None = None) -> 
 def owner_info_content(inst: dict) -> tuple[str, str]:
     t = get_tier(inst["tier"])
     o = get_os(inst["os_image"])
-    tier_label = t["label"] if t else inst["tier"]
+    tier_label = t["label"] if t else normalize_tier(inst["tier"])
     os_label = o["label"] if o else inst["os_image"]
     region = inst.get("region") or "-"
     rich = (
@@ -939,7 +941,7 @@ def owner_live_keyboard(instance_id: str, region: str, state: str) -> InlineKeyb
 def warranty_confirm_content(inst: dict) -> tuple[str, str]:
     t = get_tier(inst["tier"])
     o = get_os(inst["os_image"])
-    tier_label = t["label"] if t else inst["tier"]
+    tier_label = t["label"] if t else normalize_tier(inst["tier"])
     os_label = o["label"] if o else inst["os_image"]
     region = inst.get("region") or "-"
     remaining_days = max(0, int((inst["expires_at"] - time.time()) // 86400))

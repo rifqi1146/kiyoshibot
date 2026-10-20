@@ -19,6 +19,7 @@ from .constants import (
     WARRANTY_DAYS,
     get_os,
     get_tier,
+    normalize_tier,
 )
 from .state import clear_provisioning, drop_lock, get_lock, is_provisioning, mark_provisioning
 
@@ -200,7 +201,7 @@ async def provision_instance_for_invoice(context: ContextTypes.DEFAULT_TYPE, inv
             instance_id=instance_id,
             instance_type=t["instance_type"],
             region=region,
-            tier=inv["tier"],
+            tier=normalize_tier(inv["tier"]),
             os_image=inv["os_image"],
             disk_gb=t["disk_gb"],
             ip_address=ip or "",

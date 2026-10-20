@@ -102,7 +102,7 @@ SG_DESCRIPTION = "KiyoshiBot VPS SSH access"
 
 TIERS = [
     {
-        "id": "vps_1gb",
+        "id": "1g",
         "label": "1 GB",
         "instance_type": "t3.micro",
         "vcpu": 2,
@@ -111,7 +111,7 @@ TIERS = [
         "bandwidth": "1 TB",
     },
     {
-        "id": "vps_2gb",
+        "id": "2g",
         "label": "2 GB",
         "instance_type": "t3.small",
         "vcpu": 2,
@@ -120,7 +120,7 @@ TIERS = [
         "bandwidth": "2 TB",
     },
     {
-        "id": "vps_4gb",
+        "id": "4g",
         "label": "4 GB",
         "instance_type": "t3.medium",
         "vcpu": 2,
@@ -129,7 +129,7 @@ TIERS = [
         "bandwidth": "3 TB",
     },
     {
-        "id": "vps_8gb",
+        "id": "8g",
         "label": "8 GB",
         "instance_type": "t3.large",
         "vcpu": 2,
@@ -183,9 +183,31 @@ FEE_BPS = 200
 DISK_DEVICE = "/dev/sda1"
 
 
+LEGACY_TIER_IDS = {
+    "vps_1gb": "1g",
+    "vps_2gb": "2g",
+    "vps_4gb": "4g",
+    "vps_8gb": "8g",
+}
+
+TIER_ALIASES = {
+    "1g": "1g", "1gb": "1g", "1": "1g", "micro": "1g", "t3micro": "1g",
+    "2g": "2g", "2gb": "2g", "2": "2g", "small": "2g", "t3small": "2g",
+    "4g": "4g", "4gb": "4g", "4": "4g", "medium": "4g", "t3medium": "4g",
+    "8g": "8g", "8gb": "8g", "8": "8g", "large": "8g", "t3large": "8g",
+}
+
+
+def normalize_tier(tier_id: str | None) -> str:
+    t = (tier_id or "").strip().lower()
+    t = LEGACY_TIER_IDS.get(t, t)
+    return TIER_ALIASES.get(t.replace("-", "").replace("_", "").replace(" ", ""), t)
+
+
 def get_tier(tier_id: str) -> dict | None:
+    key = normalize_tier(tier_id)
     for t in TIERS:
-        if t["id"] == tier_id:
+        if t["id"] == key:
             return t
     return None
 

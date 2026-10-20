@@ -5,11 +5,23 @@ import time
 DB_PATH = "data/vps.sqlite3"
 
 DEFAULT_PRICING = {
-    "vps_1gb": {"price_30d": 25000, "price_14d": 15000, "price_7d": 10000},
-    "vps_2gb": {"price_30d": 35000, "price_14d": 21000, "price_7d": 14000},
-    "vps_4gb": {"price_30d": 45000, "price_14d": 27000, "price_7d": 18000},
-    "vps_8gb": {"price_30d": 55000, "price_14d": 33000, "price_7d": 22000},
+    "1g": {"price_30d": 25000, "price_14d": 15000, "price_7d": 10000},
+    "2g": {"price_30d": 35000, "price_14d": 21000, "price_7d": 14000},
+    "4g": {"price_30d": 45000, "price_14d": 27000, "price_7d": 18000},
+    "8g": {"price_30d": 55000, "price_14d": 33000, "price_7d": 22000},
 }
+
+LEGACY_TIER_IDS = {
+    "vps_1gb": "1g",
+    "vps_2gb": "2g",
+    "vps_4gb": "4g",
+    "vps_8gb": "8g",
+}
+
+
+def normalize_tier(tier_id: str | None) -> str:
+    t = (tier_id or "").strip().lower()
+    return LEGACY_TIER_IDS.get(t, t)
 
 
 def _db():
@@ -150,6 +162,10 @@ def init_db():
                 """,
                 (vals["price_14d"], tier),
             )
+        for old_id, new_id in LEGACY_TIER_IDS.items():
+            con.execute("UPDATE OR IGNORE vps_pricing SET tier = ? WHERE tier = ?", (new_id, old_id))
+            con.execute("DELETE FROM vps_pricing WHERE tier = ?", (old_id,))
+            con.execute("UPDATE vps_instances SET tier = ? WHERE tier = ?", (new_id, old_id))
         con.commit()
     finally:
         con.close()
@@ -180,6 +196,7 @@ def get_all_pricing() -> dict[str, dict[str, int]]:
 
 
 def set_pricing(tier: str, price_30d: int, price_7d: int, price_14d: int | None = None):
+    tier = normalize_tier(tier)
     con = _db()
     try:
         if price_14d is None:

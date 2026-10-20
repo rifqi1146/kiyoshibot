@@ -8,6 +8,7 @@ from database import vps_db
 from utils.config import OWNER_ID
 
 from . import render
+from .constants import LEGACY_TIER_IDS
 from .rich import send_rich
 
 log = logging.getLogger(__name__)
@@ -15,10 +16,10 @@ log = logging.getLogger(__name__)
 PM_COMMANDS = {"vps", "myvps"}
 
 TIER_ALIASES = {
-    "1": "vps_1gb", "1gb": "vps_1gb", "vps_1gb": "vps_1gb", "micro": "vps_1gb",
-    "2": "vps_2gb", "2gb": "vps_2gb", "vps_2gb": "vps_2gb", "small": "vps_2gb",
-    "4": "vps_4gb", "4gb": "vps_4gb", "vps_4gb": "vps_4gb", "medium": "vps_4gb",
-    "8": "vps_8gb", "8gb": "vps_8gb", "vps_8gb": "vps_8gb", "large": "vps_8gb",
+    "1": "1g", "1g": "1g", "1gb": "1g", "micro": "1g",
+    "2": "2g", "2g": "2g", "2gb": "2g", "small": "2g",
+    "4": "4g", "4g": "4g", "4gb": "4g", "medium": "4g",
+    "8": "8g", "8g": "8g", "8gb": "8g", "large": "8g",
 }
 
 PERIOD_30 = {"30d", "30", "month", "monthly", "bulanan"}
@@ -129,11 +130,17 @@ def _resolve_tier(raw: str) -> str | None:
     key = raw.strip().lower()
     if key in TIER_ALIASES:
         return TIER_ALIASES[key]
+    if key in LEGACY_TIER_IDS:
+        return LEGACY_TIER_IDS[key]
     compact = key.replace("-", "").replace("_", "").replace(" ", "")
     if compact in TIER_ALIASES:
         return TIER_ALIASES[compact]
+    if compact in LEGACY_TIER_IDS:
+        return LEGACY_TIER_IDS[compact]
+    if compact in ("vps1g", "vps2g", "vps4g", "vps8g"):
+        return compact[3:]
     if compact in ("vps1gb", "vps2gb", "vps4gb", "vps8gb"):
-        return "vps_" + compact[3:]
+        return compact[3:5]
     return None
 
 
@@ -150,13 +157,13 @@ def _price_help() -> tuple[str, str]:
         "</ul>"
         "<h3>Examples</h3>"
         "<ul>"
-        "<li><code>/vpsprice 1gb 30d 20000</code></li>"
-        "<li><code>/vpsprice 2gb 14d 18000</code></li>"
-        "<li><code>/vpsprice 4gb 7d 15000</code></li>"
-        "<li><code>/vpsprice 8gb 55000 33000 22000</code></li>"
-        "<li><code>/vpsprice 1gb 25000</code></li>"
+        "<li><code>/vpsprice 1g 30d 20000</code></li>"
+        "<li><code>/vpsprice 2g 14d 18000</code></li>"
+        "<li><code>/vpsprice 4g 7d 15000</code></li>"
+        "<li><code>/vpsprice 8g 55000 33000 22000</code></li>"
+        "<li><code>/vpsprice 1g 25000</code></li>"
         "</ul>"
-        "<p>Plans: <code>1gb</code> <code>2gb</code> <code>4gb</code> <code>8gb</code>. "
+        "<p>Plans: <code>1g</code> <code>2g</code> <code>4g</code> <code>8g</code>. "
         "Periods: <code>30d</code> <code>14d</code> <code>7d</code>. "
         "Amounts accept <code>20000</code>, <code>20k</code>, or <code>Rp 20.000</code>.</p>"
     )
@@ -168,12 +175,12 @@ def _price_help() -> tuple[str, str]:
         "/vpsprice <plan> <30d> <7d>\n"
         "/vpsprice <plan> <amount>\n\n"
         "Examples:\n"
-        "• /vpsprice 1gb 30d 20000\n"
-        "• /vpsprice 2gb 14d 18000\n"
-        "• /vpsprice 4gb 7d 15000\n"
-        "• /vpsprice 8gb 55000 33000 22000\n"
-        "• /vpsprice 1gb 25000\n\n"
-        "Plans: 1gb, 2gb, 4gb, 8gb. Periods: 30d, 14d, 7d. "
+        "• /vpsprice 1g 30d 20000\n"
+        "• /vpsprice 2g 14d 18000\n"
+        "• /vpsprice 4g 7d 15000\n"
+        "• /vpsprice 8g 55000 33000 22000\n"
+        "• /vpsprice 1g 25000\n\n"
+        "Plans: 1g, 2g, 4g, 8g. Periods: 30d, 14d, 7d. "
         "Amounts accept 20000, 20k, or Rp 20.000."
     )
     return rich, plain
@@ -248,7 +255,7 @@ async def vpsprice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         a7 = _parse_amount(args[3])
         if any(x is None or x <= 0 for x in (a30, a14, a7)):
             return await msg.reply_text(
-                "<b>Invalid amounts. Example: /vpsprice 4gb 45000 27000 18000</b>", parse_mode="HTML"
+                "<b>Invalid amounts. Example: /vpsprice 4g 45000 27000 18000</b>", parse_mode="HTML"
             )
         new_30d, new_14d, new_7d = a30, a14, a7
         changed.extend(["30d", "14d", "7d"])
@@ -257,7 +264,7 @@ async def vpsprice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         a7 = _parse_amount(args[2])
         if a30 is None or a7 is None or a30 <= 0 or a7 <= 0:
             return await msg.reply_text(
-                "<b>Invalid amounts. Example: /vpsprice 4gb 45000 18000</b>", parse_mode="HTML"
+                "<b>Invalid amounts. Example: /vpsprice 4g 45000 18000</b>", parse_mode="HTML"
             )
         new_30d = a30
         new_14d = max(1, round(a30 * 0.60))

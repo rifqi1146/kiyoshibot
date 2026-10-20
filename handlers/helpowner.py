@@ -70,12 +70,12 @@ HELPOWNER_TEXT = {
         "- `/vpsinfo <vps_id>` — Show full detail of a single instance\n"
         "- `/vpsterminate <vps_id>` — Terminate an instance immediately\n"
         "- `/vpsrenew <vps_id> <days>` — Extend an instance lifetime\n"
-        "- `/vpsgrant <user_id> <tier> <days> [region]` — Provision a free instance\n"
+        "- `/vpsgrant <user|@username|reply> <tier> <days> [region]` — Provision a free instance\n"
         "- `/vpsstats` — Revenue, active servers, warranty claims\n"
         "- `/vpsprice <plan> <30d|14d|7d> <amount>` — Change one period\n"
         "- `/vpsprice <plan> <30d> <14d> <7d>` — Set all three periods\n"
         "- `/vpsprice` — Open interactive pricing picker\n\n"
-        "> Tiers: `vps_1gb`, `vps_2gb`, `vps_4gb`, `vps_8gb`."
+        "> Tiers: `1g`, `2g`, `4g`, `8g`. Durations: `7d`, `14d`, `30d`."
     ),
 }
 

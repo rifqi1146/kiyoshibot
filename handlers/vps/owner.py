@@ -1,15 +1,17 @@
 import asyncio
 import logging
+import re
 import time
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from database import vps_db
+from handlers.moderation.helpers import resolve_target_user_id
 from utils.config import OWNER_ID
 
 from . import aws, render, service
-from .constants import DEFAULT_REGION, WARRANTY_DAYS, get_tier
+from .constants import DEFAULT_REGION, MAX_DAYS, WARRANTY_DAYS, get_tier
 from .rich import send_rich
 
 log = logging.getLogger(__name__)
@@ -173,31 +175,81 @@ async def vpsrenew_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_rich(context.bot, chat.id, msg.message_id, rich, plain, render.owner_instance_keyboard(inst["vps_id"], inst["status"]))
 
 
+USAGE_TEXT = (
+    "<b>Usage:</b>\n"
+    "<code>/vpsgrant &lt;user|@username|reply&gt; &lt;tier&gt; &lt;days&gt; [region]</code>\n"
+    "Tiers: <code>1g</code> <code>2g</code> <code>4g</code> <code>8g</code>\n"
+    "Duration: <code>7d</code> <code>14d</code> <code>30d</code> or a raw day count"
+)
+
+
+def _parse_grant_days(raw: str) -> int | None:
+    s = (raw or "").strip().lower()
+    if not s:
+        return None
+    if s.endswith("d"):
+        s = s[:-1].strip()
+    try:
+        days = int(s)
+    except Exception:
+        return None
+    if days <= 0 or days > MAX_DAYS:
+        return None
+    return days
+
+
 async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
     if not msg or not chat or not user or not _is_owner(user.id):
         return
-    args = context.args or []
-    if len(args) < 3:
+    args = [a for a in (context.args or []) if (a or "").strip()]
+    if len(args) < 2:
+        return await msg.reply_text(USAGE_TEXT, parse_mode="HTML")
+
+    tier_id = ""
+    days = None
+    target_token = None
+    region = DEFAULT_REGION
+
+    for idx, a in enumerate(args):
+        if get_tier(a.strip().lower()) and not tier_id:
+            tier_id = a.strip().lower()
+            continue
+        if days is None and _parse_grant_days(a) is not None:
+            days = _parse_grant_days(a)
+            continue
+        if target_token is None and not get_tier(a.strip().lower()):
+            target_token = a.strip()
+            continue
+        if region == DEFAULT_REGION and re.match(r"^[a-z]{2}-[a-z]+-\d$", a.strip().lower()):
+            region = a.strip().lower()
+            continue
+
+    if not tier_id:
         return await msg.reply_text(
-            "<b>Usage:</b> <code>/vpsgrant &lt;user_id&gt; &lt;tier&gt; &lt;days&gt; [region]</code>\n"
-            "Tiers: <code>vps_1gb</code> <code>vps_2gb</code> <code>vps_4gb</code> <code>vps_8gb</code>",
+            f"<b>Invalid plan.</b>\n\n{USAGE_TEXT}",
             parse_mode="HTML",
         )
-    try:
-        target_uid = int(args[0])
-        days = int(args[2])
-    except Exception:
-        return await msg.reply_text("<b>User ID and days must be numbers.</b>", parse_mode="HTML")
+    if days is None:
+        return await msg.reply_text(
+            f"<b>Invalid duration.</b> Use <code>7d</code>, <code>14d</code>, <code>30d</code> "
+            f"or a day count between 1 and {MAX_DAYS}.\n\n{USAGE_TEXT}",
+            parse_mode="HTML",
+        )
+    if not target_token and not (msg.reply_to_message and msg.reply_to_message.from_user):
+        return await msg.reply_text(f"<b>Missing target user.</b>\n\n{USAGE_TEXT}", parse_mode="HTML")
 
-    tier_id = args[1].strip()
+    target_uid = await resolve_target_user_id(update, context, target_token)
+    if not target_uid:
+        return await msg.reply_text(
+            "<b>Could not resolve that user.</b>\n"
+            "That username must have been seen by the bot before, or use a numeric ID / reply.",
+            parse_mode="HTML",
+        )
+
     t = get_tier(tier_id)
-    if not t:
-        return await msg.reply_text("<b>Invalid plan.</b>", parse_mode="HTML")
-
-    region = args[3].strip() if len(args) > 3 else DEFAULT_REGION
     status_msg = await msg.reply_text(
         f"<b>Deploying {t['label']} for user {target_uid} in {region}...</b>",
         parse_mode="HTML",

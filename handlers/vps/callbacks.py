@@ -13,7 +13,7 @@ from utils import axiom
 from utils.config import AXIOM_BASE_URL, OWNER_ID
 
 from . import aws, render, service
-from .constants import DEFAULT_REGION, FEE_BPS, WARRANTY_DAYS, get_os, get_tier
+from .constants import DEFAULT_REGION, FEE_BPS, WARRANTY_DAYS, get_os, get_tier, normalize_tier
 from .rich import edit_rich
 
 log = logging.getLogger(__name__)
@@ -531,7 +531,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "price_tier":
         if len(parts) < 3:
             return
-        tier_id = parts[2]
+        tier_id = normalize_tier(parts[2])
         t = get_tier(tier_id)
         pricing = vps_db.get_all_pricing()
         pr = pricing.get(tier_id, {})
