@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 from database import vps_db
 from handlers.moderation.helpers import resolve_target_user_id
 from utils.config import OWNER_ID
+from utils.menu_lock import message_id_from_send, register_message_owner
 
 from . import aws, notify, render, service
 from .callbacks import NOTICE_LOADING, _answer
@@ -259,7 +260,6 @@ async def _grant_edit(q, key, rich, plain, keyboard):
         rich,
         plain,
         keyboard,
-        session_data={"user_id": store.get("owner_id")},
     )
 
 
@@ -275,7 +275,6 @@ async def _edit_store(store, rich, plain, keyboard):
             rich,
             plain,
             keyboard,
-            session_data={"user_id": store.get("owner_id")},
         )
     except Exception as e:
         log.warning("Grant screen edit failed | err=%r", e)
@@ -291,15 +290,15 @@ async def _deliver_to_recipient(context, inst, owner_id: int) -> bool:
         label = "the owner"
     rich, plain = render.grant_recipient_content(inst, label)
     try:
-        await send_rich(
+        sent = await send_rich(
             context.bot,
             inst["user_id"],
             None,
             rich,
             plain,
             render.grant_recipient_keyboard(),
-            session_data={"user_id": inst["user_id"]},
         )
+        register_message_owner(inst["user_id"], message_id_from_send(sent), inst["user_id"])
         return True
     except Exception as e:
         log.warning("Grant delivery failed | user=%s err=%r", inst["user_id"], e)
@@ -634,14 +633,14 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _grant_launch(context, key)
 
     rich, plain = render.grant_tier_content(username, int(target_uid))
-    await send_rich(
+    sent = await send_rich(
         context.bot,
         chat.id,
         msg.message_id,
         rich,
         plain,
         render.grant_tier_keyboard(int(target_uid)),
-        session_data={"user_id": int(user.id)},
     )
+    register_message_owner(chat.id, message_id_from_send(sent), user.id)
 
 
