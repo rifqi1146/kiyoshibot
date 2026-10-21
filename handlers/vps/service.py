@@ -7,8 +7,8 @@ from telegram.ext import ContextTypes
 
 import qrcode
 from database import vps_db
-from utils import axiom
-from utils.config import AXIOM_BASE_URL
+from handlers.payment import notify as pay_notify
+from utils import nasionalpay
 
 from . import aws, notify, render
 from .rich import send_rich
@@ -31,6 +31,68 @@ def calculate_gross_amount(base: int, fee_bps: int = FEE_BPS) -> int:
     if denom <= 0:
         return base
     return int(math.ceil(base * 10000 / denom))
+
+
+def qr_url_for(inv: dict) -> str:
+    return str(inv.get("qr_url") or inv.get("qris_id") or "")
+
+
+async def create_payment_qris(amount: int, user_id: int, *, tier: str = "", days: int = 0) -> dict:
+    try:
+        data = await nasionalpay.create_qris(amount, username=str(user_id))
+    except Exception as e:
+        log.error(
+            "VPS payment create failed | tier=%s days=%s amount=%s user=%s err=%r",
+            tier, days, amount, user_id, e,
+        )
+        raise
+    log.info(
+        "VPS payment created | trx=%s amount=%s fee=%s net=%s tier=%s days=%s user=%s",
+        data.get("trx_id"), data.get("amount"), data.get("fee_amount"),
+        data.get("net_amount"), tier, days, user_id,
+    )
+    return data
+
+
+async def check_payment(inv: dict) -> dict:
+    short_id = inv.get("short_id") or ""
+    res = await nasionalpay.check_payment(trx_id=inv.get("trx_id") or inv.get("qris_id"))
+    log.info(
+        "VPS payment check | short_id=%s trx=%s status=%s amount=%s",
+        short_id, inv.get("trx_id"), res.get("status"), res.get("amount"),
+    )
+    return res
+
+
+def _vps_details(inv: dict) -> dict:
+    t = get_tier(inv.get("tier")) or {}
+    o = get_os(inv.get("os_image")) or {}
+    return {
+        "Plan": t.get("label") or normalize_tier(inv.get("tier")),
+        "Duration": f"{inv.get('days')} days",
+        "Region": inv.get("region") or "-",
+        "Operating System": o.get("label") or inv.get("os_image"),
+        "Reference": inv.get("short_id"),
+    }
+
+
+async def notify_owner(bot, inv: dict, event: str, **extra):
+    try:
+        details = _vps_details(inv)
+        details.update(extra)
+        await pay_notify.notify_owner_event(
+            bot,
+            "vps",
+            event,
+            user_id=inv.get("user_id"),
+            trx_id=inv.get("trx_id"),
+            amount=inv.get("gross_amount"),
+            base_amount=inv.get("base_amount"),
+            fee_amount=max(0, int(inv.get("gross_amount") or 0) - int(inv.get("base_amount") or 0)),
+            details=details,
+        )
+    except Exception as e:
+        log.warning("VPS owner notify failed | short_id=%s event=%s err=%r", inv.get("short_id"), event, e)
 
 
 def render_qr_png(payload: str) -> bytes:
@@ -257,6 +319,7 @@ async def provision_instance_for_invoice(context: ContextTypes.DEFAULT_TYPE, inv
     except Exception as e:
         log.error("Provisioning failed | short_id=%s err=%r", short_id, e)
         vps_db.log_audit(None, "PROVISION_FAILED", inv.get("user_id"), f"short_id={short_id} err={e}")
+        await notify_owner(context.bot, inv, "failed", Reason=f"Provisioning failed: {e}")
         try:
             await notify.notify_owner_failure(context.bot, inv, str(e))
         except Exception as notify_err:
@@ -299,6 +362,7 @@ async def poll_payment_job(context: ContextTypes.DEFAULT_TYPE):
     if now >= inv["deadline"]:
         vps_db.set_invoice_status(short_id, "EXPIRED")
         stop_polling_job(context, short_id)
+        await notify_owner(context.bot, inv, "expired", Reason="5-minute payment window ended")
         try:
             await context.bot.edit_message_caption(
                 chat_id=inv["chat_id"],
@@ -317,19 +381,21 @@ async def poll_payment_job(context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            res = await axiom.check_payment(qris_id=fresh["qris_id"], trx_id=fresh["trx_id"])
+            res = await check_payment(fresh)
         except Exception as e:
             log.warning("VPS payment poll failed | short_id=%s err=%r", short_id, e)
             return
 
         if res.get("paid") or res.get("status") == "PAID":
             stop_polling_job(context, short_id)
+            await notify_owner(context.bot, fresh, "success")
             await provision_instance_for_invoice(context, fresh)
             return
 
         if res.get("status") == "EXPIRED":
             vps_db.set_invoice_status(short_id, "EXPIRED")
             stop_polling_job(context, short_id)
+            await notify_owner(context.bot, fresh, "expired", Reason="Expired at provider")
             try:
                 await context.bot.edit_message_caption(
                     chat_id=fresh["chat_id"],
@@ -349,7 +415,7 @@ async def poll_payment_job(context: ContextTypes.DEFAULT_TYPE):
                 message_id=fresh["message_id"],
                 caption=plain,
                 parse_mode="HTML",
-                reply_markup=render.invoice_keyboard(short_id, f"{AXIOM_BASE_URL}/qr/{fresh['qris_id']}"),
+                reply_markup=render.invoice_keyboard(short_id, qr_url_for(fresh)),
             )
         except Exception:
             pass

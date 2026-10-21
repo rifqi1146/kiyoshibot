@@ -33,6 +33,14 @@ class _PooledConnection(sqlite3.Connection):
             pass
 
 
+def _release(con: sqlite3.Connection) -> None:
+    try:
+        if con.in_transaction:
+            con.rollback()
+    except sqlite3.Error:
+        pass
+
+
 def _open_pooled(db_path: str) -> sqlite3.Connection:
     pool = _get_thread_pool()
     con = pool.get(db_path)
@@ -70,4 +78,4 @@ def db_session(db_path: str) -> Generator[sqlite3.Connection, None, None]:
     try:
         yield con
     finally:
-        con.close()
+        _release(con)

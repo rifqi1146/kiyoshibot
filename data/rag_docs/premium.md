@@ -16,10 +16,10 @@ Cek daftar lengkap lewat `/premiumbenefit`:
 
 ## Beli Premium Otomatis via QRIS (/buypremium)
 - Ketik `/buypremium` di chat bot atau grup; bot akan mengirim tautan menuju Private Message (PM).
-- Bot akan menerbitkan QRIS dinamis lokal dalam hitungan detik (integrasi Axiom Payment gateway).
+- Bot akan menerbitkan QRIS dinamis lokal dalam hitungan detik (integrasi NasionalPay Payment Gateway).
 - Pindai QRIS dengan aplikasi e-wallet apa saja (GoPay, OVO, Dana, ShopeePay, LinkAja, BCA Mobile, dsb).
-- Harga paket Premium tertera langsung di sisi gateway pembayaran.
-- Invoice QRIS berlaku selama 5 menit dengan auto-polling. Status premium langsung aktif secara otomatis begitu pembayaran terdeteksi.
+- Rincian tagihan ditampilkan di invoice: harga paket, biaya admin QRIS, dan total yang harus dibayar. Biaya admin gateway ditanggung pembeli.
+- Invoice QRIS berlaku selama 5 menit dengan auto-polling tiap 15 detik, plus tombol Refresh Status untuk cek instan. Status premium langsung aktif secara otomatis begitu pembayaran terdeteksi.
 
 ## Donasi & Daftar Benefit
 - `/donate`: Tampilkan tautan donasi untuk mendukung operasional bot.

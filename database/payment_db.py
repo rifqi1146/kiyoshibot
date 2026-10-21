@@ -34,10 +34,15 @@ def init_db():
                 created_at          REAL NOT NULL,
                 provider_expires_at REAL,
                 deadline            REAL NOT NULL,
-                paid_at             REAL
+                paid_at             REAL,
+                qr_url              TEXT
             )
             """
         )
+        if con.execute(
+            "SELECT 1 FROM pragma_table_info('payments') WHERE name = 'qr_url'"
+        ).fetchone() is None:
+            con.execute("ALTER TABLE payments ADD COLUMN qr_url TEXT")
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_payments_user_status "
             "ON payments(user_id, status)"
@@ -63,6 +68,7 @@ def save_invoice(
     created_at: float,
     provider_expires_at: float | None,
     deadline: float,
+    qr_url: str | None = None,
 ) -> dict:
     con = _db()
     try:
@@ -71,8 +77,8 @@ def save_invoice(
             INSERT OR REPLACE INTO payments (
                 short_id, qris_id, trx_id, user_id, chat_id, message_id,
                 amount, fee_amount, net_amount, status, created_at,
-                provider_expires_at, deadline, paid_at
-            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'PENDING', ?, ?, ?, NULL)
+                provider_expires_at, deadline, paid_at, qr_url
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'PENDING', ?, ?, ?, NULL, ?)
             """,
             (
                 short_id, qris_id, trx_id, int(user_id), int(chat_id),
@@ -80,6 +86,7 @@ def save_invoice(
                 float(created_at),
                 provider_expires_at,
                 float(deadline),
+                qr_url,
             ),
         )
         con.commit()

@@ -12,8 +12,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from database import payment_db, premium
-from utils import axiom
-from utils.config import AXIOM_BASE_URL, AXIOM_PREMIUM_AMOUNT, OWNER_ID
+from handlers.payment import notify as pay_notify
+from utils import nasionalpay
+from utils.config import OWNER_ID, PREMIUM_PRICE
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def _build_caption(
         f"<b>Amount:</b> <code>Rp {amount:,}</code>",
         f"<b>QRIS ID:</b> <code>{html.escape(qris_id)}</code>",
         f"<b>Trx ID:</b> <code>{html.escape(trx_id)}</code>",
-        f"<b>Platform fee (1%):</b> <code>Rp {fee_amount:,}</code>",
+        f"<b>Admin fee:</b> <code>Rp {fee_amount:,}</code>",
         f"<b>Net amount:</b> <code>Rp {net_amount:,}</code>",
         f"<b>Created:</b> <code>{_format_datetime_wib(created_at)} WIB</code>",
         f"<b>Expires in:</b> <code>{rem_m:02d}:{rem_s:02d}</code> (max 5 minutes)",
@@ -175,6 +176,13 @@ async def _close_as_paid(context: ContextTypes.DEFAULT_TYPE, inv: dict):
     premium.premium_add(user_id)
     _stop_polling_job(context, short_id)
 
+    await pay_notify.notify_owner_event(
+        context.bot, "premium", "success",
+        user_id=user_id, trx_id=inv["trx_id"], amount=inv["amount"],
+        fee_amount=inv.get("fee_amount"),
+        details={"Product Title": "Premium Membership", "Reference": short_id},
+    )
+
     try:
         await context.bot.edit_message_caption(
             chat_id=inv["chat_id"],
@@ -194,6 +202,13 @@ async def _close_as_expired(context: ContextTypes.DEFAULT_TYPE, inv: dict):
     short_id = inv["short_id"]
     payment_db.set_status(short_id, "EXPIRED")
     _stop_polling_job(context, short_id)
+    await pay_notify.notify_owner_event(
+        context.bot, "premium", "expired",
+        user_id=inv.get("user_id"), trx_id=inv["trx_id"], amount=inv["amount"],
+        fee_amount=inv.get("fee_amount"),
+        details={"Product Title": "Premium Membership", "Reference": short_id,
+                 "Reason": "5-minute payment window ended"},
+    )
     try:
         await context.bot.edit_message_caption(
             chat_id=inv["chat_id"],
@@ -232,7 +247,7 @@ async def _poll_payment_job(context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            res = await axiom.check_payment(qris_id=fresh["qris_id"], trx_id=fresh["trx_id"])
+            res = await nasionalpay.check_payment(trx_id=fresh["trx_id"] or fresh["qris_id"])
         except Exception as e:
             log.warning("Payment poll failed, keeping last status | short_id=%s err=%r", short_id, e)
             return
@@ -261,7 +276,7 @@ async def _poll_payment_job(context: ContextTypes.DEFAULT_TYPE):
                     last_checked=now,
                 ),
                 parse_mode="HTML",
-                reply_markup=_build_keyboard(short_id, f"{AXIOM_BASE_URL}/qr/{fresh['qris_id']}"),
+                reply_markup=_build_keyboard(short_id, fresh.get("qr_url") or fresh["qris_id"]),
             )
         except Exception:
             pass
@@ -303,7 +318,7 @@ async def buypremium_pm_direct(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def _resend_invoice(context: ContextTypes.DEFAULT_TYPE, chat_id: int, inv: dict) -> int | None:
     short_id = inv["short_id"]
-    qr_url = f"{AXIOM_BASE_URL}/qr/{inv['qris_id']}"
+    qr_url = inv.get("qr_url") or inv["qris_id"]
     caption = _build_caption(
         status="PENDING",
         amount=inv["amount"],
@@ -316,7 +331,7 @@ async def _resend_invoice(context: ContextTypes.DEFAULT_TYPE, chat_id: int, inv:
         last_checked=time.time(),
     )
     markup = _build_keyboard(short_id, qr_url)
-    raw_qr = f"{qr_url}?format=raw"
+    raw_qr = qr_url
 
     try:
         sent = await context.bot.send_photo(
@@ -364,7 +379,7 @@ async def _start_buypremium_pm(
             parse_mode="HTML",
         )
 
-    if not axiom.configured():
+    if not nasionalpay.configured():
         return await msg.reply_text(
             "<b>Payment gateway is not configured.</b>\n"
             "Please contact the bot owner to enable payments.",
@@ -383,7 +398,7 @@ async def _start_buypremium_pm(
     status_msg = await msg.reply_text("Creating your QRIS invoice...", parse_mode="HTML")
 
     try:
-        data = await axiom.create_qris(AXIOM_PREMIUM_AMOUNT)
+        data = await nasionalpay.create_qris(PREMIUM_PRICE, username=str(user_id))
     except Exception as e:
         log.error("Failed to create QRIS invoice | err=%r", e)
         return await status_msg.edit_text(
@@ -408,6 +423,7 @@ async def _start_buypremium_pm(
         created_at=created_at,
         provider_expires_at=data.get("expires_at"),
         deadline=deadline,
+        qr_url=data.get("qr_url"),
     )
 
     caption = _build_caption(
@@ -430,7 +446,7 @@ async def _start_buypremium_pm(
         except Exception as e:
             log.warning("Local QR render failed | err=%r", e)
     if photo_input is None:
-        photo_input = f"{AXIOM_BASE_URL}/qr/{data['qris_id']}?format=raw"
+        photo_input = data.get("qr_url") or data["qris_id"]
 
     sent = None
     try:
@@ -461,6 +477,12 @@ async def _start_buypremium_pm(
     if sent:
         payment_db.set_message_id(short_id, sent.message_id)
         _schedule_polling_job(context.application, short_id, chat_id, sent.message_id, user_id)
+        await pay_notify.notify_owner_event(
+            context.bot, "premium", "new",
+            user_id=user_id, trx_id=inv["trx_id"], amount=inv["amount"],
+            fee_amount=inv.get("fee_amount"),
+            details={"Product Title": "Premium Membership", "Reference": short_id},
+        )
 
 
 async def buyprem_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -506,6 +528,12 @@ async def buyprem_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "can":
         _stop_polling_job(context, short_id)
         payment_db.set_status(short_id, "CANCELLED")
+        await pay_notify.notify_owner_event(
+            context.bot, "premium", "cancelled",
+            user_id=inv.get("user_id"), trx_id=inv["trx_id"], amount=inv["amount"],
+            fee_amount=inv.get("fee_amount"),
+            details={"Product Title": "Premium Membership", "Reference": short_id},
+        )
         try:
             await q.edit_message_caption(
                 caption=(
@@ -536,7 +564,7 @@ async def buyprem_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with _get_lock(short_id):
         try:
-            res = await axiom.check_payment(qris_id=inv["qris_id"], trx_id=inv["trx_id"])
+            res = await nasionalpay.check_payment(trx_id=inv["trx_id"] or inv["qris_id"])
         except Exception as e:
             log.warning("Manual payment check failed | short_id=%s err=%r", short_id, e)
             return await q.answer(f"Could not check the payment status: {e}", show_alert=True)
@@ -565,7 +593,7 @@ async def buyprem_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     last_checked=now,
                 ),
                 parse_mode="HTML",
-                reply_markup=_build_keyboard(short_id, f"{AXIOM_BASE_URL}/qr/{inv['qris_id']}"),
+                reply_markup=_build_keyboard(short_id, inv.get("qr_url") or inv["qris_id"]),
             )
         except Exception:
             pass

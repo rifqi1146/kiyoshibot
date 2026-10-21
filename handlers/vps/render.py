@@ -1,4 +1,5 @@
 import html
+import math
 import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -7,6 +8,7 @@ from database import vps_db
 
 from .constants import (
     DEFAULT_REGION,
+    FEE_BPS,
     DURATIONS,
     OS_IMAGES,
     OWNER_PREFIX,
@@ -14,6 +16,8 @@ from .constants import (
     TIERS,
     USER_PREFIX,
     WARRANTY_DAYS,
+    NASIONALPAY_MIN_AMOUNT,
+    ceil_to_step,
     get_os,
     get_tier,
     normalize_tier,
@@ -139,12 +143,99 @@ def os_keyboard(
         rows.append([
             InlineKeyboardButton(
                 o["label"],
-                callback_data=user_cb("checkout", tier_id, str(days), region, o["id"]),
+                callback_data=user_cb("confirm", tier_id, str(days), region, o["id"]),
             )
         ])
     rows.append([InlineKeyboardButton("Back", callback_data=user_cb("region", tier_id, str(days), "0"))])
     rows.append([InlineKeyboardButton("Close", callback_data=user_cb("close"))])
     return InlineKeyboardMarkup(rows)
+
+
+def calculate_gross_amount(base: int, fee_bps: int = FEE_BPS) -> int:
+    denom = 10000 - fee_bps
+    if denom <= 0:
+        return base
+    return int(math.ceil(base * 10000 / denom))
+
+
+def _charged_amounts(tier_id: str, days: int) -> tuple[int, int, int]:
+    base = _price_for(tier_id, days)
+    gross = max(calculate_gross_amount(base, FEE_BPS), NASIONALPAY_MIN_AMOUNT)
+    gross = ceil_to_step(gross, 100)
+    return base, gross, max(0, gross - base)
+
+
+def confirm_content(tier_id: str, days: int, region: str, os_id: str) -> tuple[str, str]:
+    t = get_tier(tier_id) or {"label": normalize_tier(tier_id), "vcpu": "-", "ram_gb": "-",
+                              "disk_gb": "-", "bandwidth": "-", "instance_type": "-"}
+    o = get_os(os_id) or {"label": os_id}
+    pricing = _pricing().get(normalize_tier(tier_id), {})
+    p30, p14, p7 = pricing.get("price_30d", 0), pricing.get("price_14d", 0), pricing.get("price_7d", 0)
+    base, gross, fee = _charged_amounts(tier_id, days)
+    rich = (
+        "<h1>🧾 Confirm Your Order</h1>"
+        "<p><b>Are you sure you want to buy this VPS?</b></p>"
+        "<hr/>"
+        "<table>"
+        f"<tr><th>Plan</th><td>{html.escape(t['label'])}</td></tr>"
+        f"<tr><th>vCPU</th><td>{t['vcpu']} vCPU</td></tr>"
+        f"<tr><th>Memory</th><td>{t['ram_gb']} GB RAM</td></tr>"
+        f"<tr><th>Storage</th><td>{t['disk_gb']} GB SSD (gp3)</td></tr>"
+        f"<tr><th>Transfer</th><td>{html.escape(str(t['bandwidth']))}</td></tr>"
+        f"<tr><th>Instance type</th><td>{html.escape(str(t['instance_type']))}</td></tr>"
+        f"<tr><th>Duration</th><td>{days} days</td></tr>"
+        f"<tr><th>Region</th><td>{html.escape(region_display(region))}</td></tr>"
+        f"<tr><th>Operating System</th><td>{html.escape(o['label'])}</td></tr>"
+        f"<tr><th>Root access</th><td>Full root, password sent in chat</td></tr>"
+        f"<tr><th>Warranty</th><td>{WARRANTY_DAYS} days</td></tr>"
+        "</table>"
+        "<hr/>"
+        "<table>"
+        f"<tr><th>Plan price</th><td>{fmt_rp(base)}</td></tr>"
+        f"<tr><th>Admin fee</th><td>{fmt_rp(fee)}</td></tr>"
+        f"<tr><th><b>Total to pay</b></th><td><b>{fmt_rp(gross)}</b></td></tr>"
+        "</table>"
+        "<hr/>"
+        "<p><b>Other durations</b></p>"
+        "<ul>"
+        f"<li>7 days: {fmt_rp(p7)}</li>"
+        f"<li>14 days: {fmt_rp(p14)}</li>"
+        f"<li>30 days: {fmt_rp(p30)}</li>"
+        "</ul>"
+        "<p>Pressing <b>Buy Now</b> creates a QRIS invoice valid for 5 minutes. "
+        "The server is provisioned automatically once payment is confirmed.</p>"
+    )
+    plain = (
+        "<b>🧾 Confirm Your Order</b>\n\n"
+        "<b>Are you sure you want to buy this VPS?</b>\n\n"
+        f"<b>Plan:</b> {t['label']}\n"
+        f"<b>vCPU:</b> {t['vcpu']} vCPU\n"
+        f"<b>Memory:</b> {t['ram_gb']} GB RAM\n"
+        f"<b>Storage:</b> {t['disk_gb']} GB SSD (gp3)\n"
+        f"<b>Transfer:</b> {t['bandwidth']}\n"
+        f"<b>Instance type:</b> {t['instance_type']}\n"
+        f"<b>Duration:</b> {days} days\n"
+        f"<b>Region:</b> {region_display(region)}\n"
+        f"<b>Operating System:</b> {o['label']}\n"
+        f"<b>Root access:</b> Full root, password sent in chat\n"
+        f"<b>Warranty:</b> {WARRANTY_DAYS} days\n\n"
+        f"Plan price: {fmt_rp(base)}\n"
+        f"Admin fee: {fmt_rp(fee)}\n"
+        f"<b>Total to pay: {fmt_rp(gross)}</b>\n\n"
+        "<b>Other durations</b>\n"
+        f"• 7 days: {fmt_rp(p7)}\n• 14 days: {fmt_rp(p14)}\n• 30 days: {fmt_rp(p30)}\n\n"
+        "Pressing Buy Now creates a QRIS invoice valid for 5 minutes. "
+        "The server is provisioned automatically once payment is confirmed."
+    )
+    return rich, plain
+
+
+def confirm_keyboard(tier_id: str, days: int, region: str, os_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Buy Now", callback_data=user_cb("checkout", tier_id, str(days), region, os_id))],
+        [InlineKeyboardButton("Back", callback_data=user_cb("os", tier_id, str(days), region))],
+        [InlineKeyboardButton("Close", callback_data=user_cb("close"))],
+    ])
 
 
 def invoice_keyboard(short_id: str, qr_url: str) -> InlineKeyboardMarkup:
@@ -481,6 +572,12 @@ def os_content(
     return rich, plain
 
 
+def _invoice_fees(inv: dict) -> tuple[int, int]:
+    base = int(inv.get("base_amount") or 0)
+    gross = int(inv.get("gross_amount") or 0)
+    return base, max(0, gross - base)
+
+
 def invoice_content(inv: dict, *, status: str, remaining: int) -> tuple[str, str]:
     t = get_tier(inv["tier"])
     o = get_os(inv["os_image"])
@@ -488,19 +585,26 @@ def invoice_content(inv: dict, *, status: str, remaining: int) -> tuple[str, str
     tier_label = t["label"] if t else normalize_tier(inv["tier"])
     os_label = o["label"] if o else inv["os_image"]
     region = inv.get("region") or "-"
+    base, fee = _invoice_fees(inv)
     rich = (
         "<h1>🧾 VPS Invoice — QRIS</h1>"
         f"<p><b>Status:</b> {html.escape(status)}<br/>"
         f"<b>Plan:</b> {html.escape(tier_label)} / {inv['days']} days<br/>"
         f"<b>Region:</b> {html.escape(region_display(region))}<br/>"
         f"<b>Operating System:</b> {html.escape(os_label)}<br/>"
-        f"<b>Total:</b> {fmt_rp(inv['gross_amount'])}<br/>"
         f"<b>Reference:</b> <code>{html.escape(inv['trx_id'])}</code></p>"
+        "<hr/>"
+        "<table>"
+        f"<tr><th>Plan price</th><td>{fmt_rp(base)}</td></tr>"
+        f"<tr><th>Admin fee</th><td>{fmt_rp(fee)}</td></tr>"
+        f"<tr><th><b>Total to pay</b></th><td><b>{fmt_rp(inv['gross_amount'])}</b></td></tr>"
+        "</table>"
         "<hr/>"
         f"<p><b>Time Remaining:</b> {rem_m:02d}:{rem_s:02d}</p>"
         "<p>Scan the QR code above with any QRIS-compatible app (GoPay, OVO, DANA, "
         "ShopeePay, or mobile banking). Payment status is polled automatically every 15 seconds "
-        "and provisioning starts the moment payment is confirmed.</p>"
+        "and provisioning starts the moment payment is confirmed. You can also press "
+        "<b>Check Status</b> to refresh instantly.</p>"
     )
     plain = (
         "<b>🧾 VPS Invoice — QRIS</b>\n\n"
@@ -508,8 +612,10 @@ def invoice_content(inv: dict, *, status: str, remaining: int) -> tuple[str, str
         f"<b>Plan:</b> {tier_label} / {inv['days']} days\n"
         f"<b>Region:</b> {region_display(region)}\n"
         f"<b>Operating System:</b> {os_label}\n"
-        f"<b>Total:</b> {fmt_rp(inv['gross_amount'])}\n"
         f"<b>Reference:</b> <code>{html.escape(inv['trx_id'])}</code>\n\n"
+        f"Plan price: {fmt_rp(base)}\n"
+        f"Admin fee: {fmt_rp(fee)}\n"
+        f"<b>Total to pay: {fmt_rp(inv['gross_amount'])}</b>\n\n"
         f"<b>Time Remaining:</b> {rem_m:02d}:{rem_s:02d}\n\n"
         "Scan the QR code above to pay. Provisioning starts automatically once payment is confirmed."
     )

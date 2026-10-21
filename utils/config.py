@@ -47,9 +47,10 @@ COOLDOWN = int(os.getenv("GROQ_COOLDOWN", "2"))
 
 DONATE_URL = os.getenv("DONATE_URL")
 
-AXIOM_BASE_URL = os.getenv("AXIOM_BASE_URL", "https://portal.axiomcreative.xyz").strip().rstrip("/")
-AXIOM_API_KEY = os.getenv("AXIOM_API_KEY", "").strip()
-AXIOM_PREMIUM_AMOUNT = int(os.getenv("AXIOM_PREMIUM_AMOUNT", "20000"))
+NASIONALPAY_BASE_URL = os.getenv("NASIONALPAY_BASE_URL", "https://merchant.nasionalpay.com").strip().rstrip("/")
+NASIONALPAY_STORE_KEY = os.getenv("NASIONALPAY_STORE_KEY", "").strip()
+
+PREMIUM_PRICE = int(os.getenv("PREMIUM_PRICE", os.getenv("AXIOM_PREMIUM_AMOUNT", "20000")))
 
 FONT_DIR = os.getenv("FONT_DIR")
 

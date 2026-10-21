@@ -250,6 +250,13 @@ DEADLINE_SEC = 300
 POLL_INTERVAL_SEC = 15
 
 FEE_BPS = 200
+NASIONALPAY_MIN_AMOUNT = 100
+
+def ceil_to_step(amount: int, step: int = 100) -> int:
+    amount = int(amount)
+    if step <= 1:
+        return amount
+    return -(-amount // step) * step
 
 DISK_DEVICE = "/dev/sda1"
 

@@ -11,9 +11,10 @@ _GROUP_CACHE=None
 
 def _db():
     os.makedirs(os.path.dirname(DB_PATH) or ".",exist_ok=True)
-    con=sqlite3.connect(DB_PATH)
+    con=sqlite3.connect(DB_PATH,timeout=30.0)
     con.execute("PRAGMA journal_mode=WAL;")
     con.execute("PRAGMA synchronous=NORMAL;")
+    con.execute("PRAGMA busy_timeout=30000;")
     return con
 
 def init():

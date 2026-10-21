@@ -13,10 +13,8 @@ def _ensure_data_dir():
 
 def _init_db(path: str, ddl: str):
     _ensure_data_dir()
-    con = sqlite3.connect(path)
+    con = _open(path)
     try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
         con.execute(ddl)
         con.commit()
     finally:
@@ -181,7 +179,7 @@ def lookup_user_id(username: str) -> int | None:
     if not u:
         return None
 
-    con = sqlite3.connect(BROADCAST_DB)
+    con = _open(BROADCAST_DB)
     try:
         row = con.execute(
             "SELECT user_id FROM broadcast_user_cache WHERE username=? LIMIT 1",

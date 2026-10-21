@@ -8,9 +8,16 @@ GROQ_MEMORY_EXPIRE=int(os.getenv("GROQ_MEMORY_EXPIRE",str(60*60*24)))
 GROQ_DB_PATH=os.getenv("GROQ_MEMORY_DB_PATH","data/groq_memory.sqlite3")
 GROQ_MAX_MESSAGES=int(os.getenv("GROQ_MAX_MESSAGES","20"))
 
+def _connect():
+    con=sqlite3.connect(GROQ_DB_PATH,timeout=30.0)
+    con.execute("PRAGMA journal_mode=WAL;")
+    con.execute("PRAGMA synchronous=NORMAL;")
+    con.execute("PRAGMA busy_timeout=30000;")
+    return con
+
 def _db_init():
     os.makedirs(os.path.dirname(GROQ_DB_PATH) or ".",exist_ok=True)
-    con=sqlite3.connect(GROQ_DB_PATH)
+    con=_connect()
     try:
         con.execute("PRAGMA journal_mode=WAL;")
         con.execute("PRAGMA synchronous=NORMAL;")
@@ -33,7 +40,7 @@ def _trim_history(history:list)->list:
 
 def _db_get(user_id:int):
     _db_init()
-    con=sqlite3.connect(GROQ_DB_PATH)
+    con=_connect()
     try:
         row=con.execute(
             "SELECT history_json,last_used,last_message_id FROM groq_memory WHERE user_id=?",
@@ -56,7 +63,7 @@ def _db_get(user_id:int):
 def _db_set(user_id:int,history:list,last_message_id:int|None):
     _db_init()
     history=_trim_history(history if isinstance(history,list) else [])
-    con=sqlite3.connect(GROQ_DB_PATH)
+    con=_connect()
     try:
         con.execute("""
             INSERT INTO groq_memory(user_id,history_json,last_used,last_message_id)
@@ -77,7 +84,7 @@ def _db_set_last_message_id(user_id:int,last_message_id:int|None):
 
 def _db_clear(user_id:int):
     _db_init()
-    con=sqlite3.connect(GROQ_DB_PATH)
+    con=_connect()
     try:
         con.execute("DELETE FROM groq_memory WHERE user_id=?",(int(user_id),))
         con.commit()
@@ -87,7 +94,7 @@ def _db_clear(user_id:int):
 def _db_cleanup(expire_seconds:int):
     _db_init()
     cutoff=time.time()-float(expire_seconds)
-    con=sqlite3.connect(GROQ_DB_PATH)
+    con=_connect()
     try:
         con.execute("DELETE FROM groq_memory WHERE last_used < ?",(cutoff,))
         con.commit()
@@ -96,7 +103,7 @@ def _db_cleanup(expire_seconds:int):
 
 def _db_has_last_message_id(message_id:int)->bool:
     _db_init()
-    con=sqlite3.connect(GROQ_DB_PATH)
+    con=_connect()
     try:
         row=con.execute(
             "SELECT 1 FROM groq_memory WHERE last_message_id=? LIMIT 1",

@@ -9,6 +9,14 @@ CACA_DB_PATH = "data/caca_memory.sqlite3"
 CACA_MAX_TURNS = int(os.getenv("CACA_MAX_TURNS", "8"))
 
 
+def _connect():
+    con = sqlite3.connect(CACA_DB_PATH, timeout=30.0)
+    con.execute("PRAGMA journal_mode=WAL;")
+    con.execute("PRAGMA synchronous=NORMAL;")
+    con.execute("PRAGMA busy_timeout=30000;")
+    return con
+
+
 def _caca_db_init():
     os.makedirs("data", exist_ok=True)
     legacy_path = "data/meta_memory.sqlite3"
@@ -22,7 +30,7 @@ def _caca_db_init():
         except Exception:
             pass
 
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         con.execute("PRAGMA journal_mode=WAL;")
         con.execute("PRAGMA synchronous=NORMAL;")
@@ -42,7 +50,7 @@ def _caca_db_init():
 
 
 def _caca_db_get(user_id: int):
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         cur = con.execute(
             "SELECT history_json, last_used, last_message_id FROM caca_memory WHERE user_id=?",
@@ -67,7 +75,7 @@ def _caca_db_set(user_id: int, history: list, last_message_id: int | None):
         if len(history) > max_msgs:
             history = history[-max_msgs:]
 
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         con.execute(
             """
@@ -86,7 +94,7 @@ def _caca_db_set(user_id: int, history: list, last_message_id: int | None):
 
 
 def _caca_db_set_last_message_id(user_id: int, last_message_id: int | None):
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         con.execute(
             """
@@ -104,7 +112,7 @@ def _caca_db_set_last_message_id(user_id: int, last_message_id: int | None):
 
 
 def _caca_db_clear_last_message_id(user_id: int):
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         con.execute(
             "UPDATE caca_memory SET last_message_id=NULL, last_used=? WHERE user_id=?",
@@ -116,7 +124,7 @@ def _caca_db_clear_last_message_id(user_id: int):
 
 
 def _caca_db_clear(user_id: int):
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         con.execute("DELETE FROM caca_memory WHERE user_id=?", (int(user_id),))
         con.commit()
@@ -126,7 +134,7 @@ def _caca_db_clear(user_id: int):
 
 def _caca_db_cleanup(expire_seconds: int):
     cutoff = time.time() - float(expire_seconds)
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         con.execute("DELETE FROM caca_memory WHERE last_used < ?", (cutoff,))
         con.commit()
@@ -135,7 +143,7 @@ def _caca_db_cleanup(expire_seconds: int):
 
 
 def _caca_db_has_last_message_id(message_id: int) -> bool:
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = _connect()
     try:
         cur = con.execute(
             "SELECT 1 FROM caca_memory WHERE last_message_id=? LIMIT 1",

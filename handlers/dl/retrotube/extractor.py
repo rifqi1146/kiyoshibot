@@ -212,10 +212,28 @@ def _browser_data_usable(data: dict) -> bool:
 
 
 _VOE_BROWSER_ATTEMPTS = 1
+_VOE_HOSTS = ("voe.sx", "www.voe.sx", "voe.st", "voe.eu.com")
+_VOE_HOST_PRIORITY = ("voe.sx", "voe.st", "voe.eu.com")
+
+
+def _host_any_mirror(url: str) -> str:
+    host = _host(url)
+    if host not in _VOE_HOSTS:
+        return url
+    if _sb.cookies_for(host):
+        return url
+    bare = host[4:] if host.startswith("www.") else host
+    parts = urlsplit(url)
+    for cand in _VOE_HOST_PRIORITY:
+        if cand == bare or not _sb.cookies_for(cand):
+            continue
+        return urlunsplit((parts.scheme or "https", cand, parts.path or "/", parts.query, ""))
+    return url
 
 
 def _fetch_voe_browser(embed_url: str, referer: str = "", timeout_ms: int = 45000) -> dict:
     last = {"html": "", "m3u8": None}
+    embed_url = _host_any_mirror(embed_url)
 
     for attempt in range(_VOE_BROWSER_ATTEMPTS):
         holder = {"html": "", "m3u8": None}

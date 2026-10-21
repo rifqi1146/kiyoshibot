@@ -8,9 +8,10 @@ _PREMIUM_USERS = set()
 
 def _db():
     os.makedirs("data", exist_ok=True)
-    con = sqlite3.connect(CACA_DB_PATH)
+    con = sqlite3.connect(CACA_DB_PATH, timeout=30.0)
     con.execute("PRAGMA journal_mode=WAL;")
     con.execute("PRAGMA synchronous=NORMAL;")
+    con.execute("PRAGMA busy_timeout=30000;")
     return con
 
 def init_premium_db():

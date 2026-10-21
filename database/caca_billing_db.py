@@ -15,7 +15,7 @@ RATE_CREDIT_PER_RUPIAH = int(os.getenv("CACA_CREDIT_PER_RUPIAH", "100"))
 RATE_INPUT_TOKEN = int(os.getenv("CACA_CREDIT_PER_INPUT_TOKEN", "1"))
 RATE_OUTPUT_TOKEN = int(os.getenv("CACA_CREDIT_PER_OUTPUT_TOKEN", "2"))
 
-GATEWAY_FEE_BPS = int(os.getenv("AXIOM_FEE_BPS", "200"))
+GATEWAY_FEE_BPS = int(os.getenv("PAYMENT_FEE_BPS", os.getenv("AXIOM_FEE_BPS", "200")))
 
 
 def calculate_gross_amount(target_net_rp: int, fee_bps: int = GATEWAY_FEE_BPS) -> tuple[int, int]:
@@ -69,7 +69,8 @@ def init_db():
                 status              TEXT NOT NULL DEFAULT 'PENDING',
                 created_at          REAL NOT NULL,
                 deadline            REAL NOT NULL,
-                paid_at             REAL
+                paid_at             REAL,
+                qr_url              TEXT
             )
             """
         )
@@ -77,6 +78,7 @@ def init_db():
             ("base_amount", "ALTER TABLE caca_invoices ADD COLUMN base_amount INTEGER NOT NULL DEFAULT 0"),
             ("gateway_fee", "ALTER TABLE caca_invoices ADD COLUMN gateway_fee INTEGER NOT NULL DEFAULT 0"),
             ("fee_bps", "ALTER TABLE caca_invoices ADD COLUMN fee_bps INTEGER NOT NULL DEFAULT 0"),
+            ("qr_url", "ALTER TABLE caca_invoices ADD COLUMN qr_url TEXT"),
         ):
             try:
                 con.execute(ddl)
@@ -242,6 +244,7 @@ def save_invoice(
     base_amount: int | None = None,
     gateway_fee: int = 0,
     fee_bps: int = 0,
+    qr_url: str | None = None,
 ) -> dict[str, Any]:
     base_target = int(base_amount) if base_amount is not None else int(amount)
     with db_session(DB_PATH) as con:
@@ -251,15 +254,15 @@ def save_invoice(
                 short_id, qris_id, trx_id, user_id, chat_id, message_id,
                 amount, base_amount, gateway_fee, fee_bps,
                 credit_base, credit_bonus, credit_total, duration_days,
-                is_custom, status, created_at, deadline, paid_at
-            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, NULL)
+                is_custom, status, created_at, deadline, paid_at, qr_url
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, NULL, ?)
             """,
             (
                 short_id, qris_id, trx_id, int(user_id), int(chat_id),
                 int(amount), base_target, int(gateway_fee), int(fee_bps),
                 int(credit_base), int(credit_bonus), int(credit_total),
                 int(duration_days), 1 if is_custom else 0,
-                float(created_at), float(deadline),
+                float(created_at), float(deadline), qr_url,
             ),
         )
         con.commit()

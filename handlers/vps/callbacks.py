@@ -9,17 +9,24 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from database import vps_db
-from utils import axiom
-from utils.config import AXIOM_BASE_URL, OWNER_ID
+from utils.config import OWNER_ID
 
 from . import aws, notify, render, service
-from .constants import DEFAULT_REGION, FEE_BPS, WARRANTY_DAYS, get_os, get_tier, normalize_tier
+from .constants import (
+    NASIONALPAY_MIN_AMOUNT,
+    DEFAULT_REGION,
+    WARRANTY_DAYS,
+    ceil_to_step,
+    get_os,
+    get_tier,
+    normalize_tier,
+)
 from .rich import edit_rich
 
 log = logging.getLogger(__name__)
 
 _LOADING_ACTIONS = frozenset({
-    "menu", "region", "os", "checkout", "detail", "restart", "warranty",
+    "menu", "region", "os", "confirm", "checkout", "detail", "restart", "warranty",
     "wconfirm", "ref", "rescan", "live", "liveterm", "term", "accounts",
     "accounts_secret", "accounts_rescan", "account", "account_secret",
     "account_toggle", "stats", "list",
@@ -37,7 +44,16 @@ async def _answer(q, text: str | None = None, show_alert: bool = False, url: str
         log.warning("Answer failed | data=%r err=%r", getattr(q, "data", None), e)
 
 
-async def _start_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, tier_id: str, days: int, region: str, os_id: str):
+async def _start_checkout(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    tier_id: str,
+    days: int,
+    region: str,
+    os_id: str,
+    *,
+    from_confirm: bool = False,
+):
     q = update.callback_query
     user = update.effective_user
     chat = update.effective_chat
@@ -54,17 +70,20 @@ async def _start_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, ti
         return await _answer(q, "❌ Invalid region.", show_alert=True)
 
     base = render._price_for(tier_id, days)
-    gross = service.calculate_gross_amount(base, FEE_BPS)
+    gross = max(service.calculate_gross_amount(base), NASIONALPAY_MIN_AMOUNT)
+    gross = ceil_to_step(gross, 100)
 
     existing = vps_db.active_invoice_for_user(user.id)
     if existing:
         vps_db.set_invoice_status(existing["short_id"], "CANCELLED")
         service.stop_polling_job(context, existing["short_id"])
+        log.info(
+            "VPS invoice superseded | old_short_id=%s user=%s", existing["short_id"], user.id
+        )
 
     try:
-        data = await axiom.create_qris(gross)
+        data = await service.create_payment_qris(gross, user.id, tier=tier_id, days=days)
     except Exception as e:
-        log.error("VPS create QRIS failed | err=%r", e)
         return await _answer(q, f"❌ Failed to create QRIS: {e}", show_alert=True)
 
     now = time.time()
@@ -86,6 +105,8 @@ async def _start_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, ti
         created_at=now,
         deadline=deadline,
         account=aws.account_for_region(region),
+        gateway="nasionalpay",
+        qr_url=data.get("qr_url"),
     )
 
     rich, plain = render.invoice_content(inv, status="PENDING", remaining=300)
@@ -98,7 +119,7 @@ async def _start_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, ti
         except Exception:
             pass
     if photo_input is None:
-        photo_input = f"{AXIOM_BASE_URL}/qr/{data['qris_id']}?format=raw"
+        photo_input = data.get("qr_url") or service.qr_url_for(inv)
 
     sent = None
     sent_is_photo = True
@@ -126,6 +147,13 @@ async def _start_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, ti
     if sent:
         vps_db.set_invoice_message_id(short_id, sent.message_id, has_photo=sent_is_photo)
         service.schedule_polling_job(context.application, short_id, chat.id, sent.message_id, user.id)
+        await service.notify_owner(context.bot, inv, "new")
+        if from_confirm and getattr(q, "message", None) is not None:
+            try:
+                await q.message.delete()
+                log.info("VPS confirm screen deleted | short_id=%s", short_id)
+            except Exception as e:
+                log.warning("VPS confirm screen delete failed | short_id=%s err=%r", short_id, e)
 
 
 NOTICE_LOADING = "Loading from AWS..."
@@ -262,6 +290,25 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await clear_notice(note)
 
+    if action == "confirm":
+        if len(parts) < 6:
+            return
+        note = await progress_notice(q.message)
+        try:
+            await _answer(q, NOTICE_DONE)
+            tier_id = parts[2]
+            days = int(parts[3])
+            region = parts[4]
+            os_id = parts[5]
+            if not get_tier(tier_id) or not get_os(os_id) or not region:
+                return await _answer(q, "This order is no longer available.", show_alert=True)
+            rich, plain = render.confirm_content(tier_id, days, region, os_id)
+            return await _render_and_edit(
+                q, rich, plain, render.confirm_keyboard(tier_id, days, region, os_id)
+            )
+        finally:
+            await clear_notice(note)
+
     if action == "checkout":
         if len(parts) < 6:
             return
@@ -271,7 +318,13 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             days = int(parts[3])
             region = parts[4]
             os_id = parts[5]
-            return await _start_checkout(update, context, tier_id, days, region, os_id)
+            log.info(
+                "VPS checkout confirmed | tier=%s days=%s region=%s os=%s user=%s",
+                tier_id, days, region, os_id, getattr(user, "id", None),
+            )
+            return await _start_checkout(
+                update, context, tier_id, days, region, os_id, from_confirm=True
+            )
         finally:
             await clear_notice(note)
 
@@ -486,15 +539,22 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await _answer(q, f"Invoice has {inv['status'].lower()}.", show_alert=True)
 
             try:
-                res = await axiom.check_payment(qris_id=inv["qris_id"], trx_id=inv["trx_id"])
+                res = await service.check_payment(inv)
             except Exception as e:
                 return await _answer(q, f"Failed to check status: {e}", show_alert=True)
 
             if res.get("paid") or res.get("status") == "PAID":
                 service.stop_polling_job(context, inv["short_id"])
                 await _answer(q, "Payment confirmed. Preparing your VPS...", show_alert=True)
+                await service.notify_owner(context.bot, inv, "success", Source="Manual status check")
                 await service.provision_instance_for_invoice(context, inv)
                 return
+
+            if res.get("status") == "EXPIRED":
+                vps_db.set_invoice_status(inv["short_id"], "EXPIRED")
+                service.stop_polling_job(context, inv["short_id"])
+                await service.notify_owner(context.bot, inv, "expired", Reason="Expired at provider")
+                return await _answer(q, "Invoice expired.", show_alert=True)
 
             remaining = int(inv["deadline"] - time.time())
             rem_m, rem_s = divmod(max(0, remaining), 60)
@@ -510,8 +570,11 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await _answer(q, "Invoice not found.", show_alert=True)
         if int(user.id) != int(inv["user_id"]):
             return await _answer(q, "This is not your invoice.", show_alert=True)
+        was_pending = inv["status"] == "PENDING"
         vps_db.set_invoice_status(inv["short_id"], "CANCELLED")
         service.stop_polling_job(context, inv["short_id"])
+        if was_pending:
+            await service.notify_owner(context.bot, inv, "cancelled")
         try:
             await q.message.edit_caption(
                 caption="<b>PAYMENT CANCELLED</b>",

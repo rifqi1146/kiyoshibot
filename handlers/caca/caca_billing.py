@@ -15,8 +15,9 @@ from telegram.ext import ContextTypes
 
 from database import caca_billing_db as bill
 from database import premium
-from utils import axiom
-from utils.config import AXIOM_BASE_URL, OWNER_ID
+from handlers.payment import notify as pay_notify
+from utils import nasionalpay
+from utils.config import OWNER_ID
 from utils.menu_lock import guard_callback_owner, register_message_owner
 
 log = logging.getLogger(__name__)
@@ -214,7 +215,6 @@ def _invoice_caption(inv: dict, status: str = "PENDING", last_checked: float | N
     rem_m, rem_s = divmod(remaining, 60)
     base_amt = int(inv.get("base_amount") or inv["amount"])
     fee_amt = int(inv.get("gateway_fee") or 0)
-    fee_bps = int(inv.get("fee_bps") or 0)
     rows = [
         "<b>CACA TOP-UP — QRIS INVOICE</b>",
         "",
@@ -223,7 +223,7 @@ def _invoice_caption(inv: dict, status: str = "PENDING", last_checked: float | N
     ]
     if fee_amt:
         rows.append(
-            f"<b>QRIS admin fee ({fee_bps / 100:g}%):</b> <code>Rp {fee_amt:,}</code>".replace(",", ".")
+            f"<b>Admin fee:</b> <code>Rp {fee_amt:,}</code>".replace(",", ".")
         )
     rows.extend([
         f"<b>Total to pay:</b> <code>Rp {inv['amount']:,}</code>".replace(",", "."),
@@ -895,11 +895,34 @@ async def _close_as_paid(context: ContextTypes.DEFAULT_TYPE, inv: dict):
         log.info("Caca credit issued | user_id=%s trx_id=%s credits=%s days=%s",
                  inv["user_id"], inv["trx_id"], inv["credit_total"], inv["duration_days"])
 
+    await pay_notify.notify_owner_event(
+        context.bot, "caca", "success",
+        user_id=inv["user_id"], trx_id=inv["trx_id"], amount=inv["amount"],
+        base_amount=inv.get("base_amount"), fee_amount=inv.get("gateway_fee"),
+        details={
+            "Package": "Custom amount" if inv.get("is_custom") else "Preset package",
+            "Credits": _fmt_credits(inv["credit_total"]),
+            "Validity": f"{inv['duration_days']} days",
+            "Reference": short_id,
+        },
+    )
+
 
 async def _close_as_expired(context: ContextTypes.DEFAULT_TYPE, inv: dict):
     short_id = inv["short_id"]
     bill.set_invoice_status(short_id, "EXPIRED")
     _stop_polling(context, short_id)
+    await pay_notify.notify_owner_event(
+        context.bot, "caca", "expired",
+        user_id=inv["user_id"], trx_id=inv["trx_id"], amount=inv["amount"],
+        base_amount=inv.get("base_amount"), fee_amount=inv.get("gateway_fee"),
+        details={
+            "Package": "Custom amount" if inv.get("is_custom") else "Preset package",
+            "Credits": _fmt_credits(inv["credit_total"]),
+            "Reference": short_id,
+            "Reason": "5-minute payment window ended",
+        },
+    )
     try:
         await context.bot.edit_message_caption(
             chat_id=inv["chat_id"],
@@ -937,7 +960,7 @@ async def _poll_job(context: ContextTypes.DEFAULT_TYPE):
             context.job.schedule_removal()
             return
         try:
-            res = await axiom.check_payment(qris_id=fresh["qris_id"], trx_id=fresh["trx_id"])
+            res = await nasionalpay.check_payment(trx_id=fresh["trx_id"] or fresh["qris_id"])
         except Exception as e:
             log.warning("Caca payment poll failed, keeping status | short_id=%s err=%r", short_id, e)
             return
@@ -953,7 +976,7 @@ async def _poll_job(context: ContextTypes.DEFAULT_TYPE):
                 message_id=fresh["message_id"],
                 caption=_invoice_caption(fresh, "PENDING", now),
                 parse_mode="HTML",
-                reply_markup=_invoice_keyboard(short_id, f"{AXIOM_BASE_URL}/qr/{fresh['qris_id']}"),
+                reply_markup=_invoice_keyboard(short_id, fresh.get("qr_url") or fresh["qris_id"]),
             )
         except Exception:
             pass
@@ -977,7 +1000,7 @@ async def _create_invoice(
     if not msg and status_msg is None:
         return
 
-    if not axiom.configured():
+    if not nasionalpay.configured():
         target = status_msg or msg
         return await target.edit_text(
             "<b>Payment gateway is not configured.</b>\nPlease contact the bot owner.",
@@ -993,7 +1016,7 @@ async def _create_invoice(
         status_msg = await msg.reply_text("Creating your QRIS invoice...", parse_mode="HTML")
 
     try:
-        data = await axiom.create_qris(gross_amount)
+        data = await nasionalpay.create_qris(gross_amount, username=str(user_id))
     except Exception as e:
         log.error("Failed to create Caca QRIS | err=%r", e)
         try:
@@ -1006,7 +1029,7 @@ async def _create_invoice(
             return
 
     real_fee = int(data.get("fee_amount") or gateway_fee)
-    real_rate = int(data.get("fee_rate_bps") or bill.GATEWAY_FEE_BPS)
+    real_rate = int(bill.GATEWAY_FEE_BPS)
     charged = int(data.get("amount") or gross_amount)
 
     now = time.time()
@@ -1031,6 +1054,7 @@ async def _create_invoice(
         is_custom=is_custom,
         created_at=created_at,
         deadline=deadline,
+        qr_url=data.get("qr_url"),
     )
 
     inv = bill.get_invoice(short_id)
@@ -1044,7 +1068,7 @@ async def _create_invoice(
         except Exception as e:
             log.warning("Local QR render failed | err=%r", e)
     if photo_input is None:
-        photo_input = f"{AXIOM_BASE_URL}/qr/{data['qris_id']}?format=raw"
+        photo_input = data.get("qr_url") or data["qris_id"]
 
     sent = None
     try:
@@ -1074,6 +1098,17 @@ async def _create_invoice(
 
     if sent:
         bill.set_invoice_message_id(short_id, sent.message_id)
+        await pay_notify.notify_owner_event(
+            context.bot, "caca", "new",
+            user_id=user_id, trx_id=inv["trx_id"], amount=inv["amount"],
+            base_amount=inv.get("base_amount"), fee_amount=inv.get("gateway_fee"),
+            details={
+                "Package": "Custom amount" if inv.get("is_custom") else "Preset package",
+                "Credits": _fmt_credits(inv["credit_total"]),
+                "Validity": f"{inv['duration_days']} days",
+                "Reference": short_id,
+            },
+        )
         jq = getattr(context.application, "job_queue", None)
         if jq:
             for job in jq.get_jobs_by_name(_job_name(short_id)):
@@ -1286,6 +1321,16 @@ async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _stop_polling(context, short_id)
             if inv["status"] == "PENDING":
                 bill.set_invoice_status(short_id, "CANCELLED")
+                await pay_notify.notify_owner_event(
+                    context.bot, "caca", "cancelled",
+                    user_id=inv["user_id"], trx_id=inv["trx_id"], amount=inv["amount"],
+                    base_amount=inv.get("base_amount"), fee_amount=inv.get("gateway_fee"),
+                    details={
+                        "Package": "Custom amount" if inv.get("is_custom") else "Preset package",
+                        "Credits": _fmt_credits(inv["credit_total"]),
+                        "Reference": short_id,
+                    },
+                )
             await q.answer("Invoice cancelled.")
             try:
                 await q.edit_message_caption(
@@ -1306,7 +1351,7 @@ async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         async with _lock(short_id):
             try:
-                res = await axiom.check_payment(qris_id=inv["qris_id"], trx_id=inv["trx_id"])
+                res = await nasionalpay.check_payment(trx_id=inv["trx_id"] or inv["qris_id"])
             except Exception as e:
                 log.warning("Manual Caca check failed | short_id=%s err=%r", short_id, e)
                 return await q.answer(f"Could not check the payment status: {e}", show_alert=True)
@@ -1324,7 +1369,7 @@ async def cacabill_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.edit_message_caption(
                     caption=_invoice_caption(inv, "PENDING", now),
                     parse_mode="HTML",
-                    reply_markup=_invoice_keyboard(short_id, f"{AXIOM_BASE_URL}/qr/{inv['qr_id'] if inv.get('qr_id') else inv['qris_id']}"),
+                    reply_markup=_invoice_keyboard(short_id, inv.get("qr_url") or inv["qris_id"]),
                 )
             except Exception:
                 pass

@@ -106,6 +106,14 @@ def init_db():
         ).fetchone() is None:
             con.execute("ALTER TABLE vps_invoices ADD COLUMN account TEXT")
         if con.execute(
+            "SELECT 1 FROM pragma_table_info('vps_invoices') WHERE name = 'gateway'"
+        ).fetchone() is None:
+            con.execute("ALTER TABLE vps_invoices ADD COLUMN gateway TEXT NOT NULL DEFAULT 'nasionalpay'")
+        if con.execute(
+            "SELECT 1 FROM pragma_table_info('vps_invoices') WHERE name = 'qr_url'"
+        ).fetchone() is None:
+            con.execute("ALTER TABLE vps_invoices ADD COLUMN qr_url TEXT")
+        if con.execute(
             "SELECT 1 FROM pragma_table_info('vps_instances') WHERE name = 'account'"
         ).fetchone() is None:
             con.execute("ALTER TABLE vps_instances ADD COLUMN account TEXT")
@@ -301,6 +309,8 @@ def save_invoice(
     created_at: float,
     deadline: float,
     account: str | None = None,
+    gateway: str = "nasionalpay",
+    qr_url: str | None = None,
 ) -> dict:
     con = _db()
     try:
@@ -310,13 +320,14 @@ def save_invoice(
                 short_id, vps_id, user_id, chat_id, message_id,
                 qris_id, trx_id, tier, os_image, region, days,
                 base_amount, gross_amount, status, created_at, paid_at, deadline,
-                account
-            ) VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, NULL, ?, ?)
+                account, gateway, qr_url
+            ) VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, NULL, ?, ?, ?, ?)
             """,
             (
                 short_id, int(user_id), int(chat_id), qris_id, trx_id,
                 tier, os_image, region, int(days), int(base_amount), int(gross_amount),
                 float(created_at), float(deadline), account,
+                (gateway or "nasionalpay").strip().lower(), qr_url,
             ),
         )
         con.commit()

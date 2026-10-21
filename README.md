@@ -226,7 +226,7 @@ the download layer imports the UI layer.
               │ commands   │ │ loader    │ │ rich_*  │ │ SQLite     │
               │ callbacks  │ │ chunker   │ │ menu_   │ │ WAL +      │
               │ messages   │ │ catalog   │ │  lock   │ │ busy_time  │
-              │ dl/        │ │ retriever │ │ axiom   │ │ out 30s    │
+              │ dl/        │ │ retriever │ │payment  │ │ out 30s    │
               │ vps/       │ │           │ │http     │ │            │
               │ caca/      │ └───────────┘ │timectx  │ └────────────┘
               │ explorers  │               └─────────┘
@@ -466,18 +466,19 @@ connection timeout. Connections without `busy_timeout` raise
 
 | Module | Responsibility |
 |:--|:--|
-| `constants.py` | `TIERS` (`1g`/`2g`/`4g`/`8g` with instance types, fallbacks, vCPU, RAM, disk, bandwidth), 11 `OS_IMAGES`, `DURATIONS` (30d/14d/7d), `FEE_BPS = 200`, `WARRANTY_DAYS = 7`, `normalize_tier()`, `get_tier()`, `get_os()`. |
+| `constants.py` | `TIERS` (`1g`/`2g`/`4g`/`8g` with instance types, fallbacks, vCPU, RAM, disk, bandwidth), 11 `OS_IMAGES`, `DURATIONS` (30d/14d/7d), `FEE_BPS` / `NASIONALPAY_FEE_BPS` (200 each) with `gateway_fee_bps()` and `ceil_to_step()`, `WARRANTY_DAYS = 7`, `normalize_tier()`, `get_tier()`, `get_os()`. |
 | `aws.py` | `aws` CLI wrapper (no boto3), multi-account env injection (pops `AWS_PROFILE`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` then injects the account's credentials), live `list_regions()`, per-region AMI resolution and caching, network/SG resolution with auto-create, launch with subnet retry, `wait_for_ssh`, full `_describe_instance_sync` spec dump, volume enumeration, security-group create/authorize/revoke/delete, and `scan_account_instances()` over account × region with concurrency 10. |
 | `accounts.py` | DB-backed account pool. `resolve_chain(region)` returns an ordered list (explicit per-region prefs → accounts declaring the region sorted by priority → the virtual `default` account), so `launch_vps()` can fall through on capacity/quota errors. `discover_account_regions()` probes each candidate region. |
 | `account_cmd.py` | `/addawsaccount` (panel, staged flow, or one-line) and `/delawsaccount`. Credentials always verified with `sts get-caller-identity` before being written; the message containing the secret is deleted from the chat. |
-| `service.py` | Invoice polling (15 s), atomic claim, provisioning, QRIS creation, and the cached account scan (`SCAN_CACHE_TTL = 300`, `asyncio.Lock`, `invalidate_account_scan()`). |
+| `gateway.py` | Thin NasionalPay wrapper for `/vps` (`create_qris`, `check_payment`, `qr_url`, DB-backed `qr_url` per invoice) with gateway logging. |
+| `service.py` | Invoice polling (15 s), atomic claim, provisioning, QRIS creation through `gateway`, `gross_for()` fee gross-up, and the cached account scan (`SCAN_CACHE_TTL = 300`, `asyncio.Lock`, `invalidate_account_scan()`). |
 | `firewall.py` | Per-server security group UI under the `fwr:` prefix, reply-scoped custom port input, protected port 22, automatic SG creation/attachment for pre-existing instances. |
-| `render.py` | Every Rich screen and keyboard, `merge_with_live()`, `_price_for()`, and the `GRANT_STATE` store. |
+| `render.py` | Every Rich screen and keyboard (including `confirm_content()` / `confirm_keyboard()` for the pre-purchase check), `merge_with_live()`, `_price_for()`, `_charged_amounts()`, and the `GRANT_STATE` store. |
 | `rich.py` | `send_rich(bot, chat_id, reply_to, rich_html, plain_html, markup)` and `edit_rich(...)` with plain-HTML fallback. |
 | `commands.py` | `/vps`, `/myvps`, `/vpsprice` with group→PM redirect via deep link. |
 | `callbacks.py` | All `vps:` callbacks (tier, duration, region, OS, checkout, detail, restart, warranty, status refresh), `_toast_for()`, and `_LOADING_ACTIONS`. |
 | `owner.py` | `/vpsadmin`, `/vpslist`, `/vpsstats`, `/vpsinfo`, `/vpsterminate`, `/vpsrenew`, `/vpsgrant`, plus the full inline grant flow and `grant_callback`. |
-| `notify.py` | Owner DM on every provisioning path (purchase / grant / warranty) with server, region, account, access, buyer, payment, and validity in WIB. |
+| `notify.py` | Owner DM on every provisioning path (purchase / grant / warranty) with server, region, account, access, buyer, payment, and validity in WIB. Complements the generic transaction feed in `handlers/payment/notify.py`. |
 | `state.py` | Scan cache and `asyncio.Lock` holders. |
 | `sweeper.py` | `sweep_expired_once()` (expiry termination) and `purge_old_records()` (7-day retention). |
 
@@ -526,8 +527,11 @@ with Poppins), `runtime_info.py`, `system_info.py`, `diagnostics.py`
 
 ### `handlers/payment/`
 
-`buypremium.py` — dynamic QRIS checkout through Axiom, local QR rendering with
-`qrcode`, 15-second polling with a hard 5-minute deadline, and manual refresh.
+| Module | Responsibility |
+|:--|:--|
+| `buypremium.py` | Dynamic QRIS checkout through NasionalPay, local QR rendering with `qrcode`, 15-second polling with a hard 5-minute deadline, and manual refresh. |
+| `notify.py` | Owner transaction feed: one template for every product (`premium`, `caca`, `vps`) and every event (`new`, `success`, `expired`, `cancelled`, `failed`), delivered to all `BOT_OWNER_ID` entries. |
+| `__init__.py` | Re-exports the NasionalPay client surface (`create_qris`, `check_payment`, `configured`, `balance`, `verify_webhook`, `NasionalPayError`). |
 
 ### Explorer UI packages
 
@@ -576,7 +580,7 @@ Each follows the same file set: `constants.py`, `state.py`, `scraper.py`,
 | `rich_search.py` | `build_search_content()` — the shared compact search table (`#`/`Title`/`Info`) with `Prev`/`Back`/`Close`/`Next`, used by every search explorer. |
 | `rich_stream.py` | Streaming draft updater for AI answers. |
 | `scrapling_browser.py` | Singleton `StealthySession` on a single-worker thread pool, cookie store, `warmup_browser`, `close_browser`, session recycling on failure. |
-| `axiom.py` | Axiom QRIS client using `curl_cffi` Chrome impersonation with retry on 403/429/5xx origin flap. |
+| `nasionalpay.py` | NasionalPay QRIS client (`aiohttp`, Store Key in the JSON body): `create_qris`, `check_payment`, `balance`, `verify_webhook` (HMAC-SHA256), string-amount and UTC-timestamp normalization, retry on 429/5xx. |
 | `http.py` | Shared `aiohttp` session with tuned timeouts and pool limits; `get_http_session`, `close_http_session`. |
 | `firecrawl.py` | `web_search` (fast/content depth) and `read_url`. |
 | `jina.py` | `s.jina.ai` SERP and `r.jina.ai` reader fallback. |
@@ -936,7 +940,7 @@ changes expiry only, never credit count.
 - Fulfilment uses `BEGIN IMMEDIATE` with a status re-check inside the
   transaction, so a duplicated payment or a forged callback cannot mint credit
   twice. Telegram callback status is never trusted; the bot re-verifies with
-  `utils/axiom.check_payment()`.
+  `utils.nasionalpay.check_payment()`.
 - Reservations lock balance before the AI call and settle against the actual
   token usage reported by the provider, with a ~4-chars-per-token estimate as
   fallback.
@@ -1005,7 +1009,8 @@ every image exists everywhere.
 ### Purchase flow
 
 ```
-/vps → plan → duration → region (8 per page) → OS → QRIS invoice
+/vps → plan → duration → region (8 per page) → OS → confirm screen
+      → QRIS invoice (confirmation message deleted)
       → payment polled every 15 s → claim invoice atomically
       → launch EC2 → wait for port 22 → credentials delivered
 ```
@@ -1063,31 +1068,114 @@ change. Navigation buttons read cache; only `Rescan` forces a fresh sweep.
 
 ## Payments
 
-Both flows use **Axiom Payment** for dynamic QRIS.
+Every selling flow issues a dynamic **NasionalPay** QRIS.
 
 | Flow | Command | DB | What is sold |
 |:--|:--|:--|:--|
-| Premium | `/buypremium` | `data/payments.sqlite3` | Premium membership at `AXIOM_PREMIUM_AMOUNT` |
+| Premium | `/buypremium` | `data/payments.sqlite3` | Premium membership at `PREMIUM_PRICE` |
 | Caca credits | `/cacatopup`, `/buycaca` | `data/caca_billing.sqlite3` | Chat credits in preset or custom packages |
 | VPS | `/vps` | `data/vps.sqlite3` | EC2 instances |
 
-Both create a local QR image from the returned `qris_string` with the `qrcode`
-library, falling back to the gateway-rendered PNG, and poll `check-payment`
-every 15 seconds. A failed check (429/503/network) is never interpreted as
-"unpaid" — the last known status is retained.
+Each flow renders the QR locally from the returned `qris_data` with the `qrcode`
+library and falls back to the gateway-hosted PNG, then polls
+`POST /api/payment/status` every 15 seconds. Every invoice also carries a manual
+refresh button, so a buyer never has to wait out a poll interval. A failed check
+(429/5xx/network) is **never** interpreted as "unpaid" — the last known status is
+retained.
 
-Transport is `curl_cffi` with `impersonate="chrome"`, not `aiohttp`. The Axiom
-portal sits behind a Cloudflare WAF that answers plain HTTP clients from
-datacenter IPs with a Turnstile challenge (`HTTP 403 Just a moment...`).
-Chrome's TLS/JA3 fingerprint makes the request look like a browser. Requests
-also retry on `{403, 429, 500, 502, 503, 504, 520-526}` because individual
-Axiom origins intermittently fail TLS handshakes (measured 17/30 success in a
-burst).
+### NasionalPay specifics
 
-All amounts are integers. The QRIS amount is grossed up:
-`gross = ceil(base * 10000 / (10000 - fee_bps))`.
+The merchant API lives at `https://merchant.nasionalpay.com/api/payment`.
+Authentication is the **Store Key sent in the JSON body** (`{"key": ...}`), not a
+header. Transport is plain `aiohttp`; the API sits behind a normal reverse proxy,
+so no browser fingerprint is needed.
 
----
+| Call | Endpoint | Notes |
+|:--|:--|:--|
+| Create | `POST /generate` | `channel: "QRIS"`, `amount`, `player_username`. Returns `transaction_id`, `qris_data`, `qris_image`, `fee_mdr`, `nett_amount`, `expired_at` |
+| Status | `POST /status` | `transaction_id` → `pending` / `success` |
+| Balance | `POST /merchantbalance` | Store balance, `store_fee`, verification level |
+
+Response quirks the client normalizes so callers never see them:
+
+- `amount`, `fee_mdr`, and `nett_amount` are **strings**, not numbers.
+- `created_at` / `expired_at` are **UTC without a timezone** — they are stamped
+  as `Asia/Jakarta` on parse, otherwise invoices look seven hours old.
+- The provider status is `pending` / `success`, not `PENDING` / `PAID`; it is
+  mapped before anything compares it.
+- The provider rejects amounts below **Rp 100**, so the VPS checkout clamps the
+  grossed-up total to `max(100, ceil(gross / 100) * 100)`.
+- `channel: "DANA"` currently answers `503` — QRIS is the only live channel.
+
+### VPS purchase flow
+
+```
+/vps → plan → duration → region → operating system → confirm → QRIS → provisioning
+```
+
+Choosing an operating system does **not** create an invoice. It opens a
+confirmation screen that restates the full specification (plan, vCPU, RAM,
+storage, transfer, instance type, duration, region, OS, root access, warranty),
+the exact price split (`Plan price` / `Admin fee` / `Total to pay`), and the
+other duration prices, with **Buy Now** / **Back** / Close. Only `Buy Now`
+calls the payment API. The amounts on that screen come from the same gross-up
+helper the checkout uses, so the quoted price is always the charged price.
+
+Once the QRIS message is delivered, the confirmation screen is deleted, so the
+chat keeps a single live artifact — the invoice. Deletion happens *after* the
+send succeeds; if delivery fails the confirmation stays put so the user can
+retry instead of losing the order.
+
+### Owner transaction feed
+
+Every payment produces a direct message to each id in `BOT_OWNER_ID`, through
+`handlers/payment/notify.py`. One template serves all three products and five
+events (`new`, `success`, `expired`, `cancelled`, `failed`):
+
+```
+💳 Payment Successful
+
+Product:      AWS VPS Instance
+User ID:      5007562506
+User:         Akhmad Rifqy (@rifqi1146)
+Trx ID:       TRXQRJTY5TACV7I
+Total Charged: Rp 1.100
+Base Price:   Rp 1.000
+Admin Fee:    Rp 100
+Time:         2026-10-21 23:13:35 WIB
+
+Plan:         1 GB / 2 vCPU
+Duration:     7 days
+Region:       ap-southeast-2
+Operating System: Ubuntu 24.04 LTS
+Reference:    eead5406c986
+```
+
+Product-specific blocks: VPS carries plan, duration, region, OS and the internal
+`short_id`; Caca carries package type, credits and validity; Premium carries the
+product title. `failed` is emitted when provisioning breaks after a successful
+payment, so a paid order never disappears silently. Delivery failures are logged
+and swallowed — a Telegram outage never rolls back a paid transaction.
+
+### Admin fees are always paid by the buyer
+
+The gateway deducts 2% from the settled amount, so charging the bare price would
+leave the bot short. Every flow grosses the price up before creating the QR:
+
+```
+gross = ceil(base * 10000 / (10000 - fee_bps))   # fee_bps = 200
+```
+
+Invoices print the split explicitly — `Plan price`, `Admin fee`,
+`Total to pay` — so the surcharge is never a surprise. NasionalPay additionally
+exposes a *store markup* (`Fee Merchant %`, currently `0%`) in its dashboard that
+is applied on top of whatever the bot sends; that knob stays in the dashboard so
+changing it never requires a deploy.
+
+NationalPay can deliver webhooks (`X-NasionalPay-Signature`, HMAC-SHA256 hex over
+the raw body keyed by the Store Key) and `utils/nasionalpay.py:verify_webhook()`
+implements verification, but the bot has no public HTTP listener, so polling is
+the only live path.
 
 ## Moderation & Permissions
 
@@ -1310,15 +1398,16 @@ mandatory. Everything else degrades gracefully when absent.
 | `CACA_MIN_CREDITS_TO_CHAT` | 50 |
 | `CACA_RESERVE_AMOUNT` | 2000 |
 | `CACA_MAX_TURNS` | 8 |
-| `AXIOM_FEE_BPS` | 200 |
+| `PAYMENT_FEE_BPS` | 200 |
 
 ### Payments
 
 | Variable | Default | Meaning |
 |:--|:--|:--|
-| `AXIOM_BASE_URL` | `https://portal.axiomcreative.xyz` | Gateway origin |
-| `AXIOM_API_KEY` | — | Server-side only. Never expose to users, URLs, or logs. |
-| `AXIOM_PREMIUM_AMOUNT` | 20000 | `/buypremium` price in rupiah |
+| `NASIONALPAY_BASE_URL` | `https://merchant.nasionalpay.com` | Gateway origin |
+| `NASIONALPAY_STORE_KEY` | — | Server-side only. Acts as both API key and webhook HMAC secret. |
+| `PREMIUM_PRICE` | 20000 | `/buypremium` price in rupiah |
+| `PAYMENT_FEE_BPS` | 200 | Gross-up basis points passed to the buyer |
 
 ### Telegram infra and community
 
@@ -1486,7 +1575,7 @@ request after a restart pays full price.
 `handlers/proxy/opencode.py` matches the current upstream request shape. A `403
 FreeTierError` means the contract moved, not that the code is broken.
 
-**External services are external.** Axiom QRIS, Shiteru, CodeBuddy, Firecrawl,
+**External services are external.** NasionalPay QRIS, Shiteru, CodeBuddy, Firecrawl,
 Jina, Groq, Telegram itself. When one is degraded, the feature that depends on
 it is degraded. None of them are mocked into silence — failures surface.
 
@@ -1505,6 +1594,7 @@ accounts, then reports a human-readable reason.
 ```bash
 # 1. Syntax
 venv/bin/python -m py_compile handlers/vps/owner.py
+venv/bin/python -m py_compile utils/nasionalpay.py handlers/vps/gateway.py
 
 # 2. Imports (catches circular imports between dl/ and the UI layer)
 venv/bin/python -c "from handlers import quotly, callbacks, commands"
@@ -1550,7 +1640,7 @@ production group.
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) — Bot framework
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — General extractor engine
 - [gallery-dl](https://github.com/mikf/gallery-dl) — Gallery extraction
-- [Axiom Payment](https://portal.axiomcreative.xyz) — QRIS gateway
+- [NasionalPay](https://merchant.nasionalpay.com) — QRIS payment gateway
 - [OpenCode](https://opencode.ai) — Free model backend behind `/ask`
 - [Groq Cloud](https://console.groq.com) — LLM inference for `/groq`
 - [Jina AI](https://jina.ai) — SERP + reader grounding
