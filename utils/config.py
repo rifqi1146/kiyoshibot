@@ -51,6 +51,7 @@ NASIONALPAY_BASE_URL = os.getenv("NASIONALPAY_BASE_URL", "https://merchant.nasio
 NASIONALPAY_STORE_KEY = os.getenv("NASIONALPAY_STORE_KEY", "").strip()
 
 PREMIUM_PRICE = int(os.getenv("PREMIUM_PRICE", os.getenv("AXIOM_PREMIUM_AMOUNT", "20000")))
+PAYMENT_FEE_BPS = int(os.getenv("PAYMENT_FEE_BPS", os.getenv("AXIOM_FEE_BPS", "200")))
 
 FONT_DIR = os.getenv("FONT_DIR")
 

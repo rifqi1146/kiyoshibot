@@ -1100,12 +1100,14 @@ async def _create_invoice(
         bill.set_invoice_message_id(short_id, sent.message_id)
         await pay_notify.notify_owner_event(
             context.bot, "caca", "new",
-            user_id=user_id, trx_id=inv["trx_id"], amount=inv["amount"],
-            base_amount=inv.get("base_amount"), fee_amount=inv.get("gateway_fee"),
+            user_id=user_id, trx_id=(inv or {}).get("trx_id") or data.get("trx_id"),
+            amount=(inv or {}).get("amount") or data.get("amount"),
+            base_amount=(inv or {}).get("base_amount") or amount,
+            fee_amount=(inv or {}).get("gateway_fee") or gateway_fee,
             details={
-                "Package": "Custom amount" if inv.get("is_custom") else "Preset package",
-                "Credits": _fmt_credits(inv["credit_total"]),
-                "Validity": f"{inv['duration_days']} days",
+                "Package": "Custom amount" if is_custom else "Preset package",
+                "Credits": _fmt_credits(credit_total),
+                "Validity": f"{duration_days} days",
                 "Reference": short_id,
             },
         )

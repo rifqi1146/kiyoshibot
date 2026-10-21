@@ -147,7 +147,7 @@ async def _start_checkout(
     if sent:
         vps_db.set_invoice_message_id(short_id, sent.message_id, has_photo=sent_is_photo)
         service.schedule_polling_job(context.application, short_id, chat.id, sent.message_id, user.id)
-        await service.notify_owner(context.bot, inv, "new")
+        await service.notify_owner(context.bot, inv or {}, "new")
         if from_confirm and getattr(q, "message", None) is not None:
             try:
                 await q.message.delete()

@@ -14,12 +14,22 @@ from telegram.ext import ContextTypes
 from database import payment_db, premium
 from handlers.payment import notify as pay_notify
 from utils import nasionalpay
-from utils.config import OWNER_ID, PREMIUM_PRICE
+from utils.config import OWNER_ID, PREMIUM_PRICE, PAYMENT_FEE_BPS
 
 log = logging.getLogger(__name__)
 
 PAYMENT_DEADLINE_SEC = 300
 POLL_INTERVAL_SEC = 15
+
+
+def calculate_gross_amount(base: int, fee_bps: int = PAYMENT_FEE_BPS) -> tuple[int, int]:
+    target = max(0, int(base))
+    if target <= 0:
+        return 0, 0
+    bps = max(0, min(9900, int(fee_bps)))
+    denom = 10000 - bps
+    gross = (target * 10000 + denom - 1) // denom
+    return gross, gross - target
 WIB = timezone(timedelta(hours=7))
 
 _CHECK_LOCKS: dict[str, "asyncio.Lock"] = {}
@@ -397,8 +407,16 @@ async def _start_buypremium_pm(
 
     status_msg = await msg.reply_text("Creating your QRIS invoice...", parse_mode="HTML")
 
+    base_price, expected_fee = calculate_gross_amount(PREMIUM_PRICE)
+    gross, fee = base_price, expected_fee
+    if gross < 100:
+        gross, fee = 100, max(0, 100 - PREMIUM_PRICE)
+    log.info(
+        "Premium checkout | base=%s gross=%s fee=%s user=%s", PREMIUM_PRICE, gross, fee, user_id
+    )
+
     try:
-        data = await nasionalpay.create_qris(PREMIUM_PRICE, username=str(user_id))
+        data = await nasionalpay.create_qris(gross, username=str(user_id))
     except Exception as e:
         log.error("Failed to create QRIS invoice | err=%r", e)
         return await status_msg.edit_text(
@@ -411,15 +429,15 @@ async def _start_buypremium_pm(
     created_at = data.get("created_at") or now
     deadline = now + PAYMENT_DEADLINE_SEC
 
-    payment_db.save_invoice(
+    inv = payment_db.save_invoice(
         short_id=short_id,
         qris_id=data["qris_id"],
         trx_id=data.get("trx_id") or f"AXP-{short_id.upper()}",
         user_id=user_id,
         chat_id=chat_id,
-        amount=data["amount"],
-        fee_amount=data.get("fee_amount") or 0,
-        net_amount=data.get("net_amount") or data["amount"],
+        amount=data.get("amount") or gross,
+        fee_amount=data.get("fee_amount") or fee,
+        net_amount=data.get("net_amount") or max(0, gross - fee),
         created_at=created_at,
         provider_expires_at=data.get("expires_at"),
         deadline=deadline,
@@ -428,11 +446,11 @@ async def _start_buypremium_pm(
 
     caption = _build_caption(
         status="PENDING",
-        amount=data["amount"],
+        amount=data.get("amount") or gross,
         qris_id=data["qris_id"],
         trx_id=data.get("trx_id") or "-",
-        fee_amount=data.get("fee_amount") or 0,
-        net_amount=data.get("net_amount") or data["amount"],
+        fee_amount=data.get("fee_amount") or fee,
+        net_amount=data.get("net_amount") or max(0, gross - fee),
         created_at=created_at,
         deadline=deadline,
         last_checked=now,
@@ -479,8 +497,9 @@ async def _start_buypremium_pm(
         _schedule_polling_job(context.application, short_id, chat_id, sent.message_id, user_id)
         await pay_notify.notify_owner_event(
             context.bot, "premium", "new",
-            user_id=user_id, trx_id=inv["trx_id"], amount=inv["amount"],
-            fee_amount=inv.get("fee_amount"),
+            user_id=user_id, trx_id=(inv or {}).get("trx_id") or data.get("trx_id"),
+            amount=(inv or {}).get("amount") or data.get("amount"),
+            fee_amount=(inv or {}).get("fee_amount") or data.get("fee_amount"),
             details={"Product Title": "Premium Membership", "Reference": short_id},
         )
 

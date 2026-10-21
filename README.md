@@ -1166,8 +1166,11 @@ leave the bot short. Every flow grosses the price up before creating the QR:
 gross = ceil(base * 10000 / (10000 - fee_bps))   # fee_bps = 200
 ```
 
-Invoices print the split explicitly — `Plan price`, `Admin fee`,
-`Total to pay` — so the surcharge is never a surprise. NasionalPay additionally
+This applies to **all three** flows, `/buypremium` included: the premium
+invoice is built from `PREMIUM_PRICE` grossed up by `calculate_gross_amount()`,
+so the gateway's 2% never comes out of the seller's margin. Invoices print the
+split explicitly — `Plan price`, `Admin fee`, `Total to pay` — so the surcharge
+is never a surprise. NasionalPay additionally
 exposes a *store markup* (`Fee Merchant %`, currently `0%`) in its dashboard that
 is applied on top of whatever the bot sends; that knob stays in the dashboard so
 changing it never requires a deploy.
