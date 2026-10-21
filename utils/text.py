@@ -255,3 +255,117 @@ def sanitize_markdown(text: str) -> str:
     if text.count("```") % 2 == 1:
         text = text.rstrip() + "\n```"
     return text.strip()
+
+
+import re
+
+_RICH_ALLOWED = {
+    "h1", "h2", "h3", "p", "b", "strong", "i", "em", "u", "s", "code", "pre",
+    "a", "br", "hr", "ul", "ol", "li", "blockquote", "details", "summary",
+    "table", "tr", "th", "td", "aside", "footer", "mark", "sub", "sup",
+}
+_RICH_VOID = {"br", "hr"}
+_RICH_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^<>]*?)?)(/?)>")
+_RICH_BLOCK_RE = re.compile(
+    r"<table\b.*?</table>|<details\b.*?</details>|<aside\b.*?</aside>"
+    r"|<blockquote\b.*?</blockquote>|<ul\b.*?</ul>|<ol\b.*?</ol>"
+    r"|<h1\b.*?</h1>|<h2\b.*?</h2>|<h3\b.*?</h3>|<p\b.*?</p>|<hr\s*/?>",
+    re.S | re.I,
+)
+
+
+def strip_code_wrapper(text: str) -> str:
+    t = (text or "").strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*\n?", "", t)
+    t = re.sub(r"\n?```\s*$", "", t)
+    t = t.strip()
+    if t.lower().startswith("<!doctype"):
+        t = re.sub(r"^<!doctype[^>]*>", "", t, flags=re.I).strip()
+    if t.lower().startswith("<html"):
+        t = re.sub(r"^<html[^>]*>", "", t, flags=re.I).strip()
+        t = re.sub(r"</html>\s*$", "", t, flags=re.I).strip()
+    i = t.find("<")
+    j = t.rfind(">")
+    if i > 0 and j > i:
+        t = t[i : j + 1]
+    return t.strip()
+
+
+def sanitize_rich_html(raw: str) -> str:
+    t = strip_code_wrapper(raw)
+    if not t or not t.startswith("<"):
+        return ""
+
+    out = []
+    stack = []
+    pos = 0
+
+    for m in _RICH_TAG_RE.finditer(t):
+        text = t[pos : m.start()]
+        if text:
+            out.append(text.replace("<", "&lt;").replace(">", "&gt;"))
+        pos = m.end()
+
+        closing, name, attrs, selfclose = m.group(1), m.group(2).lower(), m.group(3), m.group(4)
+        if name not in _RICH_ALLOWED:
+            continue
+
+        if closing:
+            if name in _RICH_VOID:
+                continue
+            if name in stack:
+                while stack and stack[-1] != name:
+                    out.append(f"</{stack.pop()}>")
+                stack.pop()
+                out.append(f"</{name}>")
+            continue
+
+        safe_attrs = ""
+        if name == "a":
+            am = re.search(r'href\s*=\s*"([^"]*)"', attrs or "")
+            if not am:
+                am = re.search(r"href\s*=\s*'([^']*)'", attrs or "")
+            href = (am.group(1) if am else "").strip()
+            if href.startswith(("http://", "https://", "tg://")):
+                safe_attrs = f' href="{href.replace(chr(34), "")}"'
+        if name in _RICH_VOID:
+            out.append(f"<{name}{safe_attrs}/>")
+            continue
+
+        out.append(f"<{name}{safe_attrs}>")
+        if not selfclose:
+            stack.append(name)
+
+    tail = t[pos:]
+    if tail:
+        out.append(tail.replace("<", "&lt;").replace(">", "&gt;"))
+
+    while stack:
+        out.append(f"</{stack.pop()}>")
+
+    html = "".join(out).strip()
+    tags = re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)", html)
+    if len(tags) < 2:
+        return ""
+    return html
+
+
+def split_rich_html(html: str, limit: int = 3900) -> list[str]:
+    if len(html) <= limit:
+        return [html]
+
+    blocks = _RICH_BLOCK_RE.findall(html)
+    if not blocks:
+        return [html]
+
+    parts = []
+    cur = ""
+    for b in blocks:
+        if len(cur) + len(b) + 2 > limit and cur:
+            parts.append(cur)
+            cur = b
+        else:
+            cur = f"{cur}\n{b}" if cur else b
+    if cur:
+        parts.append(cur)
+    return parts or [html]

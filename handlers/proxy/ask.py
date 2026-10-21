@@ -35,7 +35,9 @@ from utils.jina import extract_urls
 from utils.text import (
     sanitize_ai_output,
     sanitize_markdown,
+    sanitize_rich_html,
     split_message,
+    split_rich_html,
     strip_tags_plain,
 )
 
@@ -93,14 +95,24 @@ def _system_instruction() -> str:
         "- Kalau <bot_reference> tidak ada sama sekali di pesan ini, berarti pertanyaan user tidak menyangkut "
         "fitur bot; jawab sebagai asisten umum dan jangan mengarang fitur bot.\n\n"
         f"{tools_line}\n\n"
-        "Format jawaban menggunakan Telegram Markdown yang bervariasi dan rapi:\n"
-        "- Gunakan subjudul '### Judul' untuk membagi topik/bagian.\n"
-        "- Gunakan list bertingkat '-' dengan kata kunci bold: '- **Fitur**: keterangan'.\n"
-        "- Gunakan inline code `angka / spek / kode` untuk detail teknis (misal `5000 mAh`, `8 GB`, `f/1.8`).\n"
-        "- Gunakan blockquote '> Catatan/Tips/Kesimpulan' untuk highlight rekomendasi atau insight penting.\n"
-        "- Hindari tabel markdown bergaris (sulit dibaca di layar HP); gunakan bullet list berstruktur.\n"
-        "- Pisahkan paragraf dengan baris kosong ganda agar tidak menyatu.\n"
-        "- Kalau memakai hasil web_search, sebutkan sumbernya singkat (nama situs/link)."
+        "FORMAT JAWABAN — TELEGRAM RICH MESSAGE (HTML):\n"
+        "Balasanmu dirender langsung oleh Telegram Rich Message HTML. Kirim HTML mentah, "
+        "BUKAN Markdown, BUKAN dibungkus ``` atau <html>.\n"
+        "Tag yang tersedia:\n"
+        "- '<h1>Judul</h1>' sekali di awal bila jawaban berupa analisis/komparasi/panduan panjang.\n"
+        "- '<h3>Sub Bagian</h3>' untuk memecah topik.\n"
+        "- '<p>Paragraf</p>' untuk narasi; di dalamnya boleh '<b>bold</b>', '<i>italic</i>', '<code>inline</code>'.\n"
+        "- '<table><tr><th>Kolom</th><td>Nilai</td></tr></table>' untuk data, spesifikasi, harga, perbandingan.\n"
+        "- '<blockquote>Tips/Kutipan</blockquote>' atau '<aside>Catatan penting</aside>' untuk insight kunci.\n"
+        "- '<details open><summary>Judul</summary><p>isi</p></details>' untuk detail opsional atau ringkasan cepat.\n"
+        "- '<ul><li>poin</li></ul>' / '<ol><li>langkah</li></ol>' untuk daftar.\n"
+        "- '<hr/>' sebagai pemisah antar bagian besar.\n"
+        "- '<footer>Catatan kaki</footer>' untuk penutup atau atribusi sumber.\n"
+        "- '<a href=\"https://...\">label</a>' untuk tautan.\n"
+        "ATURAN: jangan pakai sintaks Markdown (###, **, ```, '> '). Escape karakter & < > di teks biasa "
+        "menjadi &amp; &lt; &gt;. Untuk sapaan singkat atau jawaban satu-dua kalimat, cukup '<p>' tanpa "
+        "tabel atau heading — jangan memaksakan struktur pada jawaban pendek.\n"
+        "Kalau memakai hasil web_search, sebutkan sumbernya singkat di dalam <footer> atau <p>."
     )
 
 
@@ -283,7 +295,15 @@ async def _reply_thread(bot, msg, text, parse_mode=None):
             return None
 
 
-async def _send_chunks(bot, msg, chunks: list[str]) -> Optional[int]:
+def _final_parts(raw: str) -> tuple[list[str], bool, str]:
+    rich = sanitize_rich_html(raw or "")
+    if rich:
+        return split_rich_html(rich, 3900), True, rich
+    plain = sanitize_markdown(raw or "")
+    return split_message(plain, 4000), False, plain
+
+
+async def _send_chunks(bot, msg, chunks: list[str], as_html: bool = False) -> Optional[int]:
     from utils.rich_stream import send_rich_message
 
     if not chunks:
@@ -292,13 +312,23 @@ async def _send_chunks(bot, msg, chunks: list[str]) -> Optional[int]:
     thread_id = getattr(msg, "message_thread_id", None)
     for idx, chunk in enumerate(chunks):
         try:
-            res = await send_rich_message(
-                bot,
-                msg.chat_id,
-                chunk,
-                message_thread_id=thread_id,
-                reply_to_message_id=msg.message_id if idx == 0 else None,
-            )
+            if as_html:
+                res = await send_rich_message(
+                    bot,
+                    msg.chat_id,
+                    chunk,
+                    message_thread_id=thread_id,
+                    reply_to_message_id=msg.message_id if idx == 0 else None,
+                    rich_html=chunk,
+                )
+            else:
+                res = await send_rich_message(
+                    bot,
+                    msg.chat_id,
+                    chunk,
+                    message_thread_id=thread_id,
+                    reply_to_message_id=msg.message_id if idx == 0 else None,
+                )
             mid = (res or {}).get("message_id") if isinstance(res, dict) else getattr(res, "message_id", None)
             if mid:
                 last_id = mid
@@ -462,17 +492,23 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
             gen(),
             message_thread_id=getattr(msg, "message_thread_id", None),
             stop_event=gen_stop,
+            html_mode=True,
         )
         if gen_stop.is_set():
-            clean_md = sanitize_markdown(raw) or "Response cancelled."
-            last_id = await _send_chunks(bot, msg, [clean_md])
-            history.append({"user": prompt, "ai": clean_md})
+            chunks, as_html, stored = _final_parts(raw)
+            if not stored:
+                stored = "Response cancelled."
+                chunks, as_html = [stored], False
+            last_id = await _send_chunks(bot, msg, chunks, as_html=as_html)
+            history.append({"user": prompt, "ai": stored})
             await ai_memory.set_history(user_id, history, last_id)
             return
-        clean_md = sanitize_markdown(raw) or "Model did not provide an answer."
-        chunks = split_message(clean_md, 4000)
-        last_id = await _send_chunks(bot, msg, chunks)
-        history.append({"user": prompt, "ai": clean_md})
+        chunks, as_html, stored = _final_parts(raw)
+        if not stored:
+            stored = "Model did not provide an answer."
+            chunks, as_html = [stored], False
+        last_id = await _send_chunks(bot, msg, chunks, as_html=as_html)
+        history.append({"user": prompt, "ai": stored})
         await ai_memory.set_history(user_id, history, last_id)
     except RuntimeError as e:
         if "not supported in this chat" in str(e):
@@ -480,11 +516,13 @@ async def _ask_stream_dm(update, context, msg, user_id, history, prompt, message
             typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, None))
             try:
                 raw2 = await _run_agentic(messages, tools)
-                clean_md = sanitize_markdown(raw2) or "Model did not provide an answer."
-                chunks = split_message(clean_md, 4000)
+                chunks, as_html, stored = _final_parts(raw2)
+                if not stored:
+                    stored = "Model did not provide an answer."
+                    chunks, as_html = [stored], False
                 await _stop_typing_task(stop, typing)
-                last_id = await _send_chunks(bot, msg, chunks)
-                history.append({"user": prompt, "ai": clean_md})
+                last_id = await _send_chunks(bot, msg, chunks, as_html=as_html)
+                history.append({"user": prompt, "ai": stored})
                 await ai_memory.set_history(user_id, history, last_id)
             finally:
                 await _stop_typing_task(stop, typing)
@@ -548,12 +586,14 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, thread_id))
         raw = await _run_agentic(messages, tools)
 
-        clean_md = sanitize_markdown(raw) or "Model did not provide an answer."
-        chunks = split_message(clean_md, 4000)
+        chunks, as_html, stored = _final_parts(raw)
+        if not stored:
+            stored = "Model did not provide an answer."
+            chunks, as_html = [stored], False
         await _stop_typing_task(stop, typing)
-        last_sent_id = await _send_chunks(context.bot, msg, chunks)
+        last_sent_id = await _send_chunks(context.bot, msg, chunks, as_html=as_html)
         if last_sent_id:
-            history.append({"user": prompt, "ai": clean_md})
+            history.append({"user": prompt, "ai": stored})
             await ai_memory.set_history(user_id, history, last_sent_id)
     except Exception as e:
         await _stop_typing_task(stop, typing)

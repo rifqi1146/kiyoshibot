@@ -5,6 +5,7 @@ from typing import AsyncIterator
 from telegram import Bot
 
 from .rich_common import is_message_not_modified
+from .text import strip_code_wrapper
 
 DEFAULT_DRAFT_INTERVAL = 0.8
 DEFAULT_THINKING_HINT = "Thinking..."
@@ -15,6 +16,12 @@ def draft_thinking_md(hint: str | None = None) -> str:
     hint = html_lib.escape(hint or DEFAULT_THINKING_HINT)
     return f"<tg-thinking>{hint}</tg-thinking>"
 
+
+def draft_html(text: str, hint: str | None = None) -> str:
+    body = strip_code_wrapper(text or "")
+    if not body:
+        return draft_thinking_md(hint)
+    return f"{body}\n\n{draft_thinking_md(hint)}"
 
 def draft_markdown(text: str, hint: str | None = None) -> str:
     from utils.text import convert_bullets
@@ -34,8 +41,9 @@ async def send_draft(
     message_thread_id: int | None = None,
     can_stop: bool = True,
     is_rtl: bool = False,
+    rich_html: str | None = None,
 ) -> None:
-    rich_message: dict = {"markdown": rich_markdown}
+    rich_message: dict = {"html": rich_html} if rich_html else {"markdown": rich_markdown}
     if is_rtl:
         rich_message["is_rtl"] = True
     payload: dict = {
@@ -61,7 +69,9 @@ async def stream_to_draft(
     thinking_hint: str | None = None,
     stop_event: asyncio.Event | None = None,
     max_chars: int = MAX_DRAFT_CHARS,
+    html_mode: bool = False,
 ) -> str:
+    build = draft_html if html_mode else draft_markdown
     try:
         await send_draft(
             bot, chat_id, draft_id, draft_thinking_md(thinking_hint),
@@ -83,8 +93,9 @@ async def stream_to_draft(
             try:
                 await send_draft(
                     bot, chat_id, draft_id,
-                    draft_markdown(acc, thinking_hint),
+                    build(acc, thinking_hint),
                     message_thread_id, can_stop, is_rtl,
+                    rich_html=build(acc, thinking_hint) if html_mode else None,
                 )
                 last_sent = now
             except Exception:
@@ -92,8 +103,9 @@ async def stream_to_draft(
     if acc:
         try:
             await send_draft(
-                bot, chat_id, draft_id, draft_markdown(acc, thinking_hint),
+                bot, chat_id, draft_id, build(acc, thinking_hint),
                 message_thread_id, can_stop, is_rtl,
+                rich_html=build(acc, thinking_hint) if html_mode else None,
             )
         except Exception:
             pass
@@ -118,8 +130,9 @@ async def send_rich_message(
     reply_to_message_id: int | None = None,
     is_rtl: bool = False,
     reply_markup=None,
+    rich_html: str | None = None,
 ):
-    rich_message: dict = {"markdown": rich_markdown}
+    rich_message: dict = {"html": rich_html} if rich_html else {"markdown": rich_markdown}
     if is_rtl:
         rich_message["is_rtl"] = True
     payload: dict = {"chat_id": chat_id, "rich_message": rich_message}
@@ -140,8 +153,9 @@ async def edit_rich_message(
     rich_markdown: str,
     is_rtl: bool = False,
     reply_markup=None,
+    rich_html: str | None = None,
 ):
-    rich_message: dict = {"markdown": rich_markdown}
+    rich_message: dict = {"html": rich_html} if rich_html else {"markdown": rich_markdown}
     if is_rtl:
         rich_message["is_rtl"] = True
     payload: dict = {
