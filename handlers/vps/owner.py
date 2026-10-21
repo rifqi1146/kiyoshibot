@@ -224,9 +224,14 @@ def _parse_grant_days(raw: str) -> int | None:
 
 async def _grant_scope(q):
     if q is None:
+        log.warning("Grant scope called without callback query")
         return None
     user = getattr(q, "from_user", None)
     if user is None or int(user.id) not in OWNER_ID:
+        log.warning(
+            "Grant denied | data=%r user=%s reason=not_owner",
+            getattr(q, "data", None), getattr(user, "id", None),
+        )
         await _answer(q, "Access denied.", show_alert=True)
         return None
     if q.message is None:
@@ -435,11 +440,11 @@ async def _grant_launch(context, key):
 
 
 async def grant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
     try:
         await _grant_callback(update, context)
-    except Exception:
-        log.exception("Grant callback crashed")
-        q = update.callback_query
+    except Exception as e:
+        log.exception("Grant callback crashed | data=%r err=%r", getattr(q, "data", None), e)
         if q:
             try:
                 await q.answer("Grant error. Try again.", show_alert=True)
@@ -453,6 +458,7 @@ async def _grant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     parts = [p for p in q.data.split(":") if p]
     if len(parts) < 2 or parts[0] != OWNER_PREFIX:
+        log.warning("Grant callback ignored | wrong prefix data=%r", q.data)
         return
     action = parts[1]
 
@@ -461,8 +467,16 @@ async def _grant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     key = await _grant_scope(q)
     if key is None:
+        log.warning(
+            "Grant callback rejected | action=%s data=%s user=%s",
+            action, q.data, getattr(q.from_user, "id", None),
+        )
         return
     store = render.GRANT_STATE[key]
+    log.info(
+        "Grant callback | action=%s data=%s user=%s chat=%s",
+        action, q.data, getattr(q.from_user, "id", None), getattr(q.message, "chat_id", None),
+    )
 
     if action == "gcancel":
         render.GRANT_STATE.pop(key, None)
@@ -570,6 +584,7 @@ async def _grant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "ggrant":
         if len(parts) < 7:
+            log.warning("Grant deploy skipped | malformed data=%r", q.data)
             return
         store["days"] = int(parts[4])
         store["region"] = parts[5]
@@ -577,6 +592,7 @@ async def _grant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         store["message"] = q.message
         return await _grant_launch(context, key)
 
+    log.warning("Grant action unknown | action=%s data=%s", action, q.data)
     return None
 
 

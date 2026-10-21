@@ -71,9 +71,18 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(cacabill_callback, pattern=r"^cacabill:"))
     app.add_handler(CallbackQueryHandler(cacaprov_callback, pattern=r"^cacaprov:"))
     app.add_handler(CallbackQueryHandler(vps_callback, pattern=r"^vps:"))
-    app.add_handler(CallbackQueryHandler(vpsowner_callback, pattern=r"^vpsown:"))
+    app.add_handler(
+        CallbackQueryHandler(
+            grant_callback, pattern=r"^vpsown:(gtier|gdays|gregion|gos|ggo|ggrant|gcancel)"
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            vpsowner_callback,
+            pattern=r"^vpsown:(?!gtier:|gdays:|gregion:|gos:|ggo:|ggrant:|gcancel$)",
+        )
+    )
     app.add_handler(CallbackQueryHandler(account_callback, pattern=r"^vpsacc:"))
-    app.add_handler(CallbackQueryHandler(grant_callback, pattern=r"^vpsown:(gtier|gdays|gregion|gos|ggo|ggrant|gcancel)"))
     app.add_handler(CallbackQueryHandler(firewall_callback, pattern=r"^fwr:"))
 
     

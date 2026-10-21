@@ -18,6 +18,13 @@ from .rich import edit_rich
 
 log = logging.getLogger(__name__)
 
+_LOADING_ACTIONS = frozenset({
+    "menu", "region", "os", "checkout", "detail", "restart", "warranty",
+    "wconfirm", "ref", "rescan", "live", "liveterm", "term", "accounts",
+    "accounts_secret", "accounts_rescan", "account", "account_secret",
+    "account_toggle", "stats", "list",
+})
+
 
 def _is_owner(user_id: int) -> bool:
     return int(user_id) in OWNER_ID
@@ -26,8 +33,8 @@ def _is_owner(user_id: int) -> bool:
 async def _answer(q, text: str | None = None, show_alert: bool = False, url: str | None = None):
     try:
         await q.answer(text, show_alert=show_alert, url=url)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Answer failed | data=%r err=%r", getattr(q, "data", None), e)
 
 
 async def _start_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE, tier_id: str, days: int, region: str, os_id: str):
@@ -148,6 +155,10 @@ async def fail_notice(note):
     return None
 
 
+def _toast_for(action: str) -> str:
+    return NOTICE_LOADING if action in _LOADING_ACTIONS else NOTICE_DONE
+
+
 async def _render_and_edit(q, rich: str, plain: str, markup):
     if q.message is None:
         return
@@ -164,8 +175,13 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     parts = q.data.split(":")
     if len(parts) < 2 or parts[0] != "vps":
+        log.warning("VPS callback ignored | wrong prefix data=%r", q.data)
         return
     action = parts[1]
+    log.info(
+        "VPS callback | action=%s data=%s user=%s chat=%s",
+        action, q.data, getattr(user, "id", None), getattr(q.message, "chat_id", None),
+    )
 
     vps_db.init_db()
 
@@ -174,6 +190,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.delete()
         except Exception:
             pass
+        log.info("VPS close | data=%s user=%s", q.data, getattr(user, "id", None))
         return await _answer(q)
 
     if action == "noop":
@@ -192,20 +209,20 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = await progress_notice(q.message)
         try:
             rich, plain = render.main_menu_content()
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             return await _render_and_edit(q, rich, plain, render.main_menu_keyboard())
         finally:
             await clear_notice(note)
 
     if action == "packages":
-        await _answer(q, NOTICE_DONE)
+        await _answer(q, _toast_for(action))
         rich, plain = render.packages_content()
         return await _render_and_edit(q, rich, plain, render.packages_keyboard())
 
     if action == "tier":
         if len(parts) < 3:
             return
-        await _answer(q, NOTICE_DONE)
+        await _answer(q, _toast_for(action))
         tier_id = parts[2]
         rich, plain = render.duration_content(tier_id)
         return await _render_and_edit(q, rich, plain, render.duration_keyboard(tier_id))
@@ -218,7 +235,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tier_id = parts[2]
             days = int(parts[3])
             page = int(parts[4]) if len(parts) > 4 else 0
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             regions = await service.get_available_regions()
             rich, plain = render.region_content(tier_id, days, page, regions)
             return await _render_and_edit(q, rich, plain, render.region_keyboard(tier_id, days, page, regions))
@@ -230,7 +247,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         note = await progress_notice(q.message)
         try:
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             tier_id = parts[2]
             days = int(parts[3])
             region = parts[4]
@@ -259,7 +276,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await clear_notice(note)
 
     if action == "myvps":
-        await _answer(q, NOTICE_DONE)
+        await _answer(q, _toast_for(action))
         instances = await asyncio.to_thread(vps_db.list_user_instances, user.id)
         active = [i for i in instances if i["status"] in ("active", "replaced")]
         rich, plain = render.myvps_content(active)
@@ -277,7 +294,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await _answer(q, "This is not your instance.", show_alert=True)
             rich, plain = render.instance_detail_content(inst)
             warranty_active = inst["status"] == "active" and time.time() < inst["warranty_until"] and not inst["warranty_claimed"]
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             return await _render_and_edit(
                 q, rich, plain,
                 render.instance_detail_keyboard(
@@ -297,7 +314,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await _answer(q, "Instance not found.", show_alert=True)
             if int(user.id) != int(inst["user_id"]):
                 return await _answer(q, "This is not your instance.", show_alert=True)
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             info = await aws.get_instance_info(
                 inst["instance_id"], region=inst.get("region"), account=inst.get("account")
             )
@@ -323,7 +340,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await _answer(q, "The warranty period has ended.", show_alert=True)
 
             rich, plain = render.warranty_confirm_content(inst)
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             return await _render_and_edit(q, rich, plain, render.warranty_confirm_keyboard(inst["vps_id"]))
         finally:
             await clear_notice(note)
@@ -343,7 +360,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if time.time() >= inst["warranty_until"]:
                 return await _answer(q, "The warranty period has ended.", show_alert=True)
 
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             rich, plain = render.warranty_progress_content(inst)
             await _render_and_edit(q, rich, plain, None)
 
@@ -513,12 +530,21 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
     if not _is_owner(user.id):
+        log.warning(
+            "VPS owner callback denied | data=%s user=%s reason=not_owner",
+            q.data, getattr(user, "id", None),
+        )
         return await _answer(q, "Access denied.", show_alert=True)
 
     parts = q.data.split(":")
     if len(parts) < 2 or parts[0] != "vpsown":
+        log.warning("VPS owner callback ignored | wrong prefix data=%r", q.data)
         return
     action = parts[1]
+    log.info(
+        "VPS owner callback | action=%s data=%s user=%s chat=%s",
+        action, q.data, getattr(user, "id", None), getattr(q.message, "chat_id", None),
+    )
 
     vps_db.init_db()
 
@@ -527,12 +553,13 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.delete()
         except Exception:
             pass
+        log.info("VPS close | data=%s user=%s", q.data, getattr(user, "id", None))
         return await _answer(q)
 
     if action == "menu":
         note = await progress_notice(q.message)
         try:
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             scan, _ = await service.get_account_scan()
             live_instances = scan.get("instances", [])
             regions_live = len({i.get("region") for i in live_instances})
@@ -551,7 +578,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             show_secrets = len(parts) > 2 and parts[2] == "1"
             rich, plain = render.accounts_content(show_secrets=show_secrets)
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             return await _render_and_edit(q, rich, plain, render.accounts_keyboard(show_secrets))
         finally:
             await clear_notice(note)
@@ -561,7 +588,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             show_secrets = len(parts) > 2 and parts[2] == "1"
             rich, plain = render.accounts_content(show_secrets=show_secrets)
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             return await _render_and_edit(q, rich, plain, render.accounts_keyboard(show_secrets))
         finally:
             await clear_notice(note)
@@ -585,7 +612,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = parts[2]
             show_secrets = len(parts) > 3 and parts[3] == "1"
             rich, plain = render.account_detail_content(name, show_secrets=show_secrets)
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             return await _render_and_edit(
                 q, rich, plain, render.account_detail_keyboard(name, show_secrets)
             )
@@ -600,7 +627,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = parts[2]
             show_secrets = len(parts) > 3 and parts[3] == "1"
             rich, plain = render.account_detail_content(name, show_secrets=show_secrets)
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             return await _render_and_edit(
                 q, rich, plain, render.account_detail_keyboard(name, show_secrets)
             )
@@ -627,7 +654,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "stats":
         note = await progress_notice(q.message)
         try:
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             scan, _ = await service.get_account_scan()
             live_instances = scan.get("instances", [])
             regions_live = len({i.get("region") for i in live_instances})
@@ -641,7 +668,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = await cached_notice(q.message, service.scan_is_cached, "Loading instances...")
         try:
             show_terminated = len(parts) > 2 and parts[2] == "1"
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             db_instances = await asyncio.to_thread(vps_db.list_all_instances)
             scan, _ = await service.get_account_scan()
             merged = render.merge_with_live(db_instances, scan.get("instances", []), show_terminated=show_terminated)
@@ -653,7 +680,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "rescan":
         note = await progress_notice(q.message)
         try:
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             show_terminated = len(parts) > 2 and parts[2] == "1"
             db_instances = await asyncio.to_thread(vps_db.list_all_instances)
             scan, _ = await service.get_account_scan(force=True)
@@ -668,7 +695,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         note = await progress_notice(q.message)
         try:
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             instance_id = parts[2]
             region = parts[3]
             account = parts[4] if len(parts) > 4 else None
@@ -696,7 +723,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         note = await progress_notice(q.message)
         try:
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             instance_id = parts[2]
             region = parts[3]
             account = parts[4] if len(parts) > 4 else None
@@ -718,7 +745,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "info":
         if len(parts) < 3:
             return
-        await _answer(q, NOTICE_DONE)
+        await _answer(q, _toast_for(action))
         inst = vps_db.get_instance(parts[2])
         if not inst:
             return
@@ -730,7 +757,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         note = await progress_notice(q.message)
         try:
-            await _answer(q, NOTICE_LOADING)
+            await _answer(q, _toast_for(action))
             inst = vps_db.get_instance(parts[2])
             if not inst:
                 return
@@ -767,7 +794,7 @@ async def vpsowner_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await clear_notice(note)
 
     if action == "price":
-        await _answer(q, NOTICE_DONE)
+        await _answer(q, _toast_for(action))
         rich, plain = render.owner_price_content()
         return await _render_and_edit(q, rich, plain, render.owner_price_keyboard())
 
