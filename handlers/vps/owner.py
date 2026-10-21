@@ -231,11 +231,29 @@ async def _grant_scope(q):
         return None
     if q.message is None:
         return None
-    key = (int(q.message.chat_id), int(q.message.message_id))
-    if key not in render.GRANT_STATE:
-        await _answer(q, "This grant screen expired. Send /vpsgrant again.", show_alert=True)
-        return None
-    return key
+    chat_id = int(q.message.chat_id)
+    message_id = int(q.message.message_id)
+    key = (chat_id, message_id)
+    if key in render.GRANT_STATE:
+        return key
+
+    owned = [
+        (cand, store)
+        for cand, store in render.GRANT_STATE.items()
+        if cand[0] == chat_id and int(store.get("owner_id") or 0) == int(user.id)
+    ]
+    for cand, store in owned:
+        anchor = store.get("anchor")
+        if anchor and (int(anchor[0]), int(anchor[1])) == key:
+            return cand
+    if len(owned) == 1:
+        cand, store = owned[0]
+        store["anchor"] = key
+        render.GRANT_STATE[key] = render.GRANT_STATE.pop(cand)
+        return key
+
+    await _answer(q, "This grant screen expired. Send /vpsgrant again.", show_alert=True)
+    return None
 
 
 async def _grant_notice(msg, text: str = ""):
@@ -253,6 +271,8 @@ async def _grant_fail(note):
 async def _grant_edit(q, key, rich, plain, keyboard):
     store = render.GRANT_STATE[key]
     store["touched"] = time.time()
+    if q.message is not None:
+        store["anchor"] = (int(q.message.chat_id), int(q.message.message_id))
     return await edit_rich(
         q.get_bot(),
         q.message.chat_id,
@@ -633,6 +653,7 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _grant_launch(context, key)
 
     rich, plain = render.grant_tier_content(username, int(target_uid))
+    render.GRANT_STATE[key]["anchor"] = (int(chat.id), int(msg.message_id))
     sent = await send_rich(
         context.bot,
         chat.id,
