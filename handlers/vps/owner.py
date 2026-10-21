@@ -4,6 +4,7 @@ import re
 import time
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from database import vps_db
@@ -11,14 +12,26 @@ from handlers.moderation.helpers import resolve_target_user_id
 from utils.config import OWNER_ID
 
 from . import aws, notify, render, service
-from .constants import DEFAULT_REGION, MAX_DAYS, WARRANTY_DAYS, get_tier
-from .rich import send_rich
+from .callbacks import NOTICE_LOADING, _answer
+from .constants import DEFAULT_REGION, MAX_DAYS, OWNER_PREFIX, WARRANTY_DAYS, get_tier
+from .rich import edit_rich, send_rich
 
 log = logging.getLogger(__name__)
 
 
 def _is_owner(user_id: int) -> bool:
     return int(user_id) in OWNER_ID
+
+
+async def _chat_action(msg):
+    if msg is None:
+        return
+    try:
+        await msg.get_bot().send_chat_action(
+            chat_id=msg.chat_id, action=ChatAction.TYPING
+        )
+    except Exception as e:
+        log.debug("Chat action failed | err=%r", e)
 
 
 async def _get_scan_with_optional_note(msg, force: bool = False) -> tuple[dict, bool]:
@@ -129,6 +142,7 @@ async def vpsterminate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await msg.reply_text("<b>Instance not found.</b>", parse_mode="HTML")
 
     status = await msg.reply_text("<b>Terminating AWS instance...</b>", parse_mode="HTML")
+    await _chat_action(msg)
     ok = await aws.terminate_vps(
         inst["instance_id"], region=inst.get("region"), account=inst.get("account")
     )
@@ -183,10 +197,13 @@ async def vpsrenew_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 USAGE_TEXT = (
     "<b>Usage:</b>\n"
-    "<code>/vpsgrant &lt;user|@username|reply&gt; &lt;tier&gt; &lt;days&gt; [region]</code>\n"
-    "Tiers: <code>1g</code> <code>2g</code> <code>4g</code> <code>8g</code>\n"
-    "Duration: <code>7d</code> <code>14d</code> <code>30d</code> or a raw day count"
+    "<code>/vpsgrant &lt;user|@username|reply&gt;</code> then pick plan, duration, "
+    "region and OS from the buttons.\n"
+    "Shortcut: <code>/vpsgrant &lt;user&gt; 1g 30 30d ap-southeast-5</code>"
 )
+
+GRANT_TIERS = {"1g", "2g", "4g", "8g"}
+REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d$")
 
 
 def _parse_grant_days(raw: str) -> int | None:
@@ -204,62 +221,103 @@ def _parse_grant_days(raw: str) -> int | None:
     return days
 
 
-async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    chat = update.effective_chat
-    user = update.effective_user
-    if not msg or not chat or not user or not _is_owner(user.id):
+async def _grant_scope(q):
+    if q is None:
+        return None
+    user = getattr(q, "from_user", None)
+    if user is None or int(user.id) not in OWNER_ID:
+        await _answer(q, "Access denied.", show_alert=True)
+        return None
+    if q.message is None:
+        return None
+    key = (int(q.message.chat_id), int(q.message.message_id))
+    if key not in render.GRANT_STATE:
+        await _answer(q, "This grant screen expired. Send /vpsgrant again.", show_alert=True)
+        return None
+    return key
+
+
+async def _grant_notice(msg, text: str = ""):
+    return msg
+
+
+async def _grant_clear(note):
+    return None
+
+
+async def _grant_fail(note):
+    return None
+
+
+async def _grant_edit(q, key, rich, plain, keyboard):
+    store = render.GRANT_STATE[key]
+    store["touched"] = time.time()
+    return await edit_rich(
+        q.get_bot(),
+        q.message.chat_id,
+        q.message.message_id,
+        rich,
+        plain,
+        keyboard,
+        session_data={"user_id": store.get("owner_id")},
+    )
+
+
+async def _edit_store(store, rich, plain, keyboard):
+    msg = store.get("message")
+    if msg is None:
         return
-    args = [a for a in (context.args or []) if (a or "").strip()]
-    if len(args) < 2:
-        return await msg.reply_text(USAGE_TEXT, parse_mode="HTML")
-
-    tier_id = ""
-    days = None
-    target_token = None
-    region = DEFAULT_REGION
-
-    for idx, a in enumerate(args):
-        if get_tier(a.strip().lower()) and not tier_id:
-            tier_id = a.strip().lower()
-            continue
-        if days is None and _parse_grant_days(a) is not None:
-            days = _parse_grant_days(a)
-            continue
-        if target_token is None and not get_tier(a.strip().lower()):
-            target_token = a.strip()
-            continue
-        if region == DEFAULT_REGION and re.match(r"^[a-z]{2}-[a-z]+-\d$", a.strip().lower()):
-            region = a.strip().lower()
-            continue
-
-    if not tier_id:
-        return await msg.reply_text(
-            f"<b>Invalid plan.</b>\n\n{USAGE_TEXT}",
-            parse_mode="HTML",
+    try:
+        await edit_rich(
+            msg.get_bot(),
+            msg.chat_id,
+            msg.message_id,
+            rich,
+            plain,
+            keyboard,
+            session_data={"user_id": store.get("owner_id")},
         )
-    if days is None:
-        return await msg.reply_text(
-            f"<b>Invalid duration.</b> Use <code>7d</code>, <code>14d</code>, <code>30d</code> "
-            f"or a day count between 1 and {MAX_DAYS}.\n\n{USAGE_TEXT}",
-            parse_mode="HTML",
-        )
-    if not target_token and not (msg.reply_to_message and msg.reply_to_message.from_user):
-        return await msg.reply_text(f"<b>Missing target user.</b>\n\n{USAGE_TEXT}", parse_mode="HTML")
+    except Exception as e:
+        log.warning("Grant screen edit failed | err=%r", e)
 
-    target_uid = await resolve_target_user_id(update, context, target_token)
-    if not target_uid:
-        return await msg.reply_text(
-            "<b>Could not resolve that user.</b>\n"
-            "That username must have been seen by the bot before, or use a numeric ID / reply.",
-            parse_mode="HTML",
+
+async def _deliver_to_recipient(context, inst, owner_id: int) -> bool:
+    try:
+        owner_chat = await context.bot.get_chat(owner_id)
+        label = " ".join(
+            x for x in [getattr(owner_chat, "first_name", None), getattr(owner_chat, "last_name", None)] if x
+        ) or "the owner"
+    except Exception:
+        label = "the owner"
+    rich, plain = render.grant_recipient_content(inst, label)
+    try:
+        await send_rich(
+            context.bot,
+            inst["user_id"],
+            None,
+            rich,
+            plain,
+            render.grant_recipient_keyboard(),
+            session_data={"user_id": inst["user_id"]},
         )
+        return True
+    except Exception as e:
+        log.warning("Grant delivery failed | user=%s err=%r", inst["user_id"], e)
+        return False
+
+
+async def _grant_launch(context, key):
+    store = render.GRANT_STATE[key]
+    target_uid = int(store["target_id"])
+    tier_id = store["tier"]
+    days = int(store["days"])
+    region = store["region"]
+    os_id = store["os"]
+    owner_id = int(store["owner_id"])
 
     t = get_tier(tier_id)
-    status_msg = await msg.reply_text(
-        f"<b>Deploying {t['label']} for user {target_uid} in {region}...</b>",
-        parse_mode="HTML",
-    )
+    await _edit_store(store, *render.grant_progress_content(target_uid, tier_id, days, region, os_id), None)
+    note = await _grant_notice(store.get("message"))
 
     vps_id = ""
     created_instance = None
@@ -268,17 +326,21 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vps_id = vps_db.next_vps_id(target_uid)
         res, password = await aws.launch_vps(
             region=region,
-            os_id="ubuntu-24.04",
+            os_id=os_id,
             instance_type=t["instance_type"],
             disk_gb=t["disk_gb"],
             tag_name=vps_id,
         )
         created_instance = res["instance_id"]
         created_account = res.get("account")
-        account_used = res.get("account")
         ip = await aws.wait_for_public_ip(
-            res["instance_id"], region=region, max_attempts=25, delay=3.0, account=account_used
+            res["instance_id"], region=region, max_attempts=25, delay=3.0, account=created_account
         )
+        if ip:
+            await _grant_clear(note)
+            note = await _grant_notice(store.get("message"))
+            await aws.wait_for_ssh(ip, max_wait_sec=180, interval=5.0)
+
         now = time.time()
         inst = vps_db.save_instance(
             vps_id=vps_id,
@@ -287,7 +349,7 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             instance_type=t["instance_type"],
             region=region,
             tier=tier_id,
-            os_image="ubuntu-24.04",
+            os_image=os_id,
             disk_gb=t["disk_gb"],
             ip_address=ip or "",
             root_password=password,
@@ -296,18 +358,24 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             created_at=now,
             expires_at=now + (days * 86400),
             warranty_until=now + (WARRANTY_DAYS * 86400),
-            account=account_used,
+            account=created_account,
             sg_id=res.get("sg_id"),
         )
         vps_db.log_audit(
             vps_id,
             "GRANT",
-            user.id,
-            f"target={target_uid} tier={tier_id} region={region} days={days} account={account_used}",
+            owner_id,
+            f"target={target_uid} tier={tier_id} region={region} days={days} account={created_account}",
         )
         service.invalidate_account_scan()
-        rich, plain = render.provisioned_content(inst)
-        await send_rich(context.bot, chat.id, msg.message_id, rich, plain, render.owner_instance_keyboard(vps_id, "active"))
+
+        await _grant_clear(note)
+        delivered = await _deliver_to_recipient(context, inst, owner_id)
+
+        render.GRANT_STATE.pop(key, None)
+        await _edit_store(
+            store, *render.grant_result_content(inst, delivered), render.grant_result_keyboard(inst)
+        )
 
         try:
             target_name, target_username = await notify.buyer_label(context.bot, target_uid)
@@ -317,38 +385,263 @@ async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 source="grant",
                 buyer_name=target_name,
                 buyer_username=target_username,
-                note=f"Granted by owner {user.id}",
+                note=f"Granted by owner {owner_id}",
             )
         except Exception as e:
             log.warning("Owner grant notice failed | vps_id=%s err=%r", vps_id, e)
     except Exception as e:
         log.error("Grant VPS failed | err=%r", e)
+        await _grant_clear(note)
         cleaned = ""
         if created_instance:
             try:
                 await aws.terminate_vps(created_instance, region=region, account=created_account)
-                cleaned = f"\n\nOrphan instance <code>{created_instance}</code> was terminated."
+                cleaned = f" Orphan instance {created_instance} was terminated."
                 vps_db.log_audit(
                     vps_id or None,
                     "GRANT_ROLLBACK",
-                    user.id,
+                    owner_id,
                     f"aws={created_instance} region={region} account={created_account} err={str(e)[:200]}",
                 )
             except Exception as term_err:
-                log.error(
-                    "Grant rollback failed | aws=%s err=%r", created_instance, term_err
-                )
-                cleaned = (
-                    f"\n\n⚠️ Orphan instance <code>{created_instance}</code> in "
-                    f"<code>{region}</code> could not be terminated automatically. "
-                    "Terminate it from the AWS console."
-                )
+                log.error("Grant rollback failed | aws=%s err=%r", created_instance, term_err)
+                cleaned = f" Orphan instance {created_instance} in {region} could not be terminated."
         service.invalidate_account_scan()
-        try:
-            await status_msg.edit_text(
-                f"<b>Failed to create instance:</b>\n<code>{e}</code>{cleaned}",
-                parse_mode="HTML",
+        render.GRANT_STATE.pop(key, None)
+        await _edit_store(
+            store,
+            *render.grant_failed_content(target_uid, f"{e}.{cleaned}"),
+            render.grant_failed_keyboard(target_uid),
+        )
+
+
+async def grant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await _grant_callback(update, context)
+    except Exception:
+        log.exception("Grant callback crashed")
+        q = update.callback_query
+        if q:
+            try:
+                await q.answer("Grant error. Try again.", show_alert=True)
+            except Exception:
+                pass
+
+
+async def _grant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    parts = [p for p in q.data.split(":") if p]
+    if len(parts) < 2 or parts[0] != OWNER_PREFIX:
+        return
+    action = parts[1]
+
+    if action == "noop":
+        return await _answer(q)
+
+    key = await _grant_scope(q)
+    if key is None:
+        return
+    store = render.GRANT_STATE[key]
+
+    if action == "gcancel":
+        render.GRANT_STATE.pop(key, None)
+        await _answer(q, "Grant cancelled.")
+        return await _edit_store(
+            {"message": q.message, "owner_id": q.from_user.id},
+            *render.grant_closed_content(),
+            None,
+        )
+
+    await _answer(q, NOTICE_LOADING)
+    target_id = int(store["target_id"])
+
+    if action == "gtier":
+        if len(parts) >= 4 and parts[3] in GRANT_TIERS:
+            store["tier"] = parts[3]
+            store["days"] = 30
+            return await _grant_edit(
+                q, key,
+                *render.grant_days_content(target_id, store["tier"]),
+                render.grant_days_keyboard(target_id, store["tier"]),
             )
-        except Exception:
-            pass
+        return await _grant_edit(
+            q, key,
+            *render.grant_tier_content(store["username"], target_id),
+            render.grant_tier_keyboard(target_id),
+        )
+
+    if action == "gdays":
+        if len(parts) < 5:
+            return
+        store["tier"] = parts[3] if parts[3] in GRANT_TIERS else store["tier"]
+        days = int(parts[4])
+        store["days"] = days
+        note = await _grant_notice(q.message)
+        try:
+            regions = await service.get_available_regions()
+        finally:
+            await _grant_clear(note)
+        if not regions:
+            return await _edit_store(
+                store,
+                *render.grant_failed_content(target_id, "No AWS region is available right now."),
+                render.grant_failed_keyboard(target_id),
+            )
+        return await _grant_edit(
+            q, key,
+            *render.grant_region_content(target_id, store["tier"], days, 0, regions),
+            render.grant_region_keyboard(target_id, store["tier"], days, 0, regions),
+        )
+
+    if action == "gregion":
+        if len(parts) < 6:
+            return
+        days = int(parts[4])
+        page = int(parts[5])
+        store["days"] = days
+        note = await _grant_notice(q.message)
+        try:
+            regions = await service.get_available_regions()
+        finally:
+            await _grant_clear(note)
+        return await _grant_edit(
+            q, key,
+            *render.grant_region_content(target_id, store["tier"], days, page, regions),
+            render.grant_region_keyboard(target_id, store["tier"], days, page, regions),
+        )
+
+    if action == "gos":
+        if len(parts) < 6:
+            return
+        days = int(parts[4])
+        region = parts[5]
+        page = int(parts[6]) if len(parts) > 6 else 0
+        store["days"] = days
+        store["region"] = region
+        account = aws.account_for_region(region)
+        note = await _grant_notice(q.message)
+        try:
+            os_list = await aws.available_os_images(region, account)
+        finally:
+            await _grant_clear(note)
+        if not os_list:
+            os_list = list(render.OS_IMAGES)
+        return await _grant_edit(
+            q, key,
+            *render.grant_os_content(target_id, store["tier"], days, region, os_list),
+            render.grant_os_keyboard(target_id, store["tier"], days, region, os_list, page),
+        )
+
+    if action == "ggo":
+        if len(parts) < 7:
+            return
+        days = int(parts[4])
+        region = parts[5]
+        os_id = parts[6]
+        store["days"] = days
+        store["region"] = region
+        store["os"] = os_id
+        return await _grant_edit(
+            q, key,
+            *render.grant_confirm_content(target_id, store["tier"], days, region, os_id),
+            render.grant_confirm_keyboard(target_id, store["tier"], days, region, os_id),
+        )
+
+    if action == "ggrant":
+        if len(parts) < 7:
+            return
+        store["days"] = int(parts[4])
+        store["region"] = parts[5]
+        store["os"] = parts[6]
+        store["message"] = q.message
+        return await _grant_launch(context, key)
+
+    return None
+
+
+async def vpsgrant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+    if not msg or not chat or not user or not _is_owner(user.id):
+        return
+
+    args = [a for a in (context.args or []) if (a or "").strip()]
+    if not args and not (msg.reply_to_message and msg.reply_to_message.from_user):
+        return await msg.reply_text(USAGE_TEXT, parse_mode="HTML")
+
+    target_token = None
+    tier_id = None
+    days = None
+    region = None
+    for a in args:
+        low = a.strip().lower()
+        if get_tier(low) and tier_id is None:
+            tier_id = get_tier(low)["id"]
+            continue
+        if target_token is None and not get_tier(low) and _parse_grant_days(a) is None and not REGION_RE.match(low):
+            target_token = a.strip()
+            continue
+        if days is None and _parse_grant_days(a) is not None and tier_id is not None:
+            days = _parse_grant_days(a)
+            continue
+        if region is None and REGION_RE.match(low):
+            region = low
+            continue
+
+    target_uid = await resolve_target_user_id(update, context, target_token)
+    if not target_uid:
+        return await msg.reply_text(
+            "<b>Could not resolve that user.</b>\n"
+            "That username must have been seen by the bot before, or use a numeric ID / reply.",
+            parse_mode="HTML",
+        )
+
+    try:
+        target_chat = await context.bot.get_chat(target_uid)
+    except Exception:
+        target_chat = None
+    username = (
+        getattr(target_chat, "username", None)
+        or getattr(target_chat, "first_name", None)
+        or str(target_uid)
+    )
+
+    key = (int(chat.id), int(msg.message_id))
+    render.GRANT_STATE[key] = {
+        "owner_id": int(user.id),
+        "target_id": int(target_uid),
+        "username": username,
+        "tier": tier_id or "1g",
+        "days": days or 30,
+        "region": region or DEFAULT_REGION,
+        "os": "ubuntu-24.04",
+        "created_at": time.time(),
+        "touched": time.time(),
+    }
+    render.purge_grant_state()
+
+    if tier_id and days and region:
+        t = get_tier(tier_id)
+        await _chat_action(msg)
+        status = await msg.reply_text(
+            f"<b>Deploying {t['label']} for {target_uid} in {region}...</b>",
+            parse_mode="HTML",
+        )
+        render.GRANT_STATE[key]["message"] = status
+        return await _grant_launch(context, key)
+
+    rich, plain = render.grant_tier_content(username, int(target_uid))
+    await send_rich(
+        context.bot,
+        chat.id,
+        msg.message_id,
+        rich,
+        plain,
+        render.grant_tier_keyboard(int(target_uid)),
+        session_data={"user_id": int(user.id)},
+    )
+
 

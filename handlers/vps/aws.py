@@ -417,18 +417,119 @@ def _describe_instance_sync(region: str, instance_id: str, account: str | None =
         reservations = res.get("Reservations", []) if isinstance(res, dict) else []
         if reservations and reservations[0].get("Instances"):
             inst = reservations[0]["Instances"][0]
+            nis = inst.get("NetworkInterfaces") or []
+            eni = nis[0] if nis else {}
+            groups = eni.get("Groups") or []
+            bdm = inst.get("BlockDeviceMappings") or []
+            root = bdm[0].get("Ebs") if bdm else None
+            details = fetch_instance_specs(region, inst.get("InstanceType"))
+            volumes = _describe_volumes(region, inst.get("InstanceId"), account)
             return {
                 "instance_id": inst.get("InstanceId"),
                 "state": (inst.get("State") or {}).get("Name"),
                 "public_ip": inst.get("PublicIpAddress"),
                 "private_ip": inst.get("PrivateIpAddress"),
+                "public_dns": (eni.get("Association") or {}).get("PublicDnsName"),
                 "launch_time": inst.get("LaunchTime"),
                 "instance_type": inst.get("InstanceType"),
+                "name": _tag_value(inst, "Name"),
+                "vpc_id": eni.get("VpcId") or inst.get("VpcId"),
+                "subnet_id": eni.get("SubnetId") or inst.get("SubnetId"),
+                "availability_zone": (inst.get("Placement") or {}).get("AvailabilityZone"),
+                "security_groups": [
+                    {"id": g.get("GroupId"), "name": g.get("GroupName")} for g in groups
+                ],
+                "image_id": inst.get("ImageId"),
+                "platform": inst.get("PlatformDetails") or "Linux/UNIX",
+                "architecture": inst.get("Architecture"),
+                "vcpu": details.get("vcpu"),
+                "memory_gib": details.get("memory_gib"),
+                "network_perf": details.get("network_perf"),
+                "instance_storage": (details.get("storage") or {}).get("Disks") or [],
+                "ebs_optimized": inst.get("EbsOptimized"),
+                "root_device": inst.get("RootDeviceType"),
+                "root_volume": (root or {}).get("VolumeId"),
+                "volume_ids": [((b.get("Ebs") or {}).get("VolumeId")) for b in bdm],
+                "volumes": volumes,
             }
         return None
     except Exception as e:
         log.warning("DescribeInstance failed | instance_id=%s region=%s err=%r", instance_id, region, e)
         return None
+
+
+def _describe_volumes(region: str, instance_id: str, account: str | None = None) -> list[dict]:
+    try:
+        res = _run_aws_cli([
+            "ec2", "describe-volumes",
+            "--filters", f"Name=attachment.instance-id,Values={instance_id}",
+        ], region=region, timeout=30, account=account)
+    except Exception as e:
+        log.warning("DescribeVolumes failed | instance=%s err=%r", instance_id, e)
+        return []
+    out = []
+    for v in (res.get("Volumes", []) if isinstance(res, dict) else []) or []:
+        out.append({
+            "id": v.get("VolumeId"),
+            "size_gb": v.get("Size"),
+            "type": v.get("VolumeType"),
+            "iops": v.get("Iops"),
+            "throughput": v.get("Throughput"),
+            "encrypted": v.get("Encrypted"),
+            "state": v.get("State"),
+        })
+    return out
+
+
+def _tag_value(inst: dict, key: str):
+    for tag in inst.get("Tags") or []:
+        if tag.get("Key") == key:
+            return tag.get("Value")
+    return None
+
+
+_SPEC_CACHE: dict[tuple[str, str], dict] = {}
+
+
+def _instance_type_specs(region: str, instance_type: str) -> list[dict]:
+    key = (region, instance_type)
+    if key in _SPEC_CACHE:
+        return [_SPEC_CACHE[key]]
+    try:
+        res = _run_aws_cli([
+            "ec2", "describe-instance-types",
+            "--instance-types", instance_type,
+        ], region=region, timeout=30)
+        types = res.get("InstanceTypes", []) if isinstance(res, dict) else []
+        for t in types:
+            _SPEC_CACHE[key] = {
+                "type": t.get("InstanceType"),
+                "vcpus": t.get("VCpuInfo") or {},
+                "memory_mib": (t.get("MemoryInfo") or {}).get("SizeInMiB"),
+                "storage": t.get("InstanceStorageInfo") or {},
+                "network_perf": t.get("NetworkInfo") or {},
+            }
+            return [_SPEC_CACHE[key]]
+    except Exception as e:
+        log.warning("DescribeInstanceTypes failed | type=%s region=%s err=%r", instance_type, region, e)
+    _SPEC_CACHE[key] = {}
+    return [{}]
+
+
+def fetch_instance_specs(region: str, instance_type: str) -> dict:
+    specs = _instance_type_specs(region, instance_type)
+    if not specs:
+        return {}
+    spec = specs[0]
+    if not spec or not spec.get("type"):
+        return {}
+    network = spec.get("network_perf") or {}
+    return {
+        "vcpu": (spec.get("vcpus") or {}).get("DefaultVCpus"),
+        "memory_gib": round(((spec.get("memory_mib") or 0) / 1024), 3),
+        "network_perf": network.get("NetworkPerformance"),
+        "storage": spec.get("storage") or {},
+    }
 
 
 def _terminate_instance_sync(region: str, instance_id: str, account: str | None = None) -> bool:

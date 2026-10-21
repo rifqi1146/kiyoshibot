@@ -7,6 +7,7 @@ from database import vps_db
 
 from .constants import (
     DEFAULT_REGION,
+    DURATIONS,
     OS_IMAGES,
     OWNER_PREFIX,
     REGIONS_PER_PAGE,
@@ -944,6 +945,21 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
     tier_label = t["label"] if t else normalize_tier(inst["tier"])
     os_label = o["label"] if o else inst["os_image"]
     region = inst.get("region") or "-"
+    spec_bits = []
+    if t:
+        if t.get("vcpu"):
+            spec_bits.append(f"{t['vcpu']} vCPU")
+        if t.get("ram_gb"):
+            spec_bits.append(f"{t['ram_gb']} GB RAM")
+        if t.get("disk_gb"):
+            spec_bits.append(f"{t['disk_gb']} GB disk")
+    if not spec_bits:
+        live = getattr(inst, "get", lambda k, d=None: d)("live_specs") or {}
+        if live.get("vcpu"):
+            spec_bits.append(f"{live['vcpu']} vCPU")
+        if live.get("memory_gib"):
+            spec_bits.append(f"{live['memory_gib']} GB RAM")
+    spec_line = " / ".join(spec_bits) or "-"
     rich = (
         f"<h1>🖥 {html.escape(inst['vps_id'].upper())}</h1>"
         "<h3>Instance</h3>"
@@ -959,6 +975,7 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
         "<ul>"
         f"<li>User ID: <code>{inst['user_id']}</code></li>"
         f"<li>Plan: {html.escape(tier_label)} / {inst['days']} days</li>"
+        f"<li>Specs: <b>{html.escape(spec_line)}</b></li>"
         f"<li>Price: {fmt_rp(inst['price'])}</li>"
         "</ul>"
         "<h3>Access</h3>"
@@ -983,6 +1000,7 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
         f"Status: {inst['status']}\n"
         f"User: <code>{inst['user_id']}</code>\n"
         f"Plan: {tier_label} / {inst['days']} days\n"
+        f"Specs: {spec_line}\n"
         f"Price: {fmt_rp(inst['price'])}\n"
         f"IP: <code>{inst['ip_address'] or '-'}</code>\n"
         f"Password: <code>{inst['root_password'] or '-'}</code>\n"
@@ -992,6 +1010,443 @@ def owner_info_content(inst: dict) -> tuple[str, str]:
         f"Warranty: {_fmt_dt(inst['warranty_until'])}"
     )
     return rich, plain
+
+
+def _fmt_ts(value) -> str:
+    if value in (None, "", "-"):
+        return "-"
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    if isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+    elif hasattr(value, "tzinfo"):
+        dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except Exception:
+            return str(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo("Asia/Jakarta")).strftime("%d %b %Y %H:%M WIB")
+
+
+def _storage_line(info: dict) -> str:
+    disks = info.get("instance_storage") or []
+    total_gib = sum(
+        (d.get("SizeInGB") or 0) * (d.get("Count") or 1) for d in disks
+    )
+    kind = disks[0].get("Type") if disks else None
+    if total_gib:
+        return f"{total_gib} GB instance storage ({kind})"
+    vols = info.get("volumes") or []
+    if vols:
+        v = vols[0]
+        bits = [f"{v.get('size_gb')} GB"]
+        if v.get("type"):
+            bits.append(str(v["type"]))
+        if v.get("iops"):
+            bits.append(f"{v['iops']} IOPS")
+        if v.get("throughput"):
+            bits.append(f"{v['throughput']} MB/s")
+        if v.get("encrypted"):
+            bits.append("encrypted")
+        return " · ".join(bits)
+    root = info.get("root_device") or "ebs"
+    return "EBS" if root == "ebs" else "EBS"
+
+
+GRANT_STATE: dict[tuple[int, int], dict] = {}
+
+
+def purge_grant_state(max_age: float = 3600.0, max_items: int = 50) -> None:
+    now = time.time()
+    for key, value in list(GRANT_STATE.items()):
+        if now - float(value.get("touched", value.get("created_at", 0))) > max_age:
+            GRANT_STATE.pop(key, None)
+    while len(GRANT_STATE) > max_items:
+        oldest = min(GRANT_STATE, key=lambda k: GRANT_STATE[k].get("touched", 0))
+        GRANT_STATE.pop(oldest, None)
+
+
+def grant_closed_content() -> tuple[str, str]:
+    rich = (
+        "<h1>🎁 Grant VPS</h1>"
+        "<p>This grant screen was closed or replaced. Send "
+        "<code>/vpsgrant &lt;user&gt;</code> to start a new one.</p>"
+    )
+    plain = "<b>🎁 Grant VPS</b>\n\nThis grant screen was closed. Send /vpsgrant &lt;user&gt; to start again."
+    return rich, plain
+
+
+def grant_tier_content(username: str, target_id: int) -> tuple[str, str]:
+    rows_html = "".join(
+        f"<li><b>{html.escape(t['label'])}</b> — {t['vcpu']} vCPU, {t['ram_gb']} GB RAM, "
+        f"{t['disk_gb']} GB SSD</li>"
+        for t in TIERS
+    )
+    rich = (
+        "<h1>🎁 Grant VPS — Plan</h1>"
+        f"<p>Recipient <b>@{html.escape(username)}</b> (<code>{target_id}</code>). "
+        "Free server, no invoice.</p>"
+        f"<ul>{rows_html}</ul>"
+    )
+    plain = (
+        f"<b>🎁 Grant VPS — Plan</b>\n\n"
+        f"Recipient: @{username} ({target_id})\n\n"
+        + "\n".join(
+            f"• {t['label']} — {t['vcpu']} vCPU, {t['ram_gb']} GB RAM, {t['disk_gb']} GB SSD"
+            for t in TIERS
+        )
+        + "\n\nPick a plan."
+    )
+    return rich, plain
+
+
+def grant_tier_keyboard(target_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    for t in TIERS:
+        rows.append([
+            InlineKeyboardButton(
+                f"{t['label']} / {t['vcpu']} vCPU • {t['ram_gb']} GB RAM",
+                callback_data=owner_cb("gtier", target_id, t["id"]),
+            )
+        ])
+    rows.append([InlineKeyboardButton("Cancel", callback_data=owner_cb("gcancel"))])
+    return InlineKeyboardMarkup(rows)
+
+
+def grant_days_content(target_id: int, tier_id: str) -> tuple[str, str]:
+    t = get_tier(tier_id) or {"label": tier_id}
+    rich = (
+        "<h1>🎁 Grant VPS — Duration</h1>"
+        f"<p>Plan <b>{html.escape(t['label'])}</b> for <code>{target_id}</code>. "
+        "Duration only sets the expiry date; the price stays free.</p>"
+    )
+    plain = (
+        f"<b>🎁 Grant VPS — Duration</b>\n\n"
+        f"Plan: {t['label']} for {target_id}\n\nPick how long the server runs."
+    )
+    return rich, plain
+
+
+def grant_days_keyboard(target_id: int, tier_id: str) -> InlineKeyboardMarkup:
+    rows = []
+    for d in DURATIONS:
+        days = d["days"]
+        rows.append([
+            InlineKeyboardButton(
+                f"{days} Days",
+                callback_data=owner_cb("gdays", target_id, tier_id, days),
+            )
+        ])
+    rows.append([InlineKeyboardButton("Back", callback_data=owner_cb("gtier", target_id))])
+    rows.append([InlineKeyboardButton("Cancel", callback_data=owner_cb("gcancel"))])
+    return InlineKeyboardMarkup(rows)
+
+
+def grant_region_content(target_id: int, tier_id: str, days: int, page: int, regions: list[str]) -> tuple[str, str]:
+    ordered = sort_regions(regions)
+    pages = max(1, (len(ordered) + REGIONS_PER_PAGE - 1) // REGIONS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    t = get_tier(tier_id) or {"label": tier_id}
+    rich = (
+        "<h1>🌍 Grant VPS — Region</h1>"
+        f"<p><b>{html.escape(t['label'])}</b> for <b>{days} days</b>, recipient "
+        f"<code>{target_id}</code>. Page {page + 1} of {pages}.</p>"
+        "<aside>Regions are listed from your AWS accounts. The bot tries every account "
+        "that serves the chosen region.</aside>"
+    )
+    plain = (
+        f"<b>🌍 Grant VPS — Region</b>\n\n"
+        f"{t['label']} for {days} days, recipient {target_id}"
+        f" — page {page + 1} of {pages}\n\nPick a region."
+    )
+    return rich, plain
+
+
+def grant_region_keyboard(target_id: int, tier_id: str, days: int, page: int, regions: list[str]) -> InlineKeyboardMarkup:
+    ordered = sort_regions(regions)
+    pages = max(1, (len(ordered) + REGIONS_PER_PAGE - 1) // REGIONS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    chunk = ordered[page * REGIONS_PER_PAGE:page * REGIONS_PER_PAGE + REGIONS_PER_PAGE]
+    rows = []
+    for r in chunk:
+        rows.append([
+            InlineKeyboardButton(
+                region_display(r),
+                callback_data=owner_cb("gos", target_id, tier_id, days, r, page),
+            )
+        ])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            "Prev", callback_data=owner_cb("gregion", target_id, tier_id, days, page - 1)
+        ))
+    nav.append(InlineKeyboardButton(f"{page + 1}/{pages}", callback_data=owner_cb("noop")))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton(
+            "Next", callback_data=owner_cb("gregion", target_id, tier_id, days, page + 1)
+        ))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("Back", callback_data=owner_cb("gdays", target_id, tier_id))])
+    rows.append([InlineKeyboardButton("Cancel", callback_data=owner_cb("gcancel"))])
+    return InlineKeyboardMarkup(rows)
+
+
+def grant_os_content(target_id: int, tier_id: str, days: int, region: str, os_list: list[dict] | None = None) -> tuple[str, str]:
+    t = get_tier(tier_id) or {"label": tier_id}
+    items = os_list if os_list is not None else OS_IMAGES
+    rich = (
+        "<h1>💿 Grant VPS — Operating System</h1>"
+        f"<p><b>{html.escape(t['label'])}</b>, {days} days, "
+        f"{html.escape(region_display(region))}, recipient <code>{target_id}</code>.</p>"
+        f"<p>{len(items)} image(s) available in this region.</p>"
+        "<aside>Pick the last option to start the server right away with this plan, "
+        "duration and region already filled in.</aside>"
+    )
+    plain = (
+        f"<b>💿 Grant VPS — Operating System</b>\n\n"
+        f"{t['label']}, {days} days, {region_display(region)}, recipient {target_id}\n\n"
+        f"{len(items)} image(s) available. Pick one to deploy."
+    )
+    return rich, plain
+
+
+def grant_os_keyboard(
+    target_id: int,
+    tier_id: str,
+    days: int,
+    region: str,
+    os_list: list[dict] | None = None,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    items = os_list if os_list is not None else OS_IMAGES
+    per = 10
+    pages = max(1, (len(items) + per - 1) // per)
+    page = max(0, min(page, pages - 1))
+    chunk = items[page * per:page * per + per]
+    rows = []
+    for o in chunk:
+        rows.append([
+            InlineKeyboardButton(
+                o["label"],
+                callback_data=owner_cb("ggo", target_id, tier_id, days, region, o["id"]),
+            )
+        ])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            "Prev", callback_data=owner_cb("gos", target_id, tier_id, days, region, page - 1)
+        ))
+    nav.append(InlineKeyboardButton(f"{page + 1}/{pages}", callback_data=owner_cb("noop")))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton(
+            "Next", callback_data=owner_cb("gos", target_id, tier_id, days, region, page + 1)
+        ))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(
+        "Back", callback_data=owner_cb("gregion", target_id, tier_id, days, 0)
+    )])
+    rows.append([InlineKeyboardButton("Cancel", callback_data=owner_cb("gcancel"))])
+    return InlineKeyboardMarkup(rows)
+
+
+def grant_confirm_content(target_id: int, tier_id: str, days: int, region: str, os_id: str) -> tuple[str, str]:
+    t = get_tier(tier_id) or {"label": tier_id}
+    o = get_os(os_id) or {"label": os_id}
+    rich = (
+        "<h1>🎁 Grant VPS — Confirm</h1>"
+        "<table compact>"
+        f"<tr><td>Recipient</td><td><code>{target_id}</code></td></tr>"
+        f"<tr><td>Plan</td><td>{html.escape(t['label'])}</td></tr>"
+        f"<tr><td>Specs</td><td>{t['vcpu']} vCPU, {t['ram_gb']} GB RAM, {t['disk_gb']} GB SSD</td></tr>"
+        f"<tr><td>Duration</td><td>{days} days</td></tr>"
+        f"<tr><td>Region</td><td>{html.escape(region_display(region))}</td></tr>"
+        f"<tr><td>OS</td><td>{html.escape(o['label'])}</td></tr>"
+        f"<tr><td>Price</td><td>Free</td></tr>"
+        "</table>"
+        "<aside>Deploying now. Credentials go to the recipient in private, and you get "
+        "the full server notice here.</aside>"
+    )
+    plain = (
+        "<b>🎁 Grant VPS — Confirm</b>\n\n"
+        f"Recipient: {target_id}\n"
+        f"Plan: {t['label']}\n"
+        f"Specs: {t['vcpu']} vCPU, {t['ram_gb']} GB RAM, {t['disk_gb']} GB SSD\n"
+        f"Duration: {days} days\n"
+        f"Region: {region_display(region)}\n"
+        f"OS: {o['label']}\n"
+        f"Price: Free"
+    )
+    return rich, plain
+
+
+def grant_confirm_keyboard(target_id: int, tier_id: str, days: int, region: str, os_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "Deploy Now",
+            callback_data=owner_cb("ggrant", target_id, tier_id, days, region, os_id),
+        )],
+        [InlineKeyboardButton(
+            "Back", callback_data=owner_cb("gos", target_id, tier_id, days, region, 0)
+        )],
+        [InlineKeyboardButton("Cancel", callback_data=owner_cb("gcancel"))],
+    ])
+
+
+def grant_progress_content(target_id: int, tier_id: str, days: int, region: str, os_id: str) -> tuple[str, str]:
+    t = get_tier(tier_id) or {"label": tier_id}
+    o = get_os(os_id) or {"label": os_id}
+    rich = (
+        "<h1>⚙️ Deploying VPS...</h1>"
+        f"<p>{html.escape(t['label'])}, {html.escape(o['label'])}, "
+        f"{html.escape(region_display(region))}, {days} days for <code>{target_id}</code>.</p>"
+        "<p>Waiting for the server to boot and open SSH.</p>"
+    )
+    plain = (
+        "<b>⚙️ Deploying VPS...</b>\n\n"
+        f"{t['label']}, {o['label']}, {region_display(region)}, {days} days for {target_id}.\n"
+        "Waiting for the server to boot and open SSH."
+    )
+    return rich, plain
+
+
+def grant_result_content(inst: dict, delivered: bool) -> tuple[str, str]:
+    t = get_tier(inst["tier"]) or {"label": inst["tier"]}
+    o = get_os(inst["os_image"]) or {"label": inst["os_image"]}
+    hint = (
+        "Credentials were sent to the recipient in private."
+        if delivered
+        else "Could not message the recipient. Deliver the credentials yourself."
+    )
+    rich = (
+        "<h1>✅ Grant Complete</h1>"
+        "<table compact>"
+        f"<tr><td>Server</td><td><code>{html.escape(str(inst['vps_id']))}</code></td></tr>"
+        f"<tr><td>AWS ID</td><td><code>{html.escape(str(inst['instance_id']))}</code></td></tr>"
+        f"<tr><td>Plan</td><td>{html.escape(t['label'])}</td></tr>"
+        f"<tr><td>Specs</td><td>{t['vcpu']} vCPU, {t['ram_gb']} GB RAM, {t['disk_gb']} GB SSD</td></tr>"
+        f"<tr><td>OS</td><td>{html.escape(o['label'])}</td></tr>"
+        f"<tr><td>Region</td><td>{html.escape(region_display(inst.get('region') or '-'))}</td></tr>"
+        f"<tr><td>Account</td><td>{html.escape(_account_label(inst))}</td></tr>"
+        f"<tr><td>IP</td><td><code>{html.escape(str(inst.get('ip_address') or '-'))}</code></td></tr>"
+        f"<tr><td>Expires</td><td>{_fmt_dt(inst['expires_at'])}</td></tr>"
+        "</table>"
+        f"<aside>{html.escape(hint)}</aside>"
+    )
+    plain = (
+        "<b>✅ Grant Complete</b>\n\n"
+        f"Server: {inst['vps_id']}\n"
+        f"AWS ID: {inst['instance_id']}\n"
+        f"Plan: {t['label']}\n"
+        f"Specs: {t['vcpu']} vCPU, {t['ram_gb']} GB RAM, {t['disk_gb']} GB SSD\n"
+        f"OS: {o['label']}\n"
+        f"Region: {region_display(inst.get('region') or '-')}\n"
+        f"Account: {_account_label(inst)}\n"
+        f"IP: {inst.get('ip_address') or '-'}\n"
+        f"Expires: {_fmt_dt(inst['expires_at'])}\n\n"
+        f"{hint}"
+    )
+    return rich, plain
+
+
+def grant_result_keyboard(inst: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "Grant Another", callback_data=owner_cb("gtier", inst["user_id"], inst["tier"])
+        )],
+        [InlineKeyboardButton(
+            "View Server", callback_data=owner_cb("info", inst["vps_id"])
+        )],
+        [InlineKeyboardButton("Close", callback_data=owner_cb("close"))],
+    ])
+
+
+def grant_failed_content(target_id: int, detail: str) -> tuple[str, str]:
+    rich = (
+        "<h1>⚠️ Grant Failed</h1>"
+        f"<p>Could not create a server for <code>{target_id}</code>.</p>"
+        f"<pre><code>{html.escape(detail[:400])}</code></pre>"
+    )
+    plain = (
+        "<b>⚠️ Grant Failed</b>\n\n"
+        f"Could not create a server for {target_id}.\n\n{detail[:400]}"
+    )
+    return rich, plain
+
+
+def grant_failed_keyboard(target_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Try Again", callback_data=owner_cb("gtier", target_id))],
+        [InlineKeyboardButton("Close", callback_data=owner_cb("close"))],
+    ])
+
+
+def grant_recipient_content(inst: dict, granted_by: str) -> tuple[str, str]:
+    t = get_tier(inst["tier"]) or {"label": inst["tier"]}
+    o = get_os(inst["os_image"]) or {"label": inst["os_image"]}
+    rich = (
+        "<h1>🎁 You received a free VPS</h1>"
+        f"<p><b>{html.escape(granted_by)}</b> gave you a server. No payment, no invoice.</p>"
+        "<h3>Specifications</h3>"
+        "<ul>"
+        f"<li>Plan: <b>{html.escape(t['label'])}</b></li>"
+        f"<li>CPU: <b>{t['vcpu']} vCPU</b></li>"
+        f"<li>Memory: <b>{t['ram_gb']} GB RAM</b></li>"
+        f"<li>Disk: <b>{t['disk_gb']} GB SSD</b></li>"
+        f"<li>Operating System: {html.escape(o['label'])}</li>"
+        f"<li>Region: {html.escape(region_display(inst.get('region') or '-'))}</li>"
+        f"<li>Server ID: <code>{html.escape(str(inst['vps_id']))}</code></li>"
+        "</ul>"
+        "<h3>Access</h3>"
+        "<ul>"
+        f"<li>IP: <code>{html.escape(str(inst.get('ip_address') or '-'))}</code></li>"
+        "<li>SSH port: <code>22</code></li>"
+        "<li>Username: <code>root</code></li>"
+        f"<li>Password: <code>{html.escape(str(inst.get('root_password') or '-'))}</code></li>"
+        "</ul>"
+        "<h3>Validity</h3>"
+        "<ul>"
+        f"<li>Active until: {_fmt_dt(inst['expires_at'])}</li>"
+        f"<li>Warranty until: {_fmt_dt(inst['warranty_until'])}</li>"
+        "</ul>"
+        f"<pre><code>ssh root@{html.escape(str(inst.get('ip_address') or ''))}</code></pre>"
+        "<aside>Open My VPS to manage the server and its firewall. To keep the credentials "
+        "safe, delete this message after saving them.</aside>"
+    )
+    plain = (
+        "<b>🎁 You received a free VPS</b>\n\n"
+        f"{granted_by} gave you a server. No payment, no invoice.\n\n"
+        "<b>Specifications</b>\n"
+        f"• Plan: {t['label']}\n"
+        f"• CPU: {t['vcpu']} vCPU\n"
+        f"• Memory: {t['ram_gb']} GB RAM\n"
+        f"• Disk: {t['disk_gb']} GB SSD\n"
+        f"• Operating System: {o['label']}\n"
+        f"• Region: {region_display(inst.get('region') or '-')}\n"
+        f"• Server ID: {inst['vps_id']}\n\n"
+        "<b>Access</b>\n"
+        f"• IP: {inst.get('ip_address') or '-'}\n"
+        "• SSH port: 22\n"
+        "• Username: root\n"
+        f"• Password: {inst.get('root_password') or '-'}\n\n"
+        "<b>Validity</b>\n"
+        f"• Active until: {_fmt_dt(inst['expires_at'])}\n"
+        f"• Warranty until: {_fmt_dt(inst['warranty_until'])}\n\n"
+        f"ssh root@{inst.get('ip_address') or ''}\n\n"
+        "Open My VPS to manage the server and its firewall."
+    )
+    return rich, plain
+
+
+def grant_recipient_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("My VPS", callback_data=user_cb("myvps"))],
+    ])
 
 
 def owner_live_info_content(
@@ -1004,39 +1459,99 @@ def owner_live_info_content(
     state = info.get("state") or "unknown"
     ip = info.get("public_ip") or "-"
     private_ip = info.get("private_ip") or "-"
-    acct_line_rich = (
-        f"<li>Account: <code>{html.escape(str(account))}</code></li>" if account else ""
-    )
-    acct_line_plain = f"Account: {account}\n" if account else ""
+    name = info.get("name") or "-"
+    itype = info.get("instance_type") or "unknown"
+    acct = _account_label({"account": account})
+    vcpu = info.get("vcpu")
+    mem = info.get("memory_gib")
+    net = info.get("network_perf") or "-"
+    arch = info.get("architecture") or "-"
+    platform = info.get("platform") or "-"
+    gs = info.get("security_groups") or []
+    gs_html = "".join(
+        f"<li><code>{html.escape(str(g.get('id')))}</code> {html.escape(str(g.get('name') or ''))}</li>"
+        for g in gs
+    ) or "<li>-</li>"
+    gs_plain = "\n".join(
+        f"  • {g.get('id')} {g.get('name') or ''}" for g in gs
+    ) or "  • -"
+    spec_bits = []
+    if vcpu:
+        spec_bits.append(f"{vcpu} vCPU")
+    if mem:
+        spec_bits.append(f"{mem} GB RAM")
+    spec_line = " / ".join(spec_bits) or "-"
+
     rich = (
-        f"<h1>🖥 {html.escape(instance_id)}</h1>"
-        "<p>Unmanaged instance. This server is running in your AWS account but was "
-        "not provisioned by the bot, so it has no customer, plan, or warranty attached.</p>"
-        "<h3>Instance</h3>"
+        f"<h1>🖥 {html.escape(str(instance_id))}</h1>"
+        + (
+            f"<p>Name tag <b>{html.escape(str(name))}</b>. Unmanaged instance: it runs "
+            "in your AWS account but was not provisioned by the bot, so it has no "
+            "customer, plan, or warranty attached.</p>"
+            if name == "-"
+            else f"<p>Unmanaged instance <b>{html.escape(str(name))}</b>. It runs in your "
+            "AWS account but was not provisioned by the bot, so it has no customer, "
+            "plan, or warranty attached.</p>"
+        )
+        + "<h3>Instance</h3>"
         "<ul>"
-        f"<li>AWS ID: <code>{html.escape(instance_id)}</code></li>"
-        f"<li>Region: {html.escape(region_display(region))}</li>"
-        f"{acct_line_rich}"
+        f"<li>AWS ID: <code>{html.escape(str(instance_id))}</code></li>"
+        f"<li>Name: {html.escape(str(name))}</li>"
+        f"<li>Type: <b>{html.escape(str(itype))}</b></li>"
+        f"<li>Specs: <b>{html.escape(spec_line)}</b></li>"
+        f"<li>Storage: {html.escape(_storage_line(info))}</li>"
+        f"<li>Network: {html.escape(str(net))}</li>"
+        f"<li>Architecture: {html.escape(str(arch))}</li>"
+        f"<li>Platform: {html.escape(str(platform))}</li>"
+        f"<li>Region: {html.escape(region_display(region))} "
+        f"(<code>{html.escape(region)}</code>)</li>"
+        f"<li>Zone: <code>{html.escape(str(info.get('availability_zone') or '-'))}</code></li>"
+        f"<li>Account: <b>{html.escape(acct)}</b></li>"
         f"<li>State: <b>{html.escape(str(state))}</b></li>"
-        f"<li>Type: {html.escape(str(info.get('instance_type') or 'unknown'))}</li>"
-        f"<li>Launched: {html.escape(str(info.get('launch_time') or '-'))}</li>"
+        f"<li>Launched: {_fmt_ts(info.get('launch_time'))}</li>"
+        f"<li>Image: <code>{html.escape(str(info.get('image_id') or '-'))}</code></li>"
         "</ul>"
         "<h3>Network</h3>"
         "<ul>"
         f"<li>Public IP: <code>{html.escape(str(ip))}</code></li>"
         f"<li>Private IP: <code>{html.escape(str(private_ip))}</code></li>"
+        f"<li>Public DNS: <code>{html.escape(str(info.get('public_dns') or '-'))}</code></li>"
+        f"<li>VPC: <code>{html.escape(str(info.get('vpc_id') or '-'))}</code></li>"
+        f"<li>Subnet: <code>{html.escape(str(info.get('subnet_id') or '-'))}</code></li>"
+        "</ul>"
+        "<h3>Security Groups</h3>"
+        f"<ul>{gs_html}</ul>"
+        "<h3>Storage Volume</h3>"
+        "<ul>"
+        f"<li>Root: <code>{html.escape(str(info.get('root_volume') or '-'))}</code></li>"
+        f"<li>EBS optimized: {'yes' if info.get('ebs_optimized') else 'no'}</li>"
         "</ul>"
     )
     plain = (
         f"<b>🖥 {instance_id}</b>\n\n"
-        "Unmanaged instance. Not provisioned by the bot.\n\n"
+        + (f"Name: {name}\n" if name != "-" else "")
+        + "Unmanaged instance. Not provisioned by the bot.\n\n"
         f"AWS ID: <code>{instance_id}</code>\n"
-        f"Region: {region_display(region)}\n"
-        f"{acct_line_plain}"
+        f"Type: {itype}\n"
+        f"Specs: {spec_line}\n"
+        f"Storage: {_storage_line(info)}\n"
+        f"Network: {net}\n"
+        f"Architecture: {arch}\n"
+        f"Platform: {platform}\n"
+        f"Region: {region_display(region)} ({region})\n"
+        f"Zone: {info.get('availability_zone') or '-'}\n"
+        f"Account: {acct}\n"
         f"State: {state}\n"
-        f"Type: {info.get('instance_type') or 'unknown'}\n"
+        f"Launched: {_fmt_ts(info.get('launch_time'))}\n"
+        f"Image: <code>{info.get('image_id') or '-'}</code>\n\n"
         f"Public IP: <code>{ip}</code>\n"
-        f"Private IP: <code>{private_ip}</code>"
+        f"Private IP: <code>{private_ip}</code>\n"
+        f"Public DNS: <code>{info.get('public_dns') or '-'}</code>\n"
+        f"VPC: <code>{info.get('vpc_id') or '-'}</code>\n"
+        f"Subnet: <code>{info.get('subnet_id') or '-'}</code>\n\n"
+        "<b>Security Groups</b>\n" + gs_plain + "\n\n"
+        f"Root volume: <code>{info.get('root_volume') or '-'}</code>\n"
+        f"EBS optimized: {'yes' if info.get('ebs_optimized') else 'no'}"
     )
     return rich, plain
 

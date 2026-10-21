@@ -78,6 +78,13 @@ async def get_available_regions() -> list[str]:
 SCAN_CACHE_TTL = 300.0
 
 
+def scan_is_cached() -> bool:
+    from . import state
+
+    cached, ts = state.get_scan_cache()
+    return bool(cached) and (time.time() - ts) < SCAN_CACHE_TTL
+
+
 async def get_account_scan(force: bool = False) -> tuple[dict, bool]:
     from . import state
 

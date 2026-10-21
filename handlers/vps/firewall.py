@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from database import vps_db
 
 from . import aws, render
-from .callbacks import _answer, _render_and_edit
+from .callbacks import NOTICE_LOADING, _answer, _render_and_edit
 from .constants import DEFAULT_REGION
 
 log = logging.getLogger(__name__)
@@ -167,7 +167,6 @@ async def _apply_rule(q, user_id: int, inst: dict, direction: str, fr: int, to: 
     vps_db.log_audit(
         inst["vps_id"], "FIREWALL_ADD", user_id, f"{direction} tcp {fr}-{to} 0.0.0.0/0"
     )
-    await _answer(q, "Rule added.")
     return await _open_menu(q, inst)
 
 
@@ -200,14 +199,13 @@ async def _firewall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     inst = await _prepare(q, user.id, vps_id, action)
     if not inst:
         return
+    await _answer(q, NOTICE_LOADING)
 
     if action == "menu":
-        await _answer(q)
         return await _open_menu(q, inst)
 
     if action == "add":
         direction = parts[3] if len(parts) > 3 else "in"
-        await _answer(q)
         rich, plain = render.firewall_pick_content(inst, direction)
         return await _render_and_edit(
             q, rich, plain, render.firewall_pick_keyboard(vps_id, direction)
@@ -215,14 +213,13 @@ async def _firewall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if action == "preset":
         if len(parts) < 5:
-            return await _answer(q)
+            return None
         direction = parts[3]
         port = int(parts[4])
         return await _apply_rule(q, user.id, inst, direction, port, port)
 
     if action in ("custom", "range"):
         direction = parts[3] if len(parts) > 3 else "in"
-        await _answer(q)
         label = "Inbound" if direction == "in" else "Outbound"
         if action == "range":
             hint = (
@@ -260,7 +257,6 @@ async def _firewall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "to_port": r["to_port"],
                     "cidr": r["cidr"],
                 })
-            await _answer(q)
             return await _render_and_edit(
                 q,
                 f"<h1>🛡️ Remove a Rule — {render.html.escape(str(vps_id))}</h1>"
@@ -271,7 +267,7 @@ async def _firewall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if action == "rm":
         if len(parts) < 4:
-            return await _answer(q)
+            return None
         rule = vps_db.delete_firewall_rule(int(parts[3]))
         if not rule:
             return await _answer(q, "Rule not found.", show_alert=True)
@@ -282,7 +278,7 @@ async def _firewall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return await _answer(q, "Port 22 cannot be removed.", show_alert=True)
 
-        ok = await aws.remove_firewall_rule(
+        await aws.remove_firewall_rule(
             inst["sg_id"],
             inst.get("region") or DEFAULT_REGION,
             rule["direction"],
@@ -298,10 +294,9 @@ async def _firewall_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             user.id,
             f"{rule['direction']} {rule['protocol']} {rule['from_port']}-{rule['to_port']} {rule['cidr']}",
         )
-        await _answer(q, "Rule removed." if ok else "Removed locally, AWS revoke failed.")
         return await _open_menu(q, inst)
 
-    return await _answer(q)
+    return None
 
 
 def cancel_pending(chat_id: int, user_id: int) -> bool:

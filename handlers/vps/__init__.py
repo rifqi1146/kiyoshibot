@@ -9,6 +9,7 @@ from .account_cmd import (
     delawsaccount_cmd,
 )
 from .owner import (
+    grant_callback,
     vpsadmin_cmd,
     vpsgrant_cmd,
     vpsinfo_cmd,
@@ -35,6 +36,7 @@ __all__ = [
     "vps_callback",
     "vpsadmin_cmd",
     "vpsgrant_cmd",
+    "grant_callback",
     "vpsinfo_cmd",
     "vpslist_cmd",
     "vpsowner_callback",

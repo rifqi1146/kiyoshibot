@@ -25,7 +25,13 @@ from handlers.firmware import firmware_callback
 from handlers.blacklist import blacklist_callback_gate
 from handlers.welcome import verify_method_callback
 from handlers.caca import cacabill_callback, cacaprov_callback
-from handlers.vps import account_callback, firewall_callback, vps_callback, vpsowner_callback
+from handlers.vps import (
+    account_callback,
+    firewall_callback,
+    grant_callback,
+    vps_callback,
+    vpsowner_callback,
+)
 
 
 def register_callbacks(app):
@@ -67,6 +73,7 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(vps_callback, pattern=r"^vps:"))
     app.add_handler(CallbackQueryHandler(vpsowner_callback, pattern=r"^vpsown:"))
     app.add_handler(CallbackQueryHandler(account_callback, pattern=r"^vpsacc:"))
+    app.add_handler(CallbackQueryHandler(grant_callback, pattern=r"^vpsown:(gtier|gdays|gregion|gos|ggo|ggrant|gcancel)"))
     app.add_handler(CallbackQueryHandler(firewall_callback, pattern=r"^fwr:"))
 
     
