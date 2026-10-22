@@ -286,9 +286,9 @@ def strip_code_wrapper(text: str) -> str:
         t = re.sub(r"</html>\s*$", "", t, flags=re.I).strip()
     i = t.find("<")
     j = t.rfind(">")
-    if i > 0 and j > i:
-        t = t[i : j + 1]
-    return t.strip()
+    if i < 0 or j <= i:
+        return ""
+    return t[i : j + 1].strip()
 
 
 def sanitize_rich_html(raw: str) -> str:
@@ -303,11 +303,12 @@ def sanitize_rich_html(raw: str) -> str:
     for m in _RICH_TAG_RE.finditer(t):
         text = t[pos : m.start()]
         if text:
-            out.append(text.replace("<", "&lt;").replace(">", "&gt;"))
+            out.append(text)
         pos = m.end()
 
         closing, name, attrs, selfclose = m.group(1), m.group(2).lower(), m.group(3), m.group(4)
         if name not in _RICH_ALLOWED:
+            out.append(" ")
             continue
 
         if closing:
@@ -338,16 +339,138 @@ def sanitize_rich_html(raw: str) -> str:
 
     tail = t[pos:]
     if tail:
-        out.append(tail.replace("<", "&lt;").replace(">", "&gt;"))
+        out.append(tail.replace("<", " ").replace(">", " "))
 
     while stack:
         out.append(f"</{stack.pop()}>")
 
     html = "".join(out).strip()
     tags = re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)", html)
-    if len(tags) < 2:
+    if len(tags) < 1:
         return ""
-    return html
+    return repair_rich_html(html)
+
+
+_RICH_BLOCK_NAMES = {
+    "p", "h1", "h2", "h3", "table", "details", "aside", "blockquote",
+    "ul", "ol", "footer", "hr",
+}
+_MD_INLINE = (
+    (re.compile(r"\*\*(.+?)\*\*", re.S), r"<b>\1</b>"),
+    (re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)"), r"<i>\1</i>"),
+    (re.compile(r"__(.+?)__", re.S), r"<u>\1</u>"),
+    (re.compile(r"~~(.+?)~~", re.S), r"<s>\1</s>"),
+    (re.compile(r"`([^`\n]+?)`"), r"<code>\1</code>"),
+)
+_MD_BULLET = re.compile(r"^\s*[-*\u2022]\s+")
+_MD_HEADING = re.compile(r"^\s*#{1,6}\s+")
+
+
+def _md_inline(text: str) -> str:
+    if not text:
+        return ""
+    t = text
+    for pat, rep in _MD_INLINE:
+        t = pat.sub(rep, t)
+    return t
+
+
+def _wrap_free_text(raw: str) -> str:
+    clean = raw.strip()
+    if not clean:
+        return raw
+    lines = [l for l in clean.splitlines() if l.strip()]
+    if lines and all(_MD_BULLET.match(l) for l in lines):
+        items = "".join(
+            "<li>" + _md_inline(_MD_BULLET.sub("", l).strip()) + "</li>" for l in lines
+        )
+        return "<ul>" + items + "</ul>"
+    if _MD_HEADING.match(clean):
+        return "<h3>" + _md_inline(_MD_HEADING.sub("", clean).strip()) + "</h3>"
+    if clean.startswith("> "):
+        body = "\n".join(re.sub(r"^\s*>\s?", "", l) for l in lines)
+        return "<blockquote>" + _md_inline(body.strip()) + "</blockquote>"
+    paras = [p.strip() for p in re.split(r"\n{2,}", clean) if p.strip()]
+    return "\n".join("<p>" + _md_inline(p) + "</p>" for p in paras)
+
+
+_BLOCK_TOKEN_RE = re.compile(
+    r"<(/?)(table|details|aside|blockquote|ul|ol|h1|h2|h3|p)\b[^>]*>", re.I
+)
+
+
+def wrap_loose_text(html: str) -> str:
+    if not html:
+        return ""
+    chunks = re.split(r"(<[^>]+>)", html)
+    out = []
+    buf = []
+    depth = 0
+
+    def flush():
+        raw = "".join(buf)
+        buf.clear()
+        if raw.strip():
+            out.append(_wrap_free_text(raw))
+        elif raw:
+            out.append(raw)
+
+    for c in chunks:
+        if not c:
+            continue
+        if not c.startswith("<"):
+            if depth > 0:
+                out.append(_md_inline(c))
+            else:
+                buf.append(c)
+            continue
+        m = re.match(r"^<(/)?([a-zA-Z][a-zA-Z0-9]*)", c)
+        if not m:
+            out.append(c)
+            continue
+        closing = bool(m.group(1))
+        name = m.group(2).lower()
+        if name not in _RICH_BLOCK_NAMES:
+            if depth > 0:
+                out.append(c)
+            else:
+                buf.append(c)
+            continue
+        if closing:
+            out.append(c)
+            depth = max(0, depth - 1)
+            continue
+        flush()
+        out.append(c)
+        if not c.rstrip().endswith("/>"):
+            depth += 1
+
+    flush()
+    return "".join(out)
+
+
+def _block_depth(text: str) -> int:
+    depth = 0
+    for m in _BLOCK_TOKEN_RE.finditer(text):
+        if m.group(1):
+            depth = max(0, depth - 1)
+        elif not m.group(0).rstrip().endswith("/>"):
+            depth += 1
+    return depth
+
+
+def repair_rich_html(html: str) -> str:
+    if not html:
+        return ""
+    t = html
+    for _ in range(12):
+        if _block_depth(t) == 0:
+            break
+        nxt = wrap_loose_text(t)
+        if nxt == t:
+            break
+        t = nxt
+    return wrap_loose_text(t)
 
 
 def split_rich_html(html: str, limit: int = 3900) -> list[str]:
