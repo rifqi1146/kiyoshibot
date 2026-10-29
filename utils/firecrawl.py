@@ -140,7 +140,7 @@ async def read_url(url: str, max_chars: int = 8000) -> str:
 
 def _search_depth() -> str:
     try:
-        from handlers.proxy.client import get_search_depth
+        from utils.search_settings import get_search_depth
         return get_search_depth()
     except Exception:
         depth = str(getattr(app_config, "SEARCH_DEPTH", "") or "").strip().lower()

@@ -26,12 +26,10 @@ HELPOWNER_TEXT = {
         "> Process lifecycle and system engine controls."
     ),
     "ai": (
-        "### AI & Proxy Settings\n\n"
-        "- `/getmodel` — List available models from OpenCode proxy\n"
-        "- `/setmodel` — Select active model for `/ask`\n"
-        "- `/setsearch` — Configure search engine and depth for `/ask`\n"
-        "- `/thinking` — Toggle reasoning/thinking mode for `/ask`\n\n"
-        "> Controls proxy settings and model routing for AI chat."
+        "### AI Settings\n\n"
+        "- `/providerask` — Switch `/ask` provider (Shiteru or CodeBuddy)\n"
+        "- `/setsearch` — Configure search engine and depth for `/ask`\n\n"
+        "> `/ask` runs on the same provider pool as Caca."
     ),
     "caca": (
         "### Caca AI Settings\n\n"

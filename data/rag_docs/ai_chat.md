@@ -3,7 +3,7 @@
 KiyoshiBot dilengkapi beberapa model AI canggih yang bisa diajak ngobrol, tanya jawab, dan dipakai untuk membantu coding atau riset dari dalam Telegram.
 
 ## AI Assistant
-- `/ask <pertanyaan>`: Tanya AI berbasis OpenCode dengan kemampuan web-search grounding (Firecrawl / Jina) untuk informasi terkini, berita, harga, skor, atau rilis.
+- `/ask <pertanyaan>`: Tanya AI dengan kemampuan web-search grounding (Firecrawl / Jina) untuk informasi terkini, berita, harga, skor, atau rilis.
 - `/groq <pertanyaan>`: Tanya AI dengan respon super cepat via Groq Llama untuk pertanyaan umum.
 - Cara lanjut chat: reply pesan terakhir bot (untuk `/ask` dan `/groq`), tidak perlu ketik command lagi.
 - Konteks asli: tanggal dan waktu (WIB) selalu disuntik ke AI, jadi bot tahu hari ini tanggal berapa.

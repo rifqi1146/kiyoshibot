@@ -170,7 +170,7 @@ async def _refresh_runtime_caches(app):
         from rag.retriever import index_documents
         chunks=load_chunked_docs()
         index_documents(chunks)
-        for mod_name in ("handlers.groq","handlers.proxy.ask"):
+        for mod_name in ("handlers.groq","handlers.ask.ask"):
             mod=sys.modules.get(mod_name)
             if mod and hasattr(mod,"LOCAL_CONTEXTS"):
                 setattr(mod,"LOCAL_CONTEXTS",chunks)

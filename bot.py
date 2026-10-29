@@ -49,7 +49,7 @@ BOT_COMMANDS=[
     ("dl","Download video"),
     ("premiumbenefit","List premium features and commands"),
     ("manga","Read manga"),
-    ("ask","Ask AI (OpenCode proxy)"),
+    ("ask","Ask AI"),
     ("music","Search music"),
     ("nekopoi","Browse, search & download from Nekopoi"),
     ("simontok","Browse, search & download from Simontok"),
@@ -165,24 +165,6 @@ def _local_bot_api_available(host:str,port:int,timeout:float=1.0)->bool:
         log.debug("Local Telegram Bot API check failed | host=%s port=%s err=%r",host,port,e)
         return False
 
-def _start_opencode_proxy():
-    if os.getenv("OPENCODE_PROXY","1").strip().lower() in ("0","false","no"):
-        log.info("OpenCode proxy disabled via env (OPENCODE_PROXY=0)")
-        return
-    host=os.getenv("OPENCODE_PROXY_HOST","127.0.0.1")
-    try:
-        port=int(os.getenv("OPENCODE_PROXY_PORT","20130"))
-    except ValueError:
-        port=20130
-    try:
-        from handlers.proxy.opencode import start_proxy_thread
-        srv=start_proxy_thread(host,port)
-        if srv is not None:
-            log.info("✓ OpenCode proxy active | http://%s:%s",host,port)
-        else:
-            log.info("OpenCode proxy port %s already in use, using existing proxy",port)
-    except Exception:
-        log.exception("Failed to start OpenCode proxy (bot continues without it)")
 
 async def post_init(app):
     global BOT_USERNAME
@@ -287,7 +269,6 @@ def _allowed_updates():
 def main():
     setup_logger()
     log.info("Initializing bot")
-    _start_opencode_proxy()
     app=_build_application()
     register_commands(app)
     register_messages(app)

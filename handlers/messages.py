@@ -12,17 +12,17 @@ from handlers.dl.router import auto_dl_detect
 from handlers.prefix_dollar import dollar_router
 from handlers.susunkata import susunkata_answer_handler
 from handlers.welcome import welcome_handler, welcome_chat_member_handler
-from utils.caca_memory import get_last_message_id as caca_db_get_last_message_id
+from utils.caca_memory import get_last_anchor as caca_db_get_last_anchor
 from utils.caca_memory import has_last_message_id as caca_db_has_last_message_id
 from utils.logger import log_commands
 from utils.recent_messages import remember as remember_recent_message
 from utils.stop_draft import stopped_generation_handler
 from utils.user_collector import user_collector
-from handlers.proxy.ask import ask_cmd as ai_cmd
-from utils.ai_memory import get_last_message_id as ai_db_get_last_message_id
+from handlers.ask.ask import ask_cmd as ai_cmd
+from utils.ai_memory import get_last_anchor as ai_db_get_last_anchor
 from utils.ai_memory import has_last_message_id as ai_db_has_last_message_id
 from handlers.groq import groq_query
-from utils.groq_memory import get_last_message_id as groq_db_get_last_message_id
+from utils.groq_memory import get_last_anchor as groq_db_get_last_anchor
 from utils.groq_memory import has_last_message_id as groq_db_has_last_message_id
 from handlers.asahotak import asahotak_answer_handler
 
@@ -48,22 +48,33 @@ async def ai_reply_router(update, context):
     msg = update.message
     if not msg or not msg.reply_to_message or not msg.from_user:
         return
-    user_id = msg.from_user.id
-    reply_mid = msg.reply_to_message.message_id
 
-    groq_mid = await groq_db_get_last_message_id(user_id)
-    if groq_mid == reply_mid:
+    target = msg.reply_to_message
+    target_user = getattr(target, "from_user", None)
+    if not target_user or not getattr(target_user, "is_bot", False):
+        return
+
+    bot_id = getattr(getattr(context, "bot", None), "id", None)
+    if bot_id and target_user.id != bot_id:
+        return
+
+    user_id = msg.from_user.id
+    reply_mid = target.message_id
+    chat_id = getattr(msg, "chat_id", None)
+
+    groq_mid, groq_chat = await groq_db_get_last_anchor(user_id)
+    if groq_mid == reply_mid and (groq_chat is None or groq_chat == chat_id):
         return await groq_query(update, context)
 
-    caca_mid = await caca_db_get_last_message_id(user_id)
-    if caca_mid == reply_mid:
+    caca_mid, caca_chat = await caca_db_get_last_anchor(user_id)
+    if caca_mid == reply_mid and (caca_chat is None or caca_chat == chat_id):
         return await caca_cmd(update, context)
 
-    ai_mid = await ai_db_get_last_message_id(user_id)
-    if ai_mid == reply_mid:
+    ai_mid, ai_chat = await ai_db_get_last_anchor(user_id)
+    if ai_mid == reply_mid and (ai_chat is None or ai_chat == chat_id):
         return await ai_cmd(update, context)
 
-    if await groq_db_has_last_message_id(reply_mid):
+    if await groq_db_has_last_message_id(reply_mid, chat_id):
         return await msg.reply_text(
             "😒 Who are you?\n"
             "I haven't talked to you yet.\n"
@@ -71,7 +82,7 @@ async def ai_reply_router(update, context):
             parse_mode="HTML"
         )
 
-    if await ai_db_has_last_message_id(reply_mid):
+    if await ai_db_has_last_message_id(reply_mid, chat_id):
         return await msg.reply_text(
             "😒 Who are you?\n"
             "I haven't talked to you yet.\n"
@@ -79,7 +90,7 @@ async def ai_reply_router(update, context):
             parse_mode="HTML"
         )
 
-    if await caca_db_has_last_message_id(reply_mid):
+    if await caca_db_has_last_message_id(reply_mid, chat_id):
         return await msg.reply_text(
             "😒 Who are you?\n"
             "I haven't talked to you yet.\n"

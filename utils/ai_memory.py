@@ -28,10 +28,15 @@ def _db_init():
                 user_id INTEGER PRIMARY KEY,
                 history_json TEXT NOT NULL,
                 last_used REAL NOT NULL,
-                last_message_id INTEGER
+                last_message_id INTEGER,
+                last_chat_id INTEGER
             )
             """
         )
+        try:
+            con.execute("ALTER TABLE ai_memory ADD COLUMN last_chat_id INTEGER")
+        except sqlite3.OperationalError:
+            pass
         con.commit()
     finally:
         con.close()
@@ -41,7 +46,7 @@ def _db_get(user_id: int):
     con = _connect()
     try:
         row = con.execute(
-            "SELECT history_json,last_used,last_message_id FROM ai_memory WHERE user_id=?",
+            "SELECT history_json,last_used,last_message_id,last_chat_id FROM ai_memory WHERE user_id=?",
             (int(user_id),),
         ).fetchone()
         if not row:
@@ -54,7 +59,8 @@ def _db_get(user_id: int):
             history = []
         last_used = float(row[1] or 0)
         last_message_id = int(row[2]) if row[2] is not None else None
-        return history, last_used, last_message_id
+        last_chat_id = int(row[3]) if row[3] is not None else None
+        return history, last_used, last_message_id, last_chat_id
     finally:
         con.close()
 
@@ -63,38 +69,39 @@ def _trim_history(history: list) -> list:
         history = history[-AI_MAX_TURNS:]
     return history
 
-def _db_set(user_id: int, history: list, last_message_id: int | None):
+def _db_set(user_id: int, history: list, last_message_id: int | None, last_chat_id: int | None = None):
     _db_init()
     history = _trim_history(history if isinstance(history, list) else [])
     con = _connect()
     try:
         con.execute(
             """
-            INSERT INTO ai_memory(user_id,history_json,last_used,last_message_id)
-            VALUES(?,?,?,?)
+            INSERT INTO ai_memory(user_id,history_json,last_used,last_message_id,last_chat_id)
+            VALUES(?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 history_json=excluded.history_json,
                 last_used=excluded.last_used,
-                last_message_id=excluded.last_message_id
+                last_message_id=excluded.last_message_id,
+                last_chat_id=excluded.last_chat_id
             """,
-            (int(user_id), json.dumps(history, ensure_ascii=False), time.time(), last_message_id),
+            (int(user_id), json.dumps(history, ensure_ascii=False), time.time(), last_message_id, last_chat_id),
         )
         con.commit()
     finally:
         con.close()
 
-def _db_set_last_message_id(user_id: int, last_message_id: int | None):
+def _db_set_last_message_id(user_id: int, last_message_id: int | None, last_chat_id: int | None = None):
     _db_init()
     current = _db_get(user_id)
     history = current[0] if current else []
-    _db_set(user_id, history, last_message_id)
+    _db_set(user_id, history, last_message_id, last_chat_id)
 
 def _db_clear_last_message_id(user_id: int):
     _db_init()
     con = _connect()
     try:
         con.execute(
-            "UPDATE ai_memory SET last_message_id=NULL,last_used=? WHERE user_id=?",
+            "UPDATE ai_memory SET last_message_id=NULL,last_chat_id=NULL,last_used=? WHERE user_id=?",
             (time.time(), int(user_id)),
         )
         con.commit()
@@ -120,14 +127,20 @@ def _db_cleanup(expire_seconds: int):
     finally:
         con.close()
 
-def _db_has_last_message_id(message_id: int) -> bool:
+def _db_has_last_message_id(message_id: int, chat_id: int | None = None) -> bool:
     _db_init()
     con = _connect()
     try:
-        row = con.execute(
-            "SELECT 1 FROM ai_memory WHERE last_message_id=? LIMIT 1",
-            (int(message_id),),
-        ).fetchone()
+        if chat_id is not None:
+            row = con.execute(
+                "SELECT 1 FROM ai_memory WHERE last_message_id=? AND (last_chat_id=? OR last_chat_id IS NULL) LIMIT 1",
+                (int(message_id), int(chat_id)),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT 1 FROM ai_memory WHERE last_message_id=? LIMIT 1",
+                (int(message_id),),
+            ).fetchone()
         return row is not None
     finally:
         con.close()
@@ -139,26 +152,32 @@ async def get_history(user_id: int) -> list:
     res = await asyncio.to_thread(_db_get, user_id)
     if not res:
         return []
-    history, _, _ = res
+    history = res[0]
     return history
 
-async def set_history(user_id: int, history: list, last_message_id: int | None = None):
-    await asyncio.to_thread(_db_set, user_id, history, last_message_id)
+async def set_history(user_id: int, history: list, last_message_id: int | None = None, last_chat_id: int | None = None):
+    await asyncio.to_thread(_db_set, user_id, history, last_message_id, last_chat_id)
 
-async def append_turn(user_id: int, user_text: str, ai_text: str, last_message_id: int | None = None):
+async def append_turn(user_id: int, user_text: str, ai_text: str, last_message_id: int | None = None, last_chat_id: int | None = None):
     history = await get_history(user_id)
     history.append({"user": user_text, "ai": ai_text})
-    await set_history(user_id, history, last_message_id)
+    await set_history(user_id, history, last_message_id, last_chat_id)
 
-async def set_last_message_id(user_id: int, last_message_id: int | None):
-    await asyncio.to_thread(_db_set_last_message_id, user_id, last_message_id)
+async def set_last_message_id(user_id: int, last_message_id: int | None, last_chat_id: int | None = None):
+    await asyncio.to_thread(_db_set_last_message_id, user_id, last_message_id, last_chat_id)
 
 async def get_last_message_id(user_id: int) -> int | None:
     res = await asyncio.to_thread(_db_get, user_id)
     if not res:
         return None
-    _, _, last_message_id = res
+    last_message_id = res[2]
     return last_message_id
+
+async def get_last_anchor(user_id: int):
+    res = await asyncio.to_thread(_db_get, user_id)
+    if not res:
+        return None, None
+    return res[2], res[3]
 
 async def clear_last_message_id(user_id: int):
     await asyncio.to_thread(_db_clear_last_message_id, user_id)
@@ -169,5 +188,5 @@ async def clear(user_id: int):
 async def cleanup():
     await asyncio.to_thread(_db_cleanup, AI_MEMORY_EXPIRE)
 
-async def has_last_message_id(message_id: int) -> bool:
-    return await asyncio.to_thread(_db_has_last_message_id, message_id)
+async def has_last_message_id(message_id: int, chat_id: int | None = None) -> bool:
+    return await asyncio.to_thread(_db_has_last_message_id, message_id, chat_id)

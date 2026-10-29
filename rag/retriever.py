@@ -144,7 +144,7 @@ def _clean_query_terms(query: str) -> list[str]:
 
 
 def _has_bot_intent(query_lower: str, terms: list[str]) -> bool:
-    if re.search(r"\b/[a-z0-9_]+\b", query_lower):
+    if re.search(r"(?:^|[^\w/])/[a-z0-9_]+\b", query_lower):
         return True
     for t in terms:
         if t in BOT_INTENT_KEYWORDS:

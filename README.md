@@ -48,7 +48,7 @@ spawns a local `telegram-bot-api` server, and the bot itself (`bot.py`).
 
 | Command | What it does |
 |:--|:--|
-| `/ask <question>` | Grounded answer backed by a local OpenAI-compatible proxy that talks to free OpenCode models, with Firecrawl/Jina pre-search grounding. Owner toggles: `/getmodel`, `/setmodel`, `/thinking`, `/setsearch` |
+| `/ask <question>` | Answer backed by the shared AI provider pool (CodeBuddy accounts or Shiteru) with Firecrawl/Jina pre-search grounding. Owner toggles: `/providerask`, `/setsearch` |
 | `/groq <question>` | Groq-hosted chat completion with the same RAG context and a 20-message memory window |
 | `/caca` | Persona chat engine ("Caca"): 8 modes (`/mode`), vision for photos and stickers, auto web search, token-billed credits |
 | `/aitext` | Detects AI-generated text |
@@ -196,7 +196,7 @@ captcha-backed web verification for new members.
 | `/blacklist` | Global user and group blacklist |
 | `/freecaca`, `/cacaadmin`, `/addcredit` | Caca access and credit administration |
 | `/providercaca`, `/cbacc` | Caca provider and account pool |
-| `/getmodel`, `/setmodel`, `/thinking`, `/setsearch` | `/ask` runtime tuning |
+| `/providerask`, `/setsearch` | `/ask` provider and runtime tuning |
 
 These are documented only in `/helpowner` and are intentionally excluded from
 `data/rag_docs/`, so the AI never offers commands a regular user cannot run.
@@ -309,7 +309,7 @@ kiyoshibot/
 │   ├── dl/                       Headless download engines (25 platform subpackages)
 │   ├── vps/                      AWS EC2 reseller: checkout, provisioning, firewall, owner panel
 │   ├── caca/                     Persona engine, provider clients, credit billing
-│   ├── proxy/                    /ask OpenCode-compatible proxy + web grounding
+│   ├── ask/                      /ask command, provider gateway, web grounding
 │   ├── manga/                    Multi-source manga reader and PDF export
 │   ├── moderation/               Group admin actions, permissions, sudo tiers
 │   ├── stats/                    Owner dashboard (process, hardware, runtime telemetry)
@@ -330,7 +330,7 @@ kiyoshibot/
 | File | Responsibility |
 |:--|:--|
 | `main.py` | Reads `API_ID`/`API_HASH`, checks whether port 8081 is already serving, reuses an existing `telegram-bot-api` or spawns one with `--local --http-port=8081 --dir=tgdata`, then launches `bot.py` and reaps both children on `SIGINT`/`SIGTERM`. |
-| `bot.py` | `setup_logger()` installs `TokenRedactFilter` (strips `bot<id>:<token>` from any log line) and `EmojiFormatter`. Enables `uvloop` unless `BOT_UVLOOP=0`, starts the OpenCode proxy thread, builds the `Application` with `concurrent_updates(True)`, pool size 64, 20-minute read/write timeouts, registers the four handler sets, then `run_polling` with `drop_pending_updates=True`. |
+| `bot.py` | `setup_logger()` installs `TokenRedactFilter` (strips `bot<id>:<token>` from any log line) and `EmojiFormatter`. Enables `uvloop` unless `BOT_UVLOOP=0`, builds the `Application` with `concurrent_updates(True)`, pool size 64, 20-minute read/write timeouts, registers the four handler sets, then `run_polling` with `drop_pending_updates=True`. |
 | `install.sh` | Six-phase installer: detect package manager, install system deps, install Node.js, install Deno, install Ookla speedtest, create venv and install Python deps. Prints systemd service hints. |
 
 ### `database/` — persistence layer
@@ -365,7 +365,7 @@ connection timeout. Connections without `busy_timeout` raise
 
 | Module | Commands / role |
 |:--|:--|
-| `commands.py` | `COMMAND_HANDLERS` table (119 handler entries) and the dispatcher. A command field may be a string or a list; three entries are built with list concatenation, which is how `/q`, `/qi`, and `/qs` each expand to 23 glued names (`/q`, `/q1`…`/q10`, `/qr`, `/q1r`…`/q10r`) instead of a hand-written list. Registers every `CommandHandler` on group `-1`. |
+| `commands.py` | `COMMAND_HANDLERS` table (117 handler entries → 180 command names) and the dispatcher. A command field may be a string or a list; three entries are built with list concatenation, which is how `/q`, `/qi`, and `/qs` each expand to 23 glued names (`/q`, `/q1`…`/q10`, `/qr`, `/q1r`…`/q10r`) instead of a hand-written list. Registers every `CommandHandler` on group `-1`. |
 | `callbacks.py` | Central regex callback router. **Order matters** — see [Handler Pipeline](#handler-pipeline-ptb-groups). |
 | `messages.py` | All `MessageHandler` registrations: blacklist gate, text-capture flows, auto-download detection, AI reply router, welcome, `$` prefix, collectors, quotly buffer, log forwarder. |
 | `quotly.py` | `/q` (WebP sticker), `/qi` (PNG image), `/qs` (9:16 story). `parse_quote_args()` reads the glued command suffix and the argument list together, so `/q3`, `/q3r`, `/q -3`, `/q r 2`, and `/q #a/#b` all work. Count is clamped to `_MAX_QUOTE_COUNT = 10`; `-N` walks backwards, `r`/`reply` includes the replied-to message. Colour argument accepts a name, a hex pair, or a gradient. Reply-context for grand-replies is recovered through the recent-message buffer, then an MTProto re-fetch. Renders through an external quote service at `QUOTE_API_URI`. |
@@ -494,13 +494,13 @@ connection timeout. Connections without `busy_timeout` raise
 | `codebuddy.py` | WorkBuddy/CodeBuddy gateway client. Stream-only, typed content blocks, `reasoning_effort: none`, per-request session/trace headers. |
 | `codebuddy_store.py` | On-disk account pool (`data/codebuddy_accounts.json`) with rotation cursor and refresh-token bootstrap for email labels. |
 
-### `handlers/proxy/` — `/ask`
+### `handlers/ask/` — `/ask`
 
 | Module | Responsibility |
 |:--|:--|
-| `opencode.py` | Pure-stdlib OpenAI-compatible HTTP proxy. Serves `/health`, `/v1/models`, `/v1/chat/completions`, implements the upstream request contract exactly (endpoint, UA, dual session headers, verbatim tool definitions, forced streaming, canonical session ids), and strips inline reasoning tags from model output. Also `start_proxy_thread()` used by `bot.py`. |
-| `client.py` | Bot-side client: `proxy_chat`, `proxy_chat_stream`, `proxy_chat_raw`, `proxy_models`, plus settings persistence. |
-| `ask.py` | `/ask` command. Pre-search grounding (Firecrawl/Jina), system instruction with real Jakarta date, draft streaming, and owner-only `/getmodel`, `/setmodel`, `/thinking`, `/setsearch`. |
+| `llm.py` | Provider gateway for `/ask`: Shiteru streaming client plus the CodeBuddy account pool, active-provider state in `data/ask_provider.txt`, and automatic fallback to the other provider. |
+| `provider.py` | `/providerask` owner command and `askprov:` inline picker with per-account token status. |
+| `ask.py` | `/ask` command. Pre-search grounding (Firecrawl/Jina), system instruction with real Jakarta date, RAG in the user turn, draft streaming, and owner-only `/setsearch`. |
 
 ### `handlers/manga/`
 
@@ -584,6 +584,7 @@ Each follows the same file set: `constants.py`, `state.py`, `scraper.py`,
 | `http.py` | Shared `aiohttp` session with tuned timeouts and pool limits; `get_http_session`, `close_http_session`. |
 | `firecrawl.py` | `web_search` (fast/content depth) and `read_url`. |
 | `jina.py` | `s.jina.ai` SERP and `r.jina.ai` reader fallback. |
+| `search_settings.py` | Runtime search engine (`firecrawl`/`jina`) and depth (`fast`/`content`) persisted in `data/search_settings.json`. Read by `/ask`, `firecrawl.py`, and the Caca auto-search path. |
 | `timectx.py` | Single source for Asia/Jakarta time context (`now_jakarta`, `time_context`, `time_context_short`, `current_year`). |
 | `recent_messages.py` | Rolling per-chat buffer (`remember`, `get_window`, `get_slice_after`, `forget`) used by quote range commands. |
 | `caca_memory.py`, `ai_memory.py`, `groq_memory.py` | Conversation memory stores with turn/row caps and cleanup. |
@@ -640,7 +641,7 @@ commands that do not exist.
 | -3 | `MessageHandler(REPLY & TEXT & ~COMMAND)` | `susunkata.py` | Word-scramble answers. |
 | -2 | `MessageHandler(AI_REPLY_FILTER)` | `messages.py` | AI reply router (`/ask`, `/groq`, Caca). |
 | -2 | `MessageHandler(CACA_CAPTION_FILTER)` | `messages.py` | Caca with photo/sticker captions (PTB commands never match captions). |
-| -1 | `CommandHandler` | `commands.py` | All 119 handler entries (≈180 command names once the `/q`-family lists expand). |
+| -1 | `CommandHandler` | `commands.py` | All 117 handler entries (180 command names once the `/q`-family lists expand). |
 | 0 | `CallbackQueryHandler` | `callbacks.py` | All callback prefixes. |
 | 2 | `NEW_CHAT_MEMBERS` + `ChatMemberHandler` | `welcome.py` | Welcome and verification. |
 | 3 | `REPLY & TEXT` | `messages.py` | Reply-based deletion. |
@@ -680,8 +681,8 @@ Two rules follow from this and must be preserved:
    `nhdetail_` / `nhread_` / `nhnav_` / `maiddet_` / `maidread_` /
    `maidnav_` / `pdfdex_` / `pdfmaid_` / `pdfnh_` / `close_manga` /
    `ignore`, `dlengine:`, `lq:`, `bq:`, `nk:`, `pw:`, `cx:`, `sm:`, `dk:`,
-   `mb:`, `ac:`, `fw:`, `vmethod:`, `cacabill:`, `cacaprov:`, `vps:`,
-   `vpsown:`, `vpsacc:`, `fwr:`.
+  `mb:`, `ac:`, `fw:`, `vmethod:`, `cacabill:`, `cacaprov:`, `askprov:`,
+  `vps:`, `vpsown:`, `vpsacc:`, `fwr:`.
 
 ### Ownership guard ordering
 
@@ -957,16 +958,23 @@ shows "0 credits" to a user who actually has access.
 
 1. **Intent gate.** Retrieval only runs if the query contains a bot/command
    keyword from `BOT_INTENT_KEYWORDS`, a bot identity phrase, or a literal
-   `/command`. A general question ("resep nasi goreng") costs zero context
-   tokens.
+   `/command` (regex `(?:^|[^\w/])/[a-z0-9_]+\b`). A general question ("resep
+   nasi goreng") costs zero context tokens.
 2. **Roster injection.** Whenever the gate opens, the full command roster is
    always injected (~170 tokens) so the model cannot invent commands.
 3. **Detail chunks.** Up to two chunks that clear a BM25 threshold
    (`_BM25_THRESHOLD = -0.40`), with the second required to score within 60% of
    the best.
-4. **Injection format.** `<bot_reference>…</bot_reference>` inside the system
-   instruction, plus a real Asia/Jakarta date so the model never claims a
-   knowledge cutoff.
+4. **Injection format.** `<bot_reference>…</bot_reference>`, plus a real
+   Asia/Jakarta date so the model never claims a knowledge cutoff.
+
+**Placement matters.** For `/ask` the reference block goes into the **current
+user turn**, not the system message. Measured against Shiteru
+(`deepseek-v4.1-flash`) with an identical prompt: reference in `system` →
+the model answers as a generic software-engineering assistant and denies
+knowing the bot's features; reference in the `user` turn → all feature
+questions answered from the docs. Caca uses the same placement. CodeBuddy
+honours both, so the shared code path uses the placement that works on both.
 
 `/ask` additionally performs **pre-search grounding**: if the prompt looks like
 it needs fresh facts, the bot searches (Firecrawl by default, Jina as
@@ -1257,7 +1265,8 @@ All files live under `data/` and are gitignored.
 | `ig_session.json` | Instagram Android mobile session |
 | `drakorid_session.json` | Drakor.id login session |
 | `caca_provider.txt` | Forced Caca provider |
-| `opencode_model.json` | Selected `/ask` model |
+| `ask_provider.txt` | Forced `/ask` provider |
+| `search_settings.json` | `/setsearch` engine and depth |
 
 Two files are legacy and unreferenced: `data/premium.sqlite3` (premium lives in
 `caca.sqlite3`) and `data/users.sqlite3`.
@@ -1373,12 +1382,12 @@ mandatory. Everything else degrades gracefully when absent.
 | `CACA_PROVIDER` | `codebuddy` | `codebuddy` or `shiteru` |
 | `CODEBUDDY_MODEL` | `deepseek-v4.1-flash` | CodeBuddy model |
 | `CACA_TIMEOUT` | 60 | Per-request timeout (seconds) |
-| `OPENCODE_PROXY` | 1 | Start the local `/ask` proxy |
-| `OPENCODE_PROXY_HOST` / `PORT` | `127.0.0.1` / `20130` | Proxy bind address |
-| `OPENCODE_PROXY_BASE` | `http://127.0.0.1:20130` | Client base URL |
-| `OPENCODE_MODEL` | empty | Empty means "first free model from upstream" |
-| `OPENCODE_THINKING` | `off` | Reasoning toggle |
-| `OPENCODE_VERSION` | `2.0.26` | Upstream UA version component |
+| `ASK_PROVIDER` | `shiteru` | Default `/ask` provider (`shiteru` or `codebuddy`) |
+| `ASK_API_BASE` | `CACA_API_BASE` | Shiteru-compatible endpoint for `/ask` |
+| `ASK_MODEL` | `CACA_MODEL` | Model used when `/ask` runs on Shiteru |
+| `ASK_MAX_TOKENS` | 4096 | `/ask` output cap |
+| `ASK_TIMEOUT` | 120 | Per-request timeout (seconds) |
+| `ASK_TEMPERATURE` | 0.7 | Sampling temperature |
 | `GROQ_API_KEY` | — | `/groq` only — not used by Caca |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model |
@@ -1505,7 +1514,7 @@ use the venv interpreter.
 | `/premium add\|del <user>` | Grant/revoke premium. `del` cascades persona mode and memory rows. | No |
 | `/providercaca` | Inline provider picker with account token status | No |
 | `/cbacc` | CodeBuddy account pool: list/add/del/toggle/clear | No |
-| `/getmodel`, `/setmodel`, `/thinking`, `/setsearch` | `/ask` runtime tuning | No |
+| `/providerask`, `/setsearch` | `/ask` provider and runtime tuning | No |
 
 Owner-only commands are documented in `/helpowner` and deliberately excluded
 from `data/rag_docs/` so the AI never mentions commands users cannot run.
@@ -1574,9 +1583,10 @@ DDoS-Guard costs 15-50 seconds per handshake. The singleton browser in
 `utils/scrapling_browser.py` amortizes that across requests, but the first
 request after a restart pays full price.
 
-**Free-tier LLM upstreams rotate their contract.** `/ask` works only while
-`handlers/proxy/opencode.py` matches the current upstream request shape. A `403
-FreeTierError` means the contract moved, not that the code is broken.
+**AI backends are external.** `/ask` and Caca share the CodeBuddy account pool
+and the Shiteru endpoint. When one is rate-limited or its token dies, the other
+provider takes over automatically; when both fail, the error surfaces instead of
+being swallowed.
 
 **External services are external.** NasionalPay QRIS, Shiteru, CodeBuddy, Firecrawl,
 Jina, Groq, Telegram itself. When one is degraded, the feature that depends on
@@ -1644,7 +1654,7 @@ production group.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — General extractor engine
 - [gallery-dl](https://github.com/mikf/gallery-dl) — Gallery extraction
 - [NasionalPay](https://merchant.nasionalpay.com) — QRIS payment gateway
-- [OpenCode](https://opencode.ai) — Free model backend behind `/ask`
+- [Shiteru](https://shiteru.id) — OpenAI-compatible inference for `/ask` and Caca
 - [Groq Cloud](https://console.groq.com) — LLM inference for `/groq`
 - [Jina AI](https://jina.ai) — SERP + reader grounding
 - [Firecrawl](https://www.firecrawl.dev) — SERP + scrape grounding

@@ -20,12 +20,11 @@ data/upload_engine.json
 data/tikwm_cf.json
 data/drakorid_session.json
 data/codebuddy_accounts.json
-data/caca_provider.txt
 data/ig_session.json
-# Model & settings OpenCode proxy (per-device runtime state)
-data/opencode_model.json
-data/opencode_settings.json
-# Provider Caca terpilih (/providercaca — runtime state, bukan konfigurasi repo)
+# Search engine/depth + /ask provider (per-device runtime state)
+data/search_settings.json
+data/ask_provider.txt
+# Caca provider chosen via /providercaca
 data/caca_provider.txt
 downloads/
 tgdata/

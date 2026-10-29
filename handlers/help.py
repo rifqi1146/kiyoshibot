@@ -199,7 +199,7 @@ HELP_TEXT = {
     "ai": (
         "### 🤖 AI Chat\n"
         "\n"
-        "- `/ask` — Chat with AI (OpenCode)\n"
+        "- `/ask` — Chat with AI\n"
         "- `/groq` — Chat with Groq\n"
         "- `/caca` — Caca Chat Bot\n"
         "\n"

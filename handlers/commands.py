@@ -24,13 +24,11 @@ from handlers.dl.router import dl_cmd, autodl_cmd
 from handlers.donate import donate_cmd
 from handlers.fasttelethon import fasttelethon_cmd
 from handlers.firmware import firmware_cmd
-from handlers.proxy.ask import (
+from handlers.ask.ask import (
     ask_cmd as ai_cmd,
-    getmodel_cmd,
-    setmodel_cmd,
     setsearch_cmd,
-    thinking_cmd,
 )
+from handlers.ask.provider import providerask_cmd
 from handlers.getsticker import getsticker_cmd
 from handlers.groq import groq_query
 from handlers.groups import groups_cmd
@@ -155,7 +153,6 @@ COMMAND_HANDLERS = [
     ("fasttelethon", fasttelethon_cmd, False),
     ("firmware", firmware_cmd, False),
     ("freecaca", freecaca_cmd, False),
-    ("getmodel", getmodel_cmd, False),
     ("getsticker", getsticker_cmd, False),
     ("groq", groq_query, False),
     ("groups", groups_cmd, False),
@@ -190,6 +187,7 @@ COMMAND_HANDLERS = [
     ("premiumbenefit", premiumbenefit_cmd, False),
     ("promote", promote_cmd, False),
     ("providercaca", providercaca_cmd, False),
+    ("providerask", providerask_cmd, False),
     ("cbacc", cbacc_cmd, False),
     (["q"] + [f"q{i}" for i in range(1, 11)] + ["qr"] + [f"q{i}r" for i in range(1, 11)], q_cmd, False),
     (["qi"] + [f"qi{i}" for i in range(1, 11)] + ["qir"] + [f"qi{i}r" for i in range(1, 11)], qi_cmd, False),
@@ -205,9 +203,7 @@ COMMAND_HANDLERS = [
     ("rmsudo", rmsudo_cmd, False),
     ("susunkata", susunkata_cmd, False),
     ("settings", setting_cmd, False),
-    ("setmodel", setmodel_cmd, False),
     ("setsearch", setsearch_cmd, False),
-    ("thinking", thinking_cmd, False),
     ("ship", ship_cmd, True),
     ("speedtest", speedtest_cmd, False),
     ("start", start_cmd, True),

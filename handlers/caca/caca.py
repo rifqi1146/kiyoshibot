@@ -206,7 +206,7 @@ async def _web_search_text(query: str) -> str:
 
     engine = "firecrawl"
     try:
-        from handlers.proxy.client import get_search_engine
+        from utils.search_settings import get_search_engine
         engine = get_search_engine()
     except Exception:
         pass
@@ -704,9 +704,9 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": clean_md},
         ])
-        await caca_memory.set_history(user_id, history)
+        await caca_memory.set_history(user_id, history, last_id, msg.chat_id)
         if last_id:
-            await caca_memory.set_last_message_id(user_id, last_id)
+            await caca_memory.set_last_message_id(user_id, last_id, msg.chat_id)
 
     try:
         raw = await stream_to_draft(
@@ -976,6 +976,11 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             history = await caca_memory.get_history(user_id)
             if not history:
                 return await _reply_thread(context.bot, msg, "😒 I don't remember talking to you.\nUse /caca first.")
+            anchor_mid, anchor_chat = await caca_memory.get_last_anchor(user_id)
+            if anchor_mid and int(anchor_mid) != int(msg.reply_to_message.message_id):
+                return await _reply_thread(context.bot, msg, "😒 I don't remember talking to you.\nUse /caca first.")
+            if anchor_chat is not None and int(anchor_chat) != int(msg.chat_id):
+                return await _reply_thread(context.bot, msg, "😒 I don't remember talking to you.\nUse /caca first.")
             prompt = text or caption
 
             src, label_key = _pick_media_source(msg)
@@ -1053,9 +1058,9 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"role": "user", "content": memory_prompt},
             {"role": "assistant", "content": clean_md},
         ])
-        await caca_memory.set_history(user_id, history)
+        await caca_memory.set_history(user_id, history, last_id, msg.chat_id)
         if last_id:
-            await caca_memory.set_last_message_id(user_id, last_id)
+            await caca_memory.set_last_message_id(user_id, last_id, msg.chat_id)
         await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed)
 
     except Exception as e:

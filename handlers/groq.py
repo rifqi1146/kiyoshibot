@@ -264,7 +264,7 @@ async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
             {"role":"user","content":prompt},
             {"role":"assistant","content":clean_md},
         ])
-        return groq_memory.set_history(user_id,history,last_id)
+        return groq_memory.set_history(user_id,history,last_id,msg.chat_id)
 
     try:
         raw=await stream_to_draft(
@@ -300,9 +300,12 @@ async def _groq_stream_dm(update,context,msg,user_id,history,prompt,use_search):
             app.bot_data.pop(stop_key,None)
 
 async def groq_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await require_join_or_block(update,context):
-        return
     msg=update.message
+    chat=update.effective_chat
+    _is_reply=bool(getattr(msg,"reply_to_message",None)) and not (getattr(msg,"text","") or "").strip().startswith("/")
+    _silent=bool(chat and chat.type in ("group","supergroup") and _is_reply)
+    if not await require_join_or_block(update,context,silent=_silent):
+        return
     if not msg or not msg.from_user:
         return
     user_id=msg.from_user.id
@@ -323,8 +326,10 @@ async def groq_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
             return await _reply_thread(context.bot,msg,f"{em} Gunakan:\n/groq <pertanyaan>\n/groq search <pertanyaan>")
     elif msg.reply_to_message:
         reply_mid=msg.reply_to_message.message_id
-        active_mid=await groq_memory.get_last_message_id(user_id)
+        active_mid,active_chat=await groq_memory.get_last_anchor(user_id)
         if not active_mid or int(active_mid)!=int(reply_mid):
+            return await _reply_thread(context.bot,msg,"😒 Use /groq first.")
+        if active_chat is not None and int(active_chat)!=int(msg.chat_id):
             return await _reply_thread(context.bot,msg,"😒 Use /groq first.")
         prompt=(msg.text or "").strip()
     if not prompt:
@@ -351,7 +356,7 @@ async def groq_query(update:Update,context:ContextTypes.DEFAULT_TYPE):
                 {"role":"user","content":prompt},
                 {"role":"assistant","content":clean_md},
             ])
-            await groq_memory.set_history(user_id,history,last_sent_id)
+            await groq_memory.set_history(user_id,history,last_sent_id,msg.chat_id)
     except Exception as e:
         await _stop_typing_task(stop,typing)
         log.warning("Groq request failed | user_id=%s err=%r",user_id,e)
