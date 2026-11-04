@@ -10,7 +10,7 @@ import asyncio
 from telegram import InputMediaPhoto,InputMediaVideo
 from telegram.error import RetryAfter
 from .constants import TMP_DIR,MAX_TG_SIZE
-from .utils import detect_media_type,FileSizeLimitExceeded
+from .utils import detect_media_type
 from .stages import stage
 from .ytdlp import ytdlp_download
 from .instagram.main import is_instagram_url,instagram_api_download
@@ -40,6 +40,7 @@ from .remux import video_meta,make_video_thumbnail
 from .mtproto_uploader import try_send_video_via_mtproto
 from .pyrogram_uploader import try_send_video_via_pyrogram
 from .ytdlp import gallerydl_fallback
+from .dispatch import Route, dispatch
 
 log=logging.getLogger(__name__)
 
@@ -53,6 +54,32 @@ _UPLOAD_ENGINE_STATE_FILE=os.getenv("UPLOAD_ENGINE_STATE_FILE","data/upload_engi
 _UPLOAD_ENGINE_CACHE=None
 _UPLOAD_ENGINE_NAMES={"0":"telethon","1":"pyrofork"}
 _UPLOAD_ENGINE_ALIASES={"0":"0","telethon":"0","mtproto":"0","1":"1","pyrofork":"1","pyrogram":"1","pyro":"1"}
+
+PLATFORM_ROUTES = (
+    Route(is_instagram_url, instagram_api_download, "instagram", soft=True),
+    Route(is_pinterest_url, pinterest_download, "pinterest"),
+    Route(is_facebook_url, facebook_download, "facebook"),
+    Route(is_reddit_url, reddit_download, "reddit"),
+    Route(is_x_url, twitter_download, "twitter"),
+    Route(is_threads_url, threads_download, "threads"),
+    Route(is_retrotube_url, retrotube_download, "retrotube"),
+    Route(is_pawchive_url, pawchive_download, "pawchive"),
+    Route(is_cosxplay_url, cosxplay_download, "cosxplay"),
+    Route(is_nekopoi_url, nekopoi_download, "nekopoi"),
+    Route(is_punishworld_url, punishworld_download, "punishworld"),
+    Route(is_simontok_url, simontok_download, "simontok"),
+    Route(is_bunkr_url, bunkr_download, "bunkr"),
+    Route(is_darknessporn_url, darknessporn_download, "darknessporn"),
+    Route(is_drakorid_url, drakorid_download, "drakorid"),
+    Route(is_anichin_url, anichin_download, "anichin"),
+    Route(is_moviebox_url, moviebox_download, "moviebox"),
+    Route(is_femdomvc_url, femdomvc_download, "femdomvc"),
+    Route(is_asiangirl_url, asiangirl_download, "asiangirl"),
+    Route(is_bdsmlust_url, bdsmlust_download, "bdsmlust"),
+    Route(is_heavyr_url, heavyr_download, "heavyr"),
+    Route(is_cosplaytele_url, cosplaytele_download, "cosplaytele"),
+    Route(is_youtube_post_url, download_youtube_post, "youtube_post"),
+)
 
 def _normalize_upload_engine(value:str|int|None)->str:
     raw=str(value if value is not None else _UPLOAD_ENGINE_DEFAULT).strip().lower()
@@ -906,259 +933,29 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
         await _cleanup_single_file(file_path)
 
 async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id:str|None,has_audio:bool,engine:str|None=None,metadata_ready:bool=False,known_size:int=0,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
-    if is_instagram_url(raw_url):
-        try:
-            t0=time.monotonic()
-            result=await instagram_api_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
-            stage("scrape+download:instagram",t0,job=raw_url)
-            return result
-        except FileSizeLimitExceeded:
-            raise
-        except Exception as e:
-            log.warning("Instagram API download failed, falling back to yt-dlp | url=%s err=%r",raw_url,e)
-    if is_pinterest_url(raw_url):
-        t0=time.monotonic()
-        result=await pinterest_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
-        stage("scrape+download:pinterest",t0,job=raw_url)
+    kwargs = {
+        "raw_url": raw_url,
+        "fmt_key": fmt_key,
+        "bot": bot,
+        "chat_id": chat_id,
+        "status_msg_id": status_msg_id,
+        "format_id": format_id,
+        "has_audio": has_audio,
+        "engine": engine,
+        "metadata_ready": metadata_ready,
+        "known_size": known_size,
+        "user_id": user_id,
+        "chat_type": chat_type,
+        "strict_adult": strict_adult,
+    }
+
+    def _instagram_soft_failure(route, url, exc):
+        log.warning("Instagram API download failed, falling back to yt-dlp | url=%s err=%r", url, exc)
+
+    result = await dispatch(raw_url, PLATFORM_ROUTES, kwargs, on_soft_failure=_instagram_soft_failure)
+    if result is not None:
         return result
-    if is_facebook_url(raw_url):
-        t0=time.monotonic()
-        result=await facebook_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
-        stage("scrape+download:facebook",t0,job=raw_url)
-        return result
-    if is_reddit_url(raw_url):
-        t0=time.monotonic()
-        result=await reddit_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready,user_id=user_id,chat_type=chat_type,strict_adult=strict_adult)
-        stage("scrape+download:reddit",t0,job=raw_url)
-        return result
-    if is_x_url(raw_url):
-        t0=time.monotonic()
-        result=await twitter_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready,user_id=user_id,chat_type=chat_type,strict_adult=strict_adult)
-        stage("scrape+download:twitter",t0,job=raw_url)
-        return result
-    if is_threads_url(raw_url):
-        t0=time.monotonic()
-        result=await threads_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,format_id=format_id,has_audio=has_audio,metadata_ready=metadata_ready)
-        stage("scrape+download:threads",t0,job=raw_url)
-        return result
-    if is_retrotube_url(raw_url):
-        t0=time.monotonic()
-        result=await retrotube_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
-        stage("scrape+download:retrotube",t0,job=raw_url)
-        return result
-    if is_pawchive_url(raw_url):
-        t0=time.monotonic()
-        result=await pawchive_download(raw_url=raw_url,fmt_key=fmt_key,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,metadata_ready=metadata_ready)
-        stage("scrape+download:pawchive",t0,job=raw_url)
-        return result
-    if is_cosxplay_url(raw_url):
-        t0=time.monotonic()
-        result=await cosxplay_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-        )
-        stage("scrape+download:cosxplay",t0,job=raw_url)
-        return result
-    if is_nekopoi_url(raw_url):
-        t0=time.monotonic()
-        result=await nekopoi_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-            engine=engine,
-        )
-        stage("scrape+download:nekopoi",t0,job=raw_url)
-        return result
-    if is_punishworld_url(raw_url):
-        t0=time.monotonic()
-        result=await punishworld_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            metadata_ready=metadata_ready,
-        )
-        stage("scrape+download:punishworld",t0,job=raw_url)
-        return result
-    if is_simontok_url(raw_url):
-        t0=time.monotonic()
-        result=await simontok_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            metadata_ready=metadata_ready,
-        )
-        stage("scrape+download:simontok",t0,job=raw_url)
-        return result
-    if is_bunkr_url(raw_url):
-        t0=time.monotonic()
-        result=await bunkr_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            metadata_ready=metadata_ready,
-        )
-        stage("scrape+download:bunkr",t0,job=raw_url)
-        return result
-    if is_darknessporn_url(raw_url):
-        t0=time.monotonic()
-        result=await darknessporn_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-        )
-        stage("scrape+download:darknessporn",t0,job=raw_url)
-        return result
-    if is_drakorid_url(raw_url):
-        t0=time.monotonic()
-        result=await drakorid_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-        )
-        stage("scrape+download:drakorid",t0,job=raw_url)
-        return result
-    if is_anichin_url(raw_url):
-        t0=time.monotonic()
-        result=await anichin_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-            engine=engine,
-        )
-        stage("scrape+download:anichin",t0,job=raw_url)
-        return result
-    if is_moviebox_url(raw_url):
-        t0=time.monotonic()
-        result=await moviebox_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-        )
-        stage("scrape+download:moviebox",t0,job=raw_url)
-        return result
-    if is_femdomvc_url(raw_url):
-        t0=time.monotonic()
-        result=await femdomvc_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-            engine=engine,
-        )
-        stage("scrape+download:femdomvc",t0,job=raw_url)
-        return result
-    if is_asiangirl_url(raw_url):
-        t0=time.monotonic()
-        result=await asiangirl_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-            engine=engine,
-        )
-        stage("scrape+download:asiangirl",t0,job=raw_url)
-        return result
-    if is_bdsmlust_url(raw_url):
-        t0=time.monotonic()
-        result=await bdsmlust_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-            engine=engine,
-        )
-        stage("scrape+download:bdsmlust",t0,job=raw_url)
-        return result
-    if is_heavyr_url(raw_url):
-        t0=time.monotonic()
-        result=await heavyr_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-            engine=engine,
-        )
-        stage("scrape+download:heavyr",t0,job=raw_url)
-        return result
-    if is_cosplaytele_url(raw_url):
-        t0=time.monotonic()
-        result=await cosplaytele_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-            known_size=known_size,
-            engine=engine,
-        )
-        stage("scrape+download:cosplaytele",t0,job=raw_url)
-        return result
+
     if re.search(r'(?:pixiv\.net|pixiv\.me)', raw_url, re.I):
         log.info("Pixiv URL detected, routing directly to gallery-dl | url=%s", raw_url)
         try:
@@ -1173,25 +970,21 @@ async def download_non_tiktok(raw_url,fmt_key,bot,chat_id,status_msg_id,format_i
             )
         except Exception as e:
             raise RuntimeError(f"Gallery-dl Pixiv download failed: {e}")
-    if is_youtube_post_url(raw_url):
-        t0=time.monotonic()
-        result=await download_youtube_post(raw_url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id)
-        stage("scrape+download:youtube_post",t0,job=raw_url)
-        return result
+
     if is_youtube_url(raw_url):
-        if (engine or "").strip().lower() not in ("","ytdlp"):
-            log.warning("Unsupported YouTube engine ignored | url=%s engine=%s",raw_url,engine)
-        t0=time.monotonic()
-        result=await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio,known_size=known_size)
-        stage("scrape+download:youtube",t0,job=raw_url)
-        file_path=result.get("path") if isinstance(result,dict) else result
+        if (engine or "").strip().lower() not in ("", "ytdlp"):
+            log.warning("Unsupported YouTube engine ignored | url=%s engine=%s", raw_url, engine)
+        t0 = time.monotonic()
+        result = await ytdlp_download(raw_url, fmt_key, bot, chat_id, status_msg_id, format_id=format_id, has_audio=has_audio, known_size=known_size)
+        stage("scrape+download:youtube", t0, job=raw_url)
+        file_path = result.get("path") if isinstance(result, dict) else result
         if not file_path:
             raise RuntimeError("yt-dlp returned no file")
         return result
 
-    t0=time.monotonic()
-    result=await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio,known_size=known_size)
-    stage("scrape+download:ytdlp",t0,job=raw_url)
+    t0 = time.monotonic()
+    result = await ytdlp_download(raw_url, fmt_key, bot, chat_id, status_msg_id, format_id=format_id, has_audio=has_audio, known_size=known_size)
+    stage("scrape+download:ytdlp", t0, job=raw_url)
     return result
 
 

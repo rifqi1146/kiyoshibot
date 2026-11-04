@@ -84,13 +84,67 @@ async def vps_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not chat or not user:
         return
 
+    args = [str(a).strip().lower() for a in (context.args or [])]
+
+    if args and args[0] in ("enable", "disable", "on", "off", "status", "stock"):
+        if int(user.id) not in OWNER_ID:
+            return await _reply(msg, render.stock_closed_text())
+        return await _stock_toggle(msg, args[0])
+
     if _is_group(chat):
         return await _redirect_to_pm(update, context, "vps", "AWS VPS")
 
     vps_db.init_db()
+
+    if not vps_db.stock_enabled() and int(user.id) not in OWNER_ID:
+        rich, plain = render.sold_out_content()
+        return await send_rich(context.bot, chat.id, msg.message_id, rich, plain, render.sold_out_keyboard())
+
     rich, plain = render.main_menu_content()
     await send_rich(context.bot, chat.id, msg.message_id, rich, plain, render.main_menu_keyboard())
 
+async def _reply(msg, text: str) -> None:
+    try:
+        await msg.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        log.warning("VPS reply failed | err=%r", e)
+
+async def _stock_toggle(msg, action: str) -> None:
+    vps_db.init_db()
+
+    if action in ("enable", "on"):
+        vps_db.set_stock_enabled(True)
+        log.info("VPS stock enabled | chat=%s", getattr(msg, "chat_id", None))
+        return await _reply(
+            msg,
+            "<b>\U0001f5a5\ufe0f VPS Stock Enabled</b>\n\n"
+            "New server orders are open again. Users can now open /vps and buy.",
+        )
+
+    if action in ("disable", "off"):
+        vps_db.set_stock_enabled(False)
+        log.info("VPS stock disabled | chat=%s", getattr(msg, "chat_id", None))
+        return await _reply(
+            msg,
+            "<b>\U0001f5a5\ufe0f VPS Stock Disabled</b>\n\n"
+            "New orders are closed. /vps now shows an out-of-stock screen.\n"
+            "Existing owners can still use /myvps normally.",
+        )
+
+    enabled = vps_db.stock_enabled()
+    state = "OPEN" if enabled else "CLOSED"
+    detail = (
+        "Users can order new servers."
+        if enabled
+        else "New orders are blocked. /myvps still works for existing owners."
+    )
+    return await _reply(
+        msg,
+        "<b>\U0001f5a5\ufe0f VPS Stock Status</b>\n\n"
+        f"\u2022 Status: <b>{state}</b>\n"
+        f"\u2022 {detail}\n\n"
+        "Usage: <code>/vps disable</code> \u00b7 <code>/vps enable</code> \u00b7 <code>/vps status</code>",
+    )
 
 async def myvps_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message

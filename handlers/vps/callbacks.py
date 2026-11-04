@@ -32,6 +32,8 @@ _LOADING_ACTIONS = frozenset({
     "account_toggle", "stats", "list",
 })
 
+_STOCK_GATED_ACTIONS = frozenset({"packages", "tier", "region", "os", "confirm", "checkout"})
+
 
 def _is_owner(user_id: int) -> bool:
     return int(user_id) in OWNER_ID
@@ -59,6 +61,11 @@ async def _start_checkout(
     chat = update.effective_chat
     if not q or not user or not chat:
         return
+
+    if not vps_db.stock_enabled() and not _is_owner(user.id):
+        rich, plain = render.sold_out_content()
+        await _answer(q, "VPS ordering is currently out of stock.", show_alert=True)
+        return await _render_and_edit(q, rich, plain, render.sold_out_keyboard())
 
     await _answer(q, NOTICE_LOADING)
 
@@ -234,6 +241,11 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _answer(q, "Opening private chat...", url=f"https://t.me/{uname}?start={start_arg}")
 
     if action == "menu":
+        if not vps_db.stock_enabled() and not _is_owner(user.id):
+            rich, plain = render.sold_out_content()
+            await _answer(q, _toast_for(action))
+            return await _render_and_edit(q, rich, plain, render.sold_out_keyboard())
+
         note = await progress_notice(q.message)
         try:
             rich, plain = render.main_menu_content()
@@ -241,6 +253,11 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await _render_and_edit(q, rich, plain, render.main_menu_keyboard())
         finally:
             await clear_notice(note)
+
+    if action in _STOCK_GATED_ACTIONS and not vps_db.stock_enabled() and not _is_owner(user.id):
+        rich, plain = render.sold_out_content()
+        await _answer(q, "VPS ordering is currently out of stock.", show_alert=True)
+        return await _render_and_edit(q, rich, plain, render.sold_out_keyboard())
 
     if action == "packages":
         await _answer(q, _toast_for(action))

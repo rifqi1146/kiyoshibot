@@ -73,10 +73,14 @@ HELPOWNER_TEXT = {
         "- `/vpsprice <plan> <30d|14d|7d> <amount>` — Change one period\n"
         "- `/vpsprice <plan> <30d> <14d> <7d>` — Set all three periods\n"
         "- `/vpsprice` — Open interactive pricing picker\n"
+        "- `/vps disable` — Close new orders, /vps shows an out-of-stock screen\n"
+        "- `/vps enable` — Reopen new orders\n"
+        "- `/vps status` — Show current stock state\n"
         "- `/addawsaccount` — Open the AWS account manager (add, reveal, delete)\n"
         "- `/addawsaccount <name> <access_key> <secret_key> <regions>` — Add an account in one line\n"
         "- `/delawsaccount <name>` — Remove an AWS account\n\n"
-        "> Tiers: `1g`, `2g`, `4g`, `8g`. Durations: `7d`, `14d`, `30d`."
+        "> Tiers: `1g`, `2g`, `4g`, `8g`. Durations: `7d`, `14d`, `30d`.\n"
+        "> `/myvps` and all existing-server actions stay available while stock is closed."
     ),
 }
 

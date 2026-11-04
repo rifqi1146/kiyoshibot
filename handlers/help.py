@@ -376,6 +376,29 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to=msg,
     )
 
+def _vps_help_text() -> str:
+    from database import vps_db
+    try:
+        available = vps_db.stock_enabled()
+    except Exception:
+        available = True
+
+    if not available:
+        return (
+            "### 🖥️ AWS VPS\n"
+            "\n"
+            "**Out of stock.** New server orders are temporarily closed.\n"
+            "\n"
+            "**Existing servers**\n"
+            "\n"
+            "- `/myvps` — Manage servers you already own\n"
+            "- Restart, renew, firewall, and warranty claims keep working as usual\n"
+            "\n"
+            "> New orders will reopen once stock is restocked. Watch this menu for updates."
+        )
+
+    return HELP_TEXT["vps"]
+
 
 async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -429,6 +452,9 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "user_setting":
         return await render_settings_message(q.message, owner_id, source="help")
+
+    if action == "vps":
+        return await _edit_help(q, _vps_help_text(), help_back_keyboard(owner_id))
 
     text = HELP_TEXT.get(action)
     if text:

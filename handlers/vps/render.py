@@ -64,6 +64,44 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(rows)
 
+def sold_out_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("My VPS", callback_data=user_cb("myvps"))],
+        [InlineKeyboardButton("Close", callback_data=user_cb("close"))],
+    ])
+
+def sold_out_content() -> tuple[str, str]:
+    rich = (
+        "<h1>🖥️ AWS VPS</h1>"
+        "<p><b>Out of stock.</b> New server orders are temporarily closed.</p>"
+        "<hr/>"
+        "<h3>📦 Stock Status</h3>"
+        "<table compact>"
+        "<tr><td><b>New Orders</b></td><td>Unavailable</td></tr>"
+        "<tr><td><b>Existing Servers</b></td><td>Fully operational</td></tr>"
+        "</table>"
+        "<hr/>"
+        "<aside>💡 Servers you already own stay active and can still be managed from "
+        "<b>My VPS</b>. Renewals, restarts, and warranty claims are unaffected.</aside>"
+    )
+    plain = (
+        "<b>🖥️ AWS VPS</b>\n\n"
+        "<b>Out of stock.</b> New server orders are temporarily closed.\n\n"
+        "<b>📦 Stock Status</b>\n"
+        "• New Orders: Unavailable\n"
+        "• Existing Servers: Fully operational\n\n"
+        "Servers you already own stay active and can still be managed from "
+        "<b>My VPS</b>. Renewals, restarts, and warranty claims are unaffected."
+    )
+    return rich, plain
+
+def stock_closed_text() -> str:
+    return (
+        "<b>🖥️ AWS VPS</b>\n\n"
+        "<b>Out of stock.</b> New server orders are temporarily closed.\n\n"
+        "Servers you already own stay active and can still be managed with /myvps."
+    )
+
 
 def _fmt_short(amount: int) -> str:
     v = int(amount or 0)

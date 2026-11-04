@@ -149,6 +149,30 @@ def is_media_content_type(content_type: str | None) -> bool:
     return False
 
 
+def host_from_url(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return (urlparse((url or "").strip()).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def host_matches_domain(host: str, domain: str) -> bool:
+    host = (host or "").lower()
+    domain = (domain or "").lower()
+    if not host or not domain:
+        return False
+    if domain.endswith(".*"):
+        base = domain[:-1]
+        clean = host.split(":", 1)[0]
+        if clean.startswith("www."):
+            clean = clean[4:]
+        if clean.startswith(base) and "." not in clean[len(base):]:
+            return True
+        return False
+    return host == domain or host.endswith("." + domain)
+
+
 def check_media_size_limit(size_bytes: int | float, label: str = "File") -> None:
     from .constants import MAX_TG_SIZE
     try:

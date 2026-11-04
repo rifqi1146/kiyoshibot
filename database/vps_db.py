@@ -1024,6 +1024,19 @@ def set_setting(key: str, value: str) -> None:
         con.close()
 
 
+STOCK_SETTING_KEY = "stock_enabled"
+
+_STOCK_FALSE_VALUES = frozenset({"0", "false", "off", "no", "disabled", "disable"})
+
+def stock_enabled() -> bool:
+    raw = get_setting(STOCK_SETTING_KEY)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _STOCK_FALSE_VALUES
+
+def set_stock_enabled(enabled: bool) -> None:
+    set_setting(STOCK_SETTING_KEY, "1" if enabled else "0")
+
 def add_firewall_rule(
     vps_id: str,
     direction: str,

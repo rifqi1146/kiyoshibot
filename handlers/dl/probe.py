@@ -3,7 +3,6 @@ import subprocess
 import asyncio
 import json
 import logging
-from urllib.parse import urlparse
 from .constants import COOKIES_PATH
 
 log = logging.getLogger(__name__)
@@ -16,17 +15,7 @@ YTDLP_RESOLUTION_DOMAINS = (
     "xnxx.com",
 )
 
-def _host(url: str) -> str:
-    try:
-        return (urlparse((url or "").strip()).hostname or "").lower()
-    except Exception:
-        return ""
-
-def _host_match(host: str, domain: str) -> bool:
-    host = (host or "").lower()
-    domain = (domain or "").lower()
-    return host == domain or host.endswith("." + domain)
-
+from .utils import host_from_url as _host, host_matches_domain as _host_match
 from .youtube.community import is_youtube_post_url, is_youtube_shorts_url
 
 def supports_ytdlp_resolution(url: str) -> bool:

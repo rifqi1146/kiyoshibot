@@ -5,7 +5,6 @@ import time
 import html
 import logging
 import asyncio
-from urllib.parse import urlparse
 from telegram import Update
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
@@ -93,28 +92,7 @@ def _check_and_consume_limit(user_id: int, count: int = 1) -> int:
     DL_LIMIT_CACHE[user_id] = history
     return 0
 
-def _host(url:str)->str:
-    try:
-        u=urlparse((url or "").strip())
-        return (u.hostname or "").lower()
-    except Exception as e:
-        log.debug("Failed to parse URL host | url=%r err=%r",url,e)
-        return ""
-
-def _host_match(host:str,domain:str)->bool:
-    host=(host or "").lower()
-    domain=(domain or "").lower()
-    if not host or not domain:
-        return False
-    if domain.endswith(".*"):
-        base = domain[:-1]
-        clean = host.split(":", 1)[0]
-        if clean.startswith("www."):
-            clean = clean[4:]
-        if clean.startswith(base) and "." not in clean[len(base):]:
-            return True
-        return False
-    return host==domain or host.endswith("."+domain)
+from .utils import host_from_url as _host, host_matches_domain as _host_match
 
 def _premium_link_allowed(url:str,user_id:int,chat_id:int,chat_type:str)->tuple[bool, str]:
     if is_premium_required(url, PREMIUM_NO_NSFW_DOMAINS):
