@@ -52,26 +52,23 @@ def _help_cb(user_id: int, action: str) -> str:
 def help_main_keyboard(user_id: int):
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("Media & Downloader", callback_data=_help_cb(user_id, "media")),
+            InlineKeyboardButton("Stream & Explorer", callback_data=_help_cb(user_id, "explorer")),
+        ],
+        [
+            InlineKeyboardButton("AI Chat & Caca", callback_data=_help_cb(user_id, "ai")),
+            InlineKeyboardButton("Games & Fun", callback_data=_help_cb(user_id, "games")),
+        ],
+        [
+            InlineKeyboardButton("Utilities", callback_data=_help_cb(user_id, "utils")),
             InlineKeyboardButton("AWS VPS", callback_data=_help_cb(user_id, "vps")),
         ],
         [
-            InlineKeyboardButton("Features", callback_data=_help_cb(user_id, "features")),
-            InlineKeyboardButton("AI Chat", callback_data=_help_cb(user_id, "ai")),
+            InlineKeyboardButton("User Settings", callback_data=_help_cb(user_id, "user_setting")),
+            InlineKeyboardButton("Group Settings", callback_data=_help_cb(user_id, "settings")),
         ],
         [
-            InlineKeyboardButton("Caca", callback_data=_help_cb(user_id, "caca")),
-            InlineKeyboardButton("Utilities", callback_data=_help_cb(user_id, "utils")),
-        ],
-        [
-            InlineKeyboardButton("Privacy", callback_data=_help_cb(user_id, "privacy")),
-        ],
-        [
-            InlineKeyboardButton("Terms of Use", callback_data=_help_cb(user_id, "terms")),
-        ],
-        [
-            InlineKeyboardButton("Settings", callback_data=_help_cb(user_id, "settings")),
-        ],
-        [
+            InlineKeyboardButton("Terms & Privacy", callback_data=_help_cb(user_id, "legal")),
             InlineKeyboardButton("Close", callback_data=_help_cb(user_id, "close")),
         ],
     ])
@@ -90,9 +87,6 @@ def help_settings_keyboard(user_id: int):
         [
             InlineKeyboardButton("NSFW", callback_data=_help_cb(user_id, "nsfw")),
             InlineKeyboardButton("Welcome", callback_data=_help_cb(user_id, "wlc")),
-        ],
-        [
-            InlineKeyboardButton("User Setting", callback_data=_help_cb(user_id, "user_setting")),
         ],
         [
             InlineKeyboardButton("Back", callback_data=_help_cb(user_id, "menu")),
@@ -115,11 +109,99 @@ def help_settings_back_keyboard(user_id: int):
     ])
 
 
+_LEGACY_ALIASES = {
+    "features": "media",
+    "privacy": "legal",
+    "terms": "legal",
+    "caca": "ai",
+}
+
+
 HELP_TEXT = {
     "menu": (
         "### 📖 Help Menu\n"
         "\n"
-        "Choose a category using the buttons below 👇\n"
+        "Select a category below to explore commands and documentation.\n"
+    ),
+
+    "media": (
+        "### 📥 Media & Downloader\n"
+        "\n"
+        "- `/dl <url>`: Download media from supported platforms\n"
+        "- `/asupan`: Get a random short video\n"
+        "- `/music <query>`: Search and download songs\n"
+        "- `/nobg`: Remove image background via photo reply\n"
+        "- `/upscale`: Upscale and enhance image resolution\n"
+        "- `/getsticker`: Extract sticker as a PNG or WEBM file\n"
+        "- `/kang`: Add replied sticker to your personal pack\n"
+        "- `/igstalk <user>`: View Instagram profile details\n"
+        "- `/igstory <user>`: Download Instagram stories by username\n"
+        "- `/share`: Share media anonymously via secret link"
+    ),
+
+    "explorer": (
+        "### 🎬 Stream & Explorer\n"
+        "\n"
+        "- `/moviebox`: Search and stream movies or series from MovieBox\n"
+        "- `/drakorid`: Browse and stream Asian dramas from Drakor.id\n"
+        "- `/anichin`: Browse and download donghua from Anichin\n"
+        "- `/firmware`: Official Xiaomi, Redmi, and POCO ROM archive\n"
+        "- `/anime`: Search anime database\n"
+        "- `/nekopoi`: Browse Nekopoi video catalog (Premium)\n"
+        "- `/simontok`: Browse Simontok video catalog (Premium)\n"
+        "- `/punish`: Browse PunishWorld video catalog (Premium)\n"
+        "- `/becekku`: Browse Becekku video catalog (Premium)\n"
+        "- `/lendirqu`: Browse LendirQu video catalog (Premium)\n"
+        "- `/cosxplay`: Browse CosXplay video catalog (Premium)"
+    ),
+
+    "ai": (
+        "### 🤖 AI Chat & Caca\n"
+        "\n"
+        "**AI Assistants**\n"
+        "- `/ask <text>`: Chat with AI model featuring web grounding\n"
+        "- `/groq <text>`: Fast response AI powered by Groq\n"
+        "- Reply to any AI message to continue the conversation thread\n"
+        "\n"
+        "**Caca Companion**\n"
+        "- `/caca <text>`: Chat with Caca roleplay companion\n"
+        "- `/mode`: View current active persona\n"
+        "- `/mode <name>`: Switch persona (default, bokep, sarkas, toxic, yandere, cabul, masokis, loli)\n"
+        "- `/cacatopup`: Top up Caca AI credits via dynamic QRIS\n"
+        "- `/buycaca`: Same as `/cacatopup`\n"
+        "- `/cacasaldo`: Check active credit balance and expiry dates"
+    ),
+
+    "games": (
+        "### 🎮 Games & Fun\n"
+        "\n"
+        "- `/asahotak`: Brain teaser quiz game\n"
+        "- `/susunkata`: Word puzzle scramble game\n"
+        "- `/quiz`: Trivia quiz challenge\n"
+        "- `/ship`: Match random couple pairs in groups\n"
+        "- `/quoteanime`: Random quote from anime series\n"
+        "- `/waifu`: Fetch a random anime character picture"
+    ),
+
+    "utils": (
+        "### 🧰 Utilities\n"
+        "\n"
+        "- `/q [N] [r] [color]`: Generate quote sticker\n"
+        "- `/qi [N] [r] [color]`: Generate quote image wallpaper\n"
+        "- `/qs [N] [r] [color]`: Generate 9:16 quote for stories\n"
+        "- `/ping`: Check bot response time and gateway latency\n"
+        "- `/weather <city>`: Get weather report and forecast\n"
+        "- `/kurs`: Currency exchange rate converter\n"
+        "- `/resi <courier> <receipt>`: Track Indonesia expedition packages\n"
+        "- `/tr <text>`: Translate text between languages\n"
+        "- `/trlist`: List all supported translation languages\n"
+        "- `/ip <address>`: Lookup geolocation and ISP info of an IP\n"
+        "- `/net <host>`: Network diagnostics and route information\n"
+        "- `/domain <domain>`: Domain details and DNS records\n"
+        "- `/whoisdomain <domain>`: Detailed WHOIS domain registration data\n"
+        "- `/reminder <time> <text>`: Set a scheduled alert reminder\n"
+        "- `/buypremium`: Purchase premium membership via QRIS\n"
+        "- `/premiumbenefit`: View premium perks and unlocked domains"
     ),
 
     "vps": (
@@ -128,236 +210,93 @@ HELP_TEXT = {
         "High-performance cloud servers with low-latency global routing.\n"
         "\n"
         "**How to buy**\n"
-        "\n"
-        "- `/vps` — Open the plan menu and order a new server\n"
-        "- `/myvps` — Manage your servers\n"
+        "- `/vps`: Open the plan menu and order a new server\n"
+        "- `/myvps`: Manage servers you already own\n"
         "\n"
         "**Service terms**\n"
-        "\n"
         "- Full 7-day warranty on every plan\n"
-        "- Active period up to 30 days (buy 7, 14, or 30 days), renewable anytime\n"
+        "- Active period up to 30 days (7, 14, or 30 days), renewable anytime\n"
         "- Full root access over SSH with password login\n"
         "- Operating system: Ubuntu 24.04, Ubuntu 22.04, or Debian 12\n"
-        "- Pick the region closest to your users\n"
+        "- Choose server location from multiple global AWS regions\n"
         "\n"
         "**Payment**\n"
-        "\n"
         "- Dynamic QRIS (GoPay, OVO, DANA, ShopeePay, all banks)\n"
-        "- Server activates automatically 30 to 60 seconds after payment is received\n"
-        "\n"
-        "> Credentials are sent straight to chat once the server is active."
-    ),
-
-    "features": (
-        "### 🤩 Main Features\n"
-        "\n"
-        "- `/anichin` — Browse, search & download Donghua from Anichin\n"
-        "- `/anime` — Search anime\n"
-        "- `/asahotak` — Random question\n"
-        "- `/aidetect` — Detect AI-generated images\n"
-        "- `/aitext` — Detect AI-generated text\n"
-        "- `/asupan` — Random TikTok content\n"
-        "- `/becekku` — Browse, search & download from Becekku\n"
-        "- `/buypremium` — Buy premium access via dynamic QRIS\n"
-        "- `/cosxplay` — Browse, search & download from CosXplay\n"
-        "- `/dl` — Download videos from supported platforms\n"
-        "- `/drakorid` — Browse & search Asian dramas on Drakor.id\n"
-        "- `/firmware` — Browse & download Xiaomi, Redmi, POCO firmware\n"
-        "- `/gsearch` — Search on Google\n"
-        "- `/getsticker` — Get sticker as PNG or WEBM file\n"
-        "- `/igstalk` — Stalking Instagram account\n"
-        "- `/igstory` — Download story Instagram via username\n"
-        "- `/kang` — Add sticker to your pack\n"
-        "- `/kurs` — Currency conversion\n"
-        "- `/lendirqu` — Browse, search & download from LendirQu\n"
-        "- `/moviebox` — Browse, search & download movies & TV series from MovieBox\n"
-        "- `/music` — Search music\n"
-        "- `/nekopoi` — Browse, search & download from Nekopoi\n"
-        "- `/nobg` — Remove image background\n"
-        "- `/premiumbenefit` — List commands & features that require premium\n"
-        "- `/punish` — Browse, search & download from PunishWorld\n"
-        "- `/q [N] [r] [color]` — Quote sticker; `N` next msgs, `-N` previous, `r` show reply, `color` name/hex/gradient\n"
-        "- `/qi [N] [r] [color]` — Quote wallpaper image\n"
-        "- `/qs [N] [r] [color]` — Quote for stories (9:16)\n"
-        "- `/quoteanime` — Random anime quotes\n"
-        "- `/reminder` — Schedule a reminder\n"
-        "- `/resi` — Track packages, Indonesia expedition only\n"
-        "- `/ship` — Choose a couple\n"
-        "- `/share` — Share media anonymous\n"
-        "- `/simontok` — Browse, search & download from Simontok\n"
-        "- `/susunkata` — Play word arrangement game\n"
-        "- `/tr` — Translate text between languages\n"
-        "- `/trlist` — List supported languages\n"
-        "- `/upscale` — Upscale images\n"
-        "- `/vps` — Buy & manage AWS VPS\n"
-        "- `/waifu` — Get a waifu\n"
-        "- `/weather` — Get weather information\n"
-        "\n"
-        "> Tip: type the command directly, no extra arguments needed 😉"
-    ),
-
-    "ai": (
-        "### 🤖 AI Chat\n"
-        "\n"
-        "- `/ask` — Chat with AI\n"
-        "- `/groq` — Chat with Groq\n"
-        "- `/caca` — Caca Chat Bot\n"
-        "\n"
-        "> Reply to the bot's message to continue the conversation."
-    ),
-
-    "caca": (
-        "### 💬 Caca Menu\n"
-        "\n"
-        "Chat with **Caca**, a playful roleplay companion.\n"
-        "\n"
-        "**Chat**\n"
-        "- `/caca <text>` — Start chatting with Caca\n"
-        "- Reply to Caca's message to keep talking (no need to retype the command)\n"
-        "- Caca fetches fresh info on her own when you ask about news, prices, or specs\n"
-        "\n"
-        "**Persona**\n"
-        "- `/mode` — Show your current persona\n"
-        "- `/mode <name>` — Change persona\n"
-        "- Available: `default`, `bokep`, `sarkas`, `toxic`, `yandere`, `cabul`, `masokis`, `loli`\n"
-        "- Changing persona resets your Caca chat memory\n"
-        "\n"
-        "**Credit & Top-up**\n"
-        "- Caca uses a **credit** system priced by actual AI tokens\n"
-        "- `/cacatopup` — Top up credit (preset packages or custom amount)\n"
-        "- `/buycaca` — Same as `/cacatopup`\n"
-        "- `/cacasaldo` — Check balance and each credit lot's expiry\n"
-        "\n"
-        "> You must have active credit to use Caca. Each top-up creates its own\n"
-        "> credit lot with its own expiry date (7–30 days).\n"
-        "\n"
-        "**In Groups**\n"
-        "- `/cacaa enable` — Enable Caca in the group\n"
-        "- `/cacaa disable` — Disable Caca in the group\n"
-        "- `/cacaa status` — Check Caca status"
-    ),
-
-    "utils": (
-        "### 🧰 Utilities\n"
-        "\n"
-        "- `/ping` — Check bot response time\n"
-        "- `/ip` — IP address lookup\n"
-        "- `/net` — all in one network information\n"
-        "- `/domain` — Domain information\n"
-        "- `/whoisdomain` — Detailed domain lookup"
-    ),
-
-    "privacy": (
-        "### 🔒 User Privacy\n"
-        "\n"
-        "By using this bot, users understand and agree that:\n"
-        "\n"
-        "- The bot owner may view and store the command history used by users\n"
-        "- The recorded data may include:\n"
-        "  - Telegram user ID\n"
-        "  - Username (if available)\n"
-        "  - Commands used\n"
-        "  - Usage time (timestamp)\n"
-        "\n"
-        "This data is used only for:\n"
-        "- Development\n"
-        "- Maintenance\n"
-        "- Service improvement\n"
-        "\n"
-        "> **❗ Do not send passwords, identification numbers, or other sensitive data.**\n"
-        "\n"
-        "By continuing to use this bot, users are considered to have agreed to this policy."
-    ),
-
-    "terms": (
-        "### 📜 Terms of Use\n"
-        "\n"
-        "By using this bot, you agree to these terms and conditions:\n"
-        "\n"
-        "**1. User Responsibility**\n"
-        "You’re responsible for everything you do on this site. Every command you run, every link you click, every file you download with this bot.\n"
-        "\n"
-        "**2. Downloader Usage**\n"
-        "The downloader is just a tool. You are on your own to ensure that you have the right or permission to download, save, share, or reuse anything from other platforms.\n"
-        "\n"
-        "This bot is not intended to grab or share any content that is:\n"
-        "- Copyrighted and you don’t have permission to use;\n"
-        "- Private or restricted access;\n"
-        "- Paid stuff you haven’t been granted permission to get;\n"
-        "- Illegal, harmful, abusive, or in violation of someone else’s rights.\n"
-        "\n"
-        "**3. Third-Party Platforms**\n"
-        "This bot is not affiliated with, endorsed, or sponsored by Instagram, TikTok, YouTube, Facebook, X, or any other platform. You must respect their respective terms of service when downloading their content.\n"
-        "\n"
-        "**4. No Ownership Claim**\n"
-        "Everything you download through this bot will stay the property of its creator. The bot doesn’t claim any rights to it.\n"
-        "\n"
-        "**5. No Guarantee**\n"
-        "You get the bot as-is. Features can break, change, disappear, or be limited at any time due to technical stuff, platform updates, rate limits, or maintenance.\n"
-        "\n"
-        "**6. Abuse and Restrictions**\n"
-        "If you abuse the bot, spam commands, overburden it, or use it for malicious stuff, the bot owner may block, limit, or disable your access to it.\n"
-        "\n"
-        "As long as you continue to use the bot, you agree to this."
+        "- Server activates automatically 30 to 60 seconds after payment confirmation"
     ),
 
     "settings": (
-        "### ⚙️ Bot Settings\n"
+        "### ⚙️ Group Settings\n"
         "\n"
-        "Select a menu below to see detailed options for each feature."
+        "Select an option below to manage group moderation and features."
     ),
 
     "asupan": (
         "### 📺 Asupan Settings\n"
         "\n"
-        "- `/asupann enable` — Enable asupan in the group\n"
-        "- `/asupann disable` — Disable asupan in the group\n"
-        "- `/asupann status` — Check asupan status"
+        "- `/asupann enable`: Enable asupan in the group\n"
+        "- `/asupann disable`: Disable asupan in the group\n"
+        "- `/asupann status`: Check asupan status"
     ),
 
     "autodel": (
         "### ⏱ Auto Delete Asupan\n"
         "\n"
-        "- `/autodel enable` — Enable auto-delete for asupan\n"
-        "- `/autodel disable` — Disable auto-delete for asupan\n"
-        "- `/autodel status` — Check auto-delete status"
+        "- `/autodel enable`: Enable auto-delete for asupan\n"
+        "- `/autodel disable`: Disable auto-delete for asupan\n"
+        "- `/autodel status`: Check auto-delete status"
     ),
 
     "autodl": (
         "### 🔗 Auto Download Link\n"
         "\n"
-        "- `/autodl enable` — Enable automatic link detection\n"
-        "- `/autodl disable` — Disable automatic link detection\n"
-        "- `/autodl status` — Check auto-detect status"
+        "- `/autodl enable`: Enable automatic link detection\n"
+        "- `/autodl disable`: Disable automatic link detection\n"
+        "- `/autodl status`: Check auto-detect status"
     ),
 
     "cacaa": (
         "### 💬 Caca Group Settings\n"
         "\n"
-        "- `/cacaa enable` — Enable Caca in the group\n"
-        "- `/cacaa disable` — Disable Caca in the group\n"
-        "- `/cacaa status` — Check Caca status\n"
-        "- `/cacaa list` — List active groups (owner only)\n"
+        "- `/cacaa enable`: Enable Caca in the group\n"
+        "- `/cacaa disable`: Disable Caca in the group\n"
+        "- `/cacaa status`: Check Caca status\n"
+        "- `/cacaa list`: List active groups (owner only)\n"
         "\n"
-        "> Use `/help` → **Caca** for personas, chat and credit top-up."
+        "> Use `/help` -> **AI Chat & Caca** for personas, chat, and top-up."
     ),
 
     "nsfw": (
         "### 🔞 NSFW Settings\n"
         "\n"
-        "- `/nsfw enable` — Enable NSFW in the group\n"
-        "- `/nsfw disable` — Disable NSFW in the group\n"
-        "- `/nsfw status` — Check NSFW status\n"
-        "- `/spoiler enable` — Send premium media with spoiler\n"
-        "- `/spoiler disable` — Send premium media normally\n"
-        "- `/spoiler status` — Check spoiler status"
+        "- `/nsfw enable`: Enable NSFW in the group\n"
+        "- `/nsfw disable`: Disable NSFW in the group\n"
+        "- `/nsfw status`: Check NSFW status\n"
+        "- `/spoiler enable`: Send premium media with spoiler\n"
+        "- `/spoiler disable`: Send premium media normally\n"
+        "- `/spoiler status`: Check spoiler status"
     ),
 
     "wlc": (
         "### 👋 Welcome Settings\n"
         "\n"
-        "- `/wlc enable` — Enable welcome messages\n"
-        "- `/wlc disable` — Disable welcome messages"
+        "- `/wlc enable`: Enable welcome messages\n"
+        "- `/wlc disable`: Disable welcome messages"
+    ),
+
+    "legal": (
+        "### 📜 Terms & Privacy\n"
+        "\n"
+        "**Terms of Use**\n"
+        "- **User Responsibility**: You are responsible for every command executed and every file downloaded.\n"
+        "- **Downloader Tool**: The downloader is provided as a utility tool. You must hold rights or permission for any media downloaded.\n"
+        "- **Third-Party Platforms**: This bot is not affiliated with, endorsed, or sponsored by Instagram, TikTok, YouTube, Facebook, or X. You must comply with their respective terms.\n"
+        "- **No Guarantee**: Services are provided as-is without warranties of uninterrupted uptime.\n"
+        "\n"
+        "**Privacy Policy**\n"
+        "- Commands and interaction logs may be recorded strictly for maintenance and diagnostics.\n"
+        "- Recorded metadata may include Telegram User ID, Username, and timestamps.\n"
+        "- Do not send passwords, identification numbers, or confidential personal data."
     ),
 }
 
@@ -376,6 +315,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to=msg,
     )
 
+
 def _vps_help_text() -> str:
     from database import vps_db
     try:
@@ -390,8 +330,7 @@ def _vps_help_text() -> str:
             "**Out of stock.** New server orders are temporarily closed.\n"
             "\n"
             "**Existing servers**\n"
-            "\n"
-            "- `/myvps` — Manage servers you already own\n"
+            "- `/myvps`: Manage servers you already own\n"
             "- Restart, renew, firewall, and warranty claims keep working as usual\n"
             "\n"
             "> New orders will reopen once stock is restocked. Watch this menu for updates."
@@ -456,6 +395,8 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "vps":
         return await _edit_help(q, _vps_help_text(), help_back_keyboard(owner_id))
 
+    action = _LEGACY_ALIASES.get(action, action)
+
     text = HELP_TEXT.get(action)
     if text:
         if action in ("asupan", "autodel", "autodl", "cacaa", "nsfw", "wlc"):
@@ -464,4 +405,3 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = help_back_keyboard(owner_id)
 
         await _edit_help(q, text, kb)
-
