@@ -61,6 +61,9 @@ async def _redirect_to_pm(update: Update, context: ContextTypes.DEFAULT_TYPE, st
     if not msg or not user:
         return
 
+    if start_arg == "vps" and not vps_db.stock_enabled():
+        return await _reply(msg, render.stock_closed_text())
+
     text = (
         f"<b>{title}</b>\n\n"
         "For privacy, VPS ordering and credentials are only available in a direct message with the bot.\n\n"
@@ -96,7 +99,7 @@ async def vps_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     vps_db.init_db()
 
-    if not vps_db.stock_enabled() and int(user.id) not in OWNER_ID:
+    if not vps_db.stock_enabled():
         rich, plain = render.sold_out_content()
         return await send_rich(context.bot, chat.id, msg.message_id, rich, plain, render.sold_out_keyboard())
 

@@ -62,7 +62,7 @@ async def _start_checkout(
     if not q or not user or not chat:
         return
 
-    if not vps_db.stock_enabled() and not _is_owner(user.id):
+    if not vps_db.stock_enabled():
         rich, plain = render.sold_out_content()
         await _answer(q, "VPS ordering is currently out of stock.", show_alert=True)
         return await _render_and_edit(q, rich, plain, render.sold_out_keyboard())
@@ -241,7 +241,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _answer(q, "Opening private chat...", url=f"https://t.me/{uname}?start={start_arg}")
 
     if action == "menu":
-        if not vps_db.stock_enabled() and not _is_owner(user.id):
+        if not vps_db.stock_enabled():
             rich, plain = render.sold_out_content()
             await _answer(q, _toast_for(action))
             return await _render_and_edit(q, rich, plain, render.sold_out_keyboard())
@@ -254,7 +254,7 @@ async def vps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             await clear_notice(note)
 
-    if action in _STOCK_GATED_ACTIONS and not vps_db.stock_enabled() and not _is_owner(user.id):
+    if action in _STOCK_GATED_ACTIONS and not vps_db.stock_enabled():
         rich, plain = render.sold_out_content()
         await _answer(q, "VPS ordering is currently out of stock.", show_alert=True)
         return await _render_and_edit(q, rich, plain, render.sold_out_keyboard())
