@@ -9,7 +9,7 @@ import aiohttp
 import aiofiles
 import logging
 from html import unescape as _html_unescape
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlunparse, unquote
 from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
@@ -19,7 +19,6 @@ try:
     from handlers.dl.constants import BASE_DIR
 except Exception:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from handlers.dl.ytdlp import ytdlp_download
 from handlers.dl.proc import spawn_process, DEVNULL, PIPE, resolve_aria2
 
 log = logging.getLogger(__name__)
@@ -133,7 +132,11 @@ def _load_cookie_header(path: str) -> str:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for raw in f:
                 line = raw.strip()
-                if not line or line.startswith("#"):
+                if not line:
+                    continue
+                if line.startswith("#HttpOnly_"):
+                    line = line[len("#HttpOnly_"):]
+                elif line.startswith("#"):
                     continue
 
                 parts = line.split("\t")
@@ -205,6 +208,32 @@ def _build_headers(referer: str | None = None, use_cookies: bool = True) -> dict
             headers["Cookie"] = cookie_header
     return headers
 
+def _resolve_canonical_fb_url(url: str) -> str:
+    text = (url or "").strip()
+    if not text:
+        return ""
+    if "/login" in text:
+        p = urlparse(text)
+        qs = parse_qs(p.query)
+        next_val = (qs.get("next") or [""])[0]
+        if next_val:
+            return _resolve_canonical_fb_url(unquote(next_val))
+    p = urlparse(text)
+    qs = parse_qs(p.query)
+    fbid = (qs.get("story_fbid") or qs.get("fbid") or qs.get("post_id") or [""])[0]
+    author = (qs.get("id") or [""])[0]
+    if fbid and author:
+        return f"https://www.facebook.com/{author}/posts/{fbid}"
+    if fbid:
+        return f"https://www.facebook.com/photo/?fbid={fbid}"
+    vid = (qs.get("v") or [""])[0]
+    if vid:
+        return f"https://www.facebook.com/watch/?v={vid}"
+    clean = re.sub(r"[?&](?:rdid|share_url|mibextid|ref|__cft__|__tn__)=[^&]*", "", text)
+    clean = clean.replace("m.facebook.com", "www.facebook.com").replace("mbasic.facebook.com", "www.facebook.com")
+    clean = re.sub(r"/+$", "", clean)
+    return clean
+
 def _extract_content_id(url: str) -> str:
     text = (url or "").strip()
     if not text:
@@ -215,21 +244,18 @@ def _extract_content_id(url: str) -> str:
         _dbg("content id from regex | url=%s id=%s", text, value)
         return value
     parsed = urlparse(text)
-    if "watch" in parsed.path:
-        qs = parse_qs(parsed.query)
-        val = (qs.get("v") or [""])[0].strip()
+    qs = parse_qs(parsed.query)
+    for qk in ("v", "fbid", "story_fbid", "post_id"):
+        val = (qs.get(qk) or [""])[0].strip()
         if val:
-            _dbg("content id from watch query | url=%s id=%s", text, val)
+            _dbg("content id from query %s | url=%s id=%s", qk, text, val)
             return val
     _dbg("content id not found | url=%s", text)
     return ""
 
 def _normalize_content_url(content_url: str, content_id: str) -> str:
     original = (content_url or "").strip()
-    content_url = original.replace("m.facebook.com", "www.facebook.com", 1)
-    content_url = content_url.replace("mbasic.facebook.com", "www.facebook.com", 1)
-    if "/watch" in content_url and content_id:
-        content_url = f"https://www.facebook.com/reel/{content_id}"
+    content_url = _resolve_canonical_fb_url(original)
     _dbg("normalize content url | before=%s after=%s content_id=%s", original, content_url, content_id)
     return content_url
 
@@ -240,7 +266,10 @@ async def _follow_share_redirect(url: str) -> str:
     async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
         final_url = str(resp.url)
         _dbg("follow share redirect done | status=%s final=%s", resp.status, final_url)
-        return final_url
+        canonical = _resolve_canonical_fb_url(final_url)
+        if canonical != final_url:
+            _dbg("canonical resolved from redirect | redirect=%s canonical=%s", final_url, canonical)
+        return canonical
 
 def _unescape_unicode(text: str) -> str:
     if not text:
@@ -784,6 +813,134 @@ async def _get_video_data(content_url: str, content_id: str) -> dict:
     _dbg("after _parse_video_from_body | parsed=%r", parsed)
     return parsed
 
+GRAPHQL_URL = "https://www.facebook.com/api/graphql/"
+GRAPHQL_VIDEO_DOC_ID = "28300151029658894"
+GRAPHQL_VIDEO_OP = "CometVideoHomeNewPermalinkHeroUnitQuery"
+GRAPHQL_VIDEO_PROVIDED = {
+    "__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider": False,
+    "__relay_internal__pv__CometUFISingleLineUFIrelayprovider": False,
+    "__relay_internal__pv__CometUFIShareActionMigrationrelayprovider": True,
+    "__relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider": False,
+    "__relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider": False,
+    "__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider": "ORIGINAL",
+    "__relay_internal__pv__IsWorkUserrelayprovider": False,
+    "__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider": True,
+    "__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider": True,
+}
+LSD_RE = re.compile(r'\["LSD",\[\],\{"token":"([^"]+)"')
+JAZOEST_RE = re.compile(r'"jazoest","value":"(\d+)"')
+
+def _graphql_variables(video_id: str) -> dict:
+    variables = {
+        "caller": "TAHOE",
+        "entityNumber": 5,
+        "feedbackSource": 41,
+        "feedLocation": "TAHOE",
+        "focusCommentID": None,
+        "isCrawler": False,
+        "isLoggedOut": True,
+        "privacySelectorRenderLocation": "COMET_STREAM",
+        "renderLocation": "video_home",
+        "scale": 1,
+        "useDefaultActor": False,
+        "videoID": video_id,
+        "videoIDStr": str(video_id),
+    }
+    variables.update(GRAPHQL_VIDEO_PROVIDED)
+    return variables
+
+def _iter_ndjson(text: str):
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except Exception:
+            continue
+
+def _graphql_extract_video(text: str) -> dict:
+    out = {"hd_url": "", "sd_url": "", "title": ""}
+    for node in _iter_ndjson(text):
+        video = ((node.get("data") or {}).get("video")) or {}
+        story = video.get("story") or {}
+        for attachment in story.get("attachments") or []:
+            media = attachment.get("media") or {}
+            delivery = media.get("videoDeliveryLegacyFields") or {}
+            hd = delivery.get("browser_native_hd_url") or ""
+            sd = delivery.get("browser_native_sd_url") or ""
+            if hd and not out["hd_url"]:
+                out["hd_url"] = hd
+            if sd and not out["sd_url"]:
+                out["sd_url"] = sd
+            title = media.get("title") or {}
+            if isinstance(title, dict) and title.get("text") and not out["title"]:
+                out["title"] = title["text"]
+        if not out["title"]:
+            node_title = video.get("name") or (story.get("title") or {}).get("text")
+            if node_title:
+                out["title"] = node_title
+        if out["hd_url"] or out["sd_url"]:
+            break
+    return out
+
+async def _graphql_video_data(video_id: str) -> dict:
+    if not video_id:
+        return {"hd_url": "", "sd_url": "", "title": ""}
+    session = await get_http_session()
+    watch_url = f"https://www.facebook.com/watch/?v={video_id}"
+    headers = _build_headers(watch_url, use_cookies=True)
+    try:
+        async with session.get(watch_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
+            page = await resp.text()
+    except Exception as e:
+        _dbg("graphql bootstrap failed | video_id=%s err=%r", video_id, e)
+        return {"hd_url": "", "sd_url": "", "title": ""}
+    lsd_match = LSD_RE.search(page)
+    jz_match = JAZOEST_RE.search(page)
+    if not lsd_match:
+        _dbg("graphql bootstrap missing lsd | video_id=%s", video_id)
+        return {"hd_url": "", "sd_url": "", "title": ""}
+    lsd = lsd_match.group(1)
+    payload = {
+        "fb_api_caller_class": "RelayModern",
+        "fb_api_req_friendly_name": GRAPHQL_VIDEO_OP,
+        "variables": json.dumps(_graphql_variables(video_id)),
+        "doc_id": GRAPHQL_VIDEO_DOC_ID,
+        "server_timestamps": "true",
+        "lsd": lsd,
+    }
+    if jz_match:
+        payload["jazoest"] = jz_match.group(1)
+    req_headers = dict(headers)
+    req_headers.update({
+        "X-FB-Friendly-Name": GRAPHQL_VIDEO_OP,
+        "X-FB-LSD": lsd,
+        "Origin": "https://www.facebook.com",
+        "Referer": watch_url,
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    try:
+        async with session.post(GRAPHQL_URL, data=payload, headers=req_headers, timeout=aiohttp.ClientTimeout(total=30), allow_redirects=True) as resp:
+            text = await resp.text()
+            status = resp.status
+    except Exception as e:
+        _dbg("graphql video request failed | video_id=%s err=%r", video_id, e)
+        return {"hd_url": "", "sd_url": "", "title": ""}
+    parsed = _graphql_extract_video(text)
+    _dbg("graphql video result | video_id=%s status=%s hd=%s sd=%s", video_id, status, bool(parsed["hd_url"]), bool(parsed["sd_url"]))
+    return parsed
+
+def _alternate_video_urls(content_url: str, content_id: str) -> list[str]:
+    urls: list[str] = []
+    if not content_id:
+        return urls
+    if "/reel/" in content_url:
+        urls.append(f"https://www.facebook.com/watch/?v={content_id}")
+    if "/watch" in content_url:
+        urls.append(f"https://www.facebook.com/reel/{content_id}")
+    return urls
+
 async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
     if not metadata_ready:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Facebook post...</b>")
@@ -794,35 +951,66 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     _dbg("share url detected=%s | url=%s",is_share,content_url)
     if is_share:
         content_url=await _follow_share_redirect(content_url)
+    content_url=_resolve_canonical_fb_url(content_url)
     content_id=_extract_content_id(content_url)
     if not content_id:
         _dbg("no content_id extracted from url, proceeding to fetch page directly | url=%s", content_url)
     _dbg("before _fetch_page_html (cookieless) | content_url=%s content_id=%s",content_url,content_id)
     status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=False)
-    if status!=200 or not body:
-        _dbg("cookieless fetch failed | status=%s body_len=%s, retry with cookies",status,len(body or b""))
+    if status!=200 or not body or "/login" in str(final_url):
+        _dbg("cookieless fetch failed | status=%s body_len=%s login=%s, retry with cookies",status,len(body or b""),"/login" in str(final_url))
         status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=True)
     if status!=200 or not body:
         _write_debug_file("facebook_http_error", body or b"")
         raise RuntimeError(f"failed to get page: HTTP {status}")
     body_text=body.decode("utf-8",errors="ignore")
     if not VIDEO_SIGNAL_RE.search(body_text):
-        return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id)
-    _dbg("video signal found, parse video from fetched body")
-    video_data=None
-    try:
-        video_data=_parse_video_from_body(body,content_id)
-    except RuntimeError as e:
-        _dbg("parse video from cookieless body failed | err=%r",e)
-    if not video_data or not (video_data.get("hd_url") or video_data.get("sd_url")):
-        _dbg("no video urls in cookieless body, retry with cookies")
-        video_data=await _get_video_data(content_url,content_id)
+        for alt_url in _alternate_video_urls(content_url, content_id):
+            _dbg("no video signal, trying alternate url | alt=%s", alt_url)
+            alt_status, alt_final, alt_body = await _fetch_page_html(alt_url, content_id, use_cookies=True)
+            if alt_status != 200 or not alt_body:
+                continue
+            alt_text = alt_body.decode("utf-8", errors="ignore")
+            if VIDEO_SIGNAL_RE.search(alt_text):
+                _dbg("video signal found on alternate url | alt=%s", alt_url)
+                content_url, body, body_text = alt_url, alt_body, alt_text
+                break
+    if not VIDEO_SIGNAL_RE.search(body_text):
+        graph = await _graphql_video_data(content_id)
+        if graph.get("hd_url") or graph.get("sd_url"):
+            video_data = {
+                "hd_url": graph.get("hd_url") or "",
+                "sd_url": graph.get("sd_url") or "",
+                "title": graph.get("title") or "",
+            }
+            _dbg("video from graphql fallback | hd=%s sd=%s", bool(video_data["hd_url"]), bool(video_data["sd_url"]))
+        else:
+            return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id)
+    else:
+        _dbg("video signal found, parse video from fetched body")
+        video_data=None
+        try:
+            video_data=_parse_video_from_body(body,content_id)
+        except RuntimeError as e:
+            _dbg("parse video from cookieless body failed | err=%r",e)
+        if not video_data or not (video_data.get("hd_url") or video_data.get("sd_url")):
+            _dbg("no video urls in cookieless body, retry with cookies")
+            video_data=await _get_video_data(content_url,content_id)
+        if not video_data or not (video_data.get("hd_url") or video_data.get("sd_url")):
+            _dbg("no video urls after cookie retry, trying graphql")
+            graph = await _graphql_video_data(content_id)
+            if graph.get("hd_url") or graph.get("sd_url"):
+                video_data = {
+                    "hd_url": graph.get("hd_url") or "",
+                    "sd_url": graph.get("sd_url") or "",
+                    "title": graph.get("title") or (video_data or {}).get("title") or "",
+                }
     _dbg("video data parsed | hd=%s sd=%s",bool(video_data.get("hd_url")),bool(video_data.get("sd_url")))
     video_url=video_data.get("hd_url") or video_data.get("sd_url")
     _dbg("video url selected | exists=%s",bool(video_url))
     if not video_url:
         _dbg("video url empty after parse | content_url=%s content_id=%s",content_url,content_id)
-        raise RuntimeError("no video formats found")
+        raise RuntimeError("This Facebook video is private, deleted, or requires login. No playable source was found.")
     duration = _extract_video_duration_from_url(video_url)
     _dbg("video duration check | duration_s=%s", duration)
     if duration == 0:
@@ -890,11 +1078,15 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
 async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id):
     photo_urls=_collect_photo_urls(body_text)
     caption=_extract_post_caption(body_text)
+    fallback_title=_extract_title_from_html(body,"Facebook Photo")
     if not caption:
-        caption=_extract_title_from_html(body,"Facebook Photo")
-    _dbg("photo post parsed | photos=%s caption_len=%s",len(photo_urls),len(caption or ""))
+        caption=fallback_title
+    caption_is_real=bool(caption) and not _is_bad_fb_title(caption) and caption.strip().lower() not in {
+        "facebook photo","facebook video","facebook","login","log in","facebook login","watch","reel"
+    }
+    _dbg("photo post parsed | photos=%s caption_len=%s caption_real=%s",len(photo_urls),len(caption or ""),caption_is_real)
     if not photo_urls:
-        if caption and bot is not None and chat_id is not None:
+        if caption_is_real and bot is not None and chat_id is not None:
             safe_caption=(caption or "").strip()
             if len(safe_caption)>3500:
                 safe_caption=safe_caption[:3497].rstrip()+"..."
@@ -916,7 +1108,7 @@ async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id)
                 return {"handled":True}
             except Exception as e:
                 log.warning("Facebook text post send failed | err=%r",e)
-        raise RuntimeError("no photo or video found in Facebook post")
+        raise RuntimeError("This Facebook post is private, deleted, or requires login. No media could be extracted.")
     os.makedirs(TMP_DIR,exist_ok=True)
     session=await get_http_session()
     downloaded=[]
@@ -943,20 +1135,13 @@ async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id)
     return {"items":[{"path":p,"type":"photo"} for p in downloaded],"title":caption or "Facebook Photo","source":"Facebook"}
 
 async def facebook_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
-    try:
-        return await facebook_scrape_download(
-            raw_url=raw_url,
-            fmt_key=fmt_key,
-            bot=bot,
-            chat_id=chat_id,
-            status_msg_id=status_msg_id,
-            format_id=format_id,
-            has_audio=has_audio,
-            metadata_ready=metadata_ready,
-        )
-    except Exception as e:
-        if isinstance(e, FileSizeLimitExceeded):
-            raise
-        log.exception("Facebook scraping failed, fallback to yt-dlp | url=%s err=%r",raw_url,e)
-        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Facebook scraping failed</b>\n\n<i>Fallback to yt-dlp...</i>")
-        return await ytdlp_download(raw_url,fmt_key,bot,chat_id,status_msg_id,format_id=format_id,has_audio=has_audio)
+    return await facebook_scrape_download(
+        raw_url=raw_url,
+        fmt_key=fmt_key,
+        bot=bot,
+        chat_id=chat_id,
+        status_msg_id=status_msg_id,
+        format_id=format_id,
+        has_audio=has_audio,
+        metadata_ready=metadata_ready,
+    )
