@@ -24,7 +24,10 @@ class Route:
     def build_kwargs(self, kwargs):
         if self.params is None:
             return kwargs
-        return {k: v for k, v in kwargs.items() if k in self.params}
+        out = {k: v for k, v in kwargs.items() if k in self.params}
+        if "url" in self.params and "url" not in out and "raw_url" in kwargs:
+            out["url"] = kwargs["raw_url"]
+        return out
 
     def matches(self, url):
         try:

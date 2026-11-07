@@ -108,14 +108,17 @@ async def _download_file(session: aiohttp.ClientSession, url: str, dest_path: st
 
 
 async def download_youtube_post(
-    url: str,
+    raw_url: str = "",
     bot=None,
     chat_id: int | None = None,
     status_msg_id: int | None = None,
+    url: str | None = None,
+    **kwargs,
 ) -> dict:
-    post_id = extract_post_id(url)
-    target_url = f"https://www.youtube.com/post/{post_id}" if post_id else url
-    log.info("Fetching YouTube community post | url=%s post_id=%s", url, post_id)
+    target = (raw_url or url or "").strip()
+    post_id = extract_post_id(target)
+    target_url = f"https://www.youtube.com/post/{post_id}" if post_id else target
+    log.info("Fetching YouTube community post | url=%s post_id=%s", target, post_id)
 
     session = await get_http_session()
     async with session.get(target_url, headers=WEB_HEADERS, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=25)) as resp:
