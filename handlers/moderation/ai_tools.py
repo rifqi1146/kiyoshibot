@@ -1,0 +1,722 @@
+from __future__ import annotations
+
+import html
+import inspect
+import json
+import logging
+import re
+
+from database.moderation_db import lookup_user_id, sudo_is
+from utils.config import LOG_CHAT_ID, OWNER_ID
+from utils.http import get_http_session
+
+
+from .permissions import MUTED_PERMISSIONS, UNMUTED_PERMISSIONS
+
+log = logging.getLogger(__name__)
+
+SUPPORTED_ACTIONS = (
+    "mute_user",
+    "unmute_user",
+    "ban_user",
+    "unban_user",
+    "kick_user",
+    "promote_user",
+    "demote_user",
+    "tag_user",
+)
+
+_TARGET_DESC = {
+    "type": "string",
+    "description": "Target: @username, numeric user_id, or \"reply\" to act on the user being replied to.",
+}
+_DURATION_DESC = {
+    "type": "string",
+    "description": "Optional duration like 30m, 2h, 1d, 1w. Indonesian forms (10 menit, 1 hari) are accepted. Empty means permanent.",
+}
+
+_LAST_TARGET: dict[int, tuple[int, str]] = {}
+
+
+def remember_target(chat_id: int, user_id: int, name: str):
+    _LAST_TARGET[int(chat_id)] = (int(user_id), name)
+
+
+def last_target(chat_id: int) -> tuple[int, str] | None:
+    return _LAST_TARGET.get(int(chat_id))
+
+MOD_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "mute_user",
+            "description": "Mute (restrict) a group member so they cannot send any message. Use for spamming, flooding, or minor misbehaviour.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "duration": _DURATION_DESC,
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unmute_user",
+            "description": "Remove a mute/restriction from a group member so they can talk again.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ban_user",
+            "description": "Ban a group member so they are removed and cannot rejoin until unbanned.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "duration": _DURATION_DESC,
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unban_user",
+            "description": "Lift a ban so the user may rejoin the group.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kick_user",
+            "description": "Remove a member from the group immediately without banning them, so they can rejoin with an invite link. Use when the user asks to throw someone out.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "promote_user",
+            "description": "Promote a group member to administrator with the bot's default admin rights.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "title": {"type": "string", "description": "Optional custom admin title, max 16 characters."},
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "demote_user",
+            "description": "Remove administrator rights from a group member.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tag_user",
+            "description": "Set the custom admin title (tag) shown next to a member's name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": _TARGET_DESC,
+                    "tag": {"type": "string", "description": "New tag text, max 16 characters."},
+                    "reason": {"type": "string", "description": "Short reason shown in the action log."},
+                },
+                "required": ["target", "tag"],
+            },
+        },
+    },
+]
+
+FULL_ADMIN_RIGHTS = {
+    "can_manage_chat": True,
+    "can_delete_messages": True,
+    "can_manage_video_chats": True,
+    "can_restrict_members": True,
+    "can_change_info": True,
+    "can_invite_users": True,
+    "can_pin_messages": True,
+    "can_manage_tags": True,
+}
+
+_ACTION_LABEL = {
+    "mute_user": "Mute",
+    "unmute_user": "Unmute",
+    "ban_user": "Ban",
+    "unban_user": "Unban",
+    "kick_user": "Kick",
+    "promote_user": "Promote",
+    "demote_user": "Demote",
+    "tag_user": "Tag",
+}
+
+_UNIT_SECONDS = {
+    "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "detik": 1,
+    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60, "menit": 60,
+    "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600, "jam": 3600,
+    "d": 86400, "day": 86400, "days": 86400, "hari": 86400,
+    "w": 604800, "week": 604800, "weeks": 604800, "minggu": 604800,
+}
+
+_UNIT_HUMAN = {
+    1: "second", 60: "minute", 3600: "hour", 86400: "day", 604800: "week",
+}
+
+_DURATION_RE = re.compile(r"(\d+)\s*([a-zA-Z]+)")
+
+
+def parse_duration_seconds(raw: str | None) -> int:
+    text = (raw or "").strip().lower()
+    if not text:
+        return 0
+    if text in ("permanent", "forever", "selamanya", "permanen", "0"):
+        return 0
+    m = _DURATION_RE.search(text)
+    if not m:
+        return 0
+    n = int(m.group(1))
+    unit = m.group(2)
+    mult = _UNIT_SECONDS.get(unit)
+    if mult is None:
+        for key, val in _UNIT_SECONDS.items():
+            if unit.startswith(key):
+                mult = val
+                break
+    if mult is None:
+        mult = 86400
+    return max(0, n * mult)
+
+
+def humanize_seconds(seconds: int) -> str:
+    if seconds <= 0:
+        return "Permanent"
+    best = max(u for u in _UNIT_HUMAN if seconds >= u)
+    n = seconds // best
+    return f"{n} {_UNIT_HUMAN[best]}{'' if n == 1 else 's'}"
+
+
+def _clean_token(raw: str | None) -> str:
+    t = (raw or "").strip().strip(",.;:!?\"'`")
+    return t
+
+
+async def resolve_target(bot, token: str | None, reply_user_id: int | None, chat_id: int | None = None) -> int | None:
+    t = _clean_token(token)
+    if t.lower() in ("reply", "dia", "him", "her", "target", "orang ini", "ini", "kasian"):
+        t = ""
+    if not t:
+        if reply_user_id:
+            return int(reply_user_id)
+        if chat_id and last_target(chat_id):
+            return int(last_target(chat_id)[0])
+        return None
+    if t.startswith("<a href=\"tg://user?id="):
+        m = re.search(r"tg://user\?id=(\d+)", t)
+        if m:
+            return int(m.group(1))
+    if t.isdigit():
+        return int(t)
+    if t.startswith("@"):
+        t = t[1:]
+    uid = lookup_user_id(t)
+    if uid:
+        return int(uid)
+    try:
+        chat = await bot.get_chat("@" + t)
+        if getattr(chat, "id", None):
+            return int(chat.id)
+    except Exception as e:
+        log.debug("Resolve moderation target failed | token=%s err=%r", t, e)
+    if chat_id and last_target(chat_id):
+        remembered_id, remembered_name = last_target(chat_id)
+        if t.lower() in (remembered_name or "").lower() or (remembered_name or "").lower() in t.lower():
+            return int(remembered_id)
+        return int(remembered_id)
+    return None
+
+
+async def _is_group_admin(bot, chat_id: int, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id, int(user_id))
+    except Exception as e:
+        log.debug("Admin lookup failed | chat_id=%s user_id=%s err=%r", chat_id, user_id, e)
+        return False
+    return getattr(member, "status", None) in ("administrator", "creator")
+
+
+async def check_actor(update, context) -> bool:
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return False
+    if int(user.id) in OWNER_ID or sudo_is(int(user.id)):
+        return True
+    if chat.type not in ("group", "supergroup"):
+        return False
+    return await _is_group_admin(context.bot, chat.id, user.id)
+
+
+async def _bot_member(bot, chat_id: int):
+    try:
+        return await bot.get_chat_member(chat_id, bot.id)
+    except Exception as e:
+        log.debug("Bot member lookup failed | chat_id=%s err=%r", chat_id, e)
+        return None
+
+
+async def _bot_can(bot, chat_id: int, right: str) -> bool:
+    me = await _bot_member(bot, chat_id)
+    if me is None:
+        return False
+    if getattr(me, "status", None) == "creator":
+        return True
+    return bool(getattr(me, right, False))
+
+
+async def _protected(bot, chat_id: int, target_id: int, include_admin: bool = True) -> bool:
+    if int(target_id) in OWNER_ID or sudo_is(int(target_id)):
+        return True
+    if int(target_id) == int(bot.id):
+        return True
+    if not include_admin:
+        return False
+    return await _is_group_admin(bot, chat_id, target_id)
+
+
+async def log_action(bot, *, chat, actor, action: str, target_id: int | None, target_name: str, duration: str, reason: str, ok: bool, error: str = ""):
+    if not LOG_CHAT_ID:
+        return
+    label = _ACTION_LABEL.get(action, action)
+    actor_name = getattr(actor, "full_name", None) or getattr(actor, "username", None) or str(getattr(actor, "id", "?"))
+    chat_title = getattr(chat, "title", None) or str(getattr(chat, "id", "?"))
+    lines = [
+        f"<b>Moderation Log — {html.escape(label)}</b>",
+        f"<b>Group:</b> <code>{html.escape(str(chat_title))}</code>",
+        f"<b>By:</b> {html.escape(str(actor_name))} (<code>{getattr(actor, 'id', '?')}</code>)",
+    ]
+    if target_id:
+        lines.append(f"<b>Target:</b> {html.escape(target_name or str(target_id))} (<code>{int(target_id)}</code>)")
+    else:
+        lines.append(f"<b>Target:</b> {html.escape(target_name or 'unknown')}")
+    if duration:
+        lines.append(f"<b>Duration:</b> {html.escape(duration)}")
+    if reason:
+        lines.append(f"<b>Reason:</b> <code>{html.escape(reason)}</code>")
+    lines.append(f"<b>Result:</b> {'OK' if ok else 'FAILED'}")
+    if error:
+        lines.append(f"<b>Error:</b> <code>{html.escape(error[:300])}</code>")
+    try:
+        await bot.send_message(LOG_CHAT_ID, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        log.warning("Moderation log send failed | err=%r", e)
+
+
+async def execute_action(bot, *, chat, actor, action: str, args: dict, reply_user_id: int | None) -> dict:
+    chat_id = int(chat.id)
+    target_token = args.get("target")
+    reason = str(args.get("reason") or "").strip()
+    duration_raw = str(args.get("duration") or "").strip()
+    duration_sec = parse_duration_seconds(duration_raw)
+
+    target_id = await resolve_target(bot, target_token, reply_user_id, chat_id=chat_id)
+    if not target_id:
+        return {
+            "ok": False,
+            "error": f"Could not resolve target {target_token!r}. Ask for an @username, numeric id, or a reply.",
+            "target_id": None,
+            "summary": "Target not found",
+        }
+
+    needs_restrict_guard = action in ("mute_user", "ban_user", "kick_user")
+    if await _protected(bot, chat_id, target_id, include_admin=needs_restrict_guard):
+        return {
+            "ok": False,
+            "error": "That user is an admin, sudo, owner, or the bot itself and cannot be actioned.",
+            "target_id": target_id,
+            "summary": "Protected target",
+        }
+
+    target_name = str(target_id)
+    try:
+        member = await bot.get_chat_member(chat_id, target_id)
+        u = getattr(member, "user", None)
+        if u:
+            target_name = u.full_name or (f"@{u.username}" if u.username else str(target_id))
+    except Exception:
+        pass
+
+    summary = ""
+    error = ""
+    ok = False
+    try:
+        if action == "mute_user":
+            if not await _bot_can(bot, chat_id, "can_restrict_members"):
+                raise RuntimeError("Bot lacks can_restrict_members permission.")
+            kwargs = {
+                "chat_id": chat_id,
+                "user_id": target_id,
+                "permissions": MUTED_PERMISSIONS,
+            }
+            if duration_sec > 0:
+                from datetime import datetime, timedelta, timezone
+                kwargs["until_date"] = datetime.now(timezone.utc) + timedelta(seconds=duration_sec)
+            await bot.restrict_chat_member(**kwargs)
+            summary = f"Muted {target_name} for {humanize_seconds(duration_sec)}"
+            ok = True
+
+        elif action == "unmute_user":
+            if not await _bot_can(bot, chat_id, "can_restrict_members"):
+                raise RuntimeError("Bot lacks can_restrict_members permission.")
+            await bot.restrict_chat_member(
+                chat_id=chat_id, user_id=target_id, permissions=UNMUTED_PERMISSIONS,
+            )
+            summary = f"Unmuted {target_name}"
+            ok = True
+
+        elif action == "ban_user":
+            if not await _bot_can(bot, chat_id, "can_restrict_members"):
+                raise RuntimeError("Bot lacks can_restrict_members permission.")
+            kwargs = {"chat_id": chat_id, "user_id": target_id, "revoke_messages": False}
+            if duration_sec > 0:
+                from datetime import datetime, timedelta, timezone
+                kwargs["until_date"] = datetime.now(timezone.utc) + timedelta(seconds=duration_sec)
+            await bot.ban_chat_member(**kwargs)
+            summary = f"Banned {target_name} ({humanize_seconds(duration_sec)})"
+            ok = True
+
+        elif action == "unban_user":
+            if not await _bot_can(bot, chat_id, "can_restrict_members"):
+                raise RuntimeError("Bot lacks can_restrict_members permission.")
+            await bot.unban_chat_member(chat_id=chat_id, user_id=target_id)
+            summary = f"Unbanned {target_name}"
+            ok = True
+
+        elif action == "kick_user":
+            if not await _bot_can(bot, chat_id, "can_restrict_members"):
+                raise RuntimeError("Bot lacks can_restrict_members permission.")
+            await bot.ban_chat_member(chat_id=chat_id, user_id=target_id, revoke_messages=False)
+            await bot.unban_chat_member(chat_id=chat_id, user_id=target_id, only_if_banned=True)
+            summary = f"Kicked {target_name}"
+            ok = True
+
+        elif action == "promote_user":
+            if not await _bot_can(bot, chat_id, "can_promote_members"):
+                raise RuntimeError("Bot lacks can_promote_members permission.")
+            title = (str(args.get("title") or "Admin").strip() or "Admin")[:16]
+            await bot.promote_chat_member(
+                chat_id=chat_id, user_id=target_id, **FULL_ADMIN_RIGHTS,
+            )
+            try:
+                await bot.set_chat_administrator_custom_title(
+                    chat_id=chat_id, user_id=target_id, custom_title=title,
+                )
+            except Exception as e:
+                log.debug("Custom title after promote failed | err=%r", e)
+            summary = f"Promoted {target_name} to admin ({title})"
+            ok = True
+
+        elif action == "demote_user":
+            if not await _bot_can(bot, chat_id, "can_promote_members"):
+                raise RuntimeError("Bot lacks can_promote_members permission.")
+            await bot.promote_chat_member(
+                chat_id=chat_id,
+                user_id=target_id,
+                **{k: False for k in FULL_ADMIN_RIGHTS},
+            )
+            summary = f"Demoted {target_name}"
+            ok = True
+
+        elif action == "tag_user":
+            if not await _bot_can(bot, chat_id, "can_change_info"):
+                raise RuntimeError("Bot lacks can_change_info permission.")
+            tag = (str(args.get("tag") or "").strip() or "Admin")[:16]
+            method = getattr(bot, "set_chat_member_tag", None)
+            if method is None:
+                raise RuntimeError("This python-telegram-bot build has no set_chat_member_tag.")
+            await method(chat_id=chat_id, user_id=target_id, tag=tag)
+            summary = f"Tagged {target_name} as {tag}"
+            ok = True
+
+        else:
+            raise RuntimeError(f"Unsupported action {action}")
+
+    except Exception as e:
+        error = str(e)
+        summary = f"Failed to {action.replace('_user', '')} {target_name}: {error}"
+        log.warning("Moderation tool failed | action=%s chat=%s target=%s err=%r", action, chat_id, target_id, e)
+
+    await log_action(
+        bot,
+        chat=chat,
+        actor=actor,
+        action=action,
+        target_id=target_id,
+        target_name=target_name,
+        duration=humanize_seconds(duration_sec) if duration_sec > 0 and action in ("mute_user", "ban_user") else "",
+        reason=reason,
+        ok=ok,
+        error=error,
+    )
+
+    if ok and target_id:
+        remember_target(chat_id, target_id, target_name)
+
+    return {
+        "ok": ok,
+        "error": error,
+        "target_id": target_id,
+        "target_name": target_name,
+        "summary": summary,
+    }
+
+async def can_use_moderation(update, context) -> bool:
+    chat = getattr(update, "effective_chat", None)
+    user = getattr(update, "effective_user", None)
+    if not chat or not user:
+        return False
+    if chat.type not in ("group", "supergroup"):
+        return False
+    return await check_actor(update, context)
+
+
+def looks_like_moderation_intent(text: str) -> bool:
+    low = (text or "").lower()
+    triggers = (
+        "mute", "unmute", "bisu", "bungkam", "silent",
+        "ban", "unban", "banned", "blokir",
+        "kick", "tendang", "keluarin", "usir", "depak", "keluarkan",
+        "promote", "jadikan admin", "naikkan admin",
+        "demote", "turunkan admin", "cabut admin",
+        "tag", "title", "admin title",
+    )
+    return any(t in low for t in triggers)
+
+
+def parse_text_tool_calls(text: str) -> tuple[list[dict], str]:
+    if not text or "invoke" not in text:
+        return [], text
+    call_re = re.compile(r'invoke\s+name="([a-zA-Z0-9_]+)">(.*?)(?:invoke>|$)', re.S)
+    param_re = re.compile(r'parameter\s+name="([a-zA-Z0-9_]+)"[^>]*>([^<]*)', re.S)
+    calls: list[dict] = []
+    for idx, m in enumerate(call_re.finditer(text)):
+        name = m.group(1).strip()
+        body = m.group(2)
+        args = {}
+        for pm in param_re.finditer(body):
+            args[pm.group(1).strip()] = pm.group(2).strip()
+        calls.append({
+            "id": f"call_text_{idx}",
+            "type": "function",
+            "function": {"name": name, "arguments": args},
+        })
+    cleaned = re.sub(r'<[^>]*DSML[^>]*>[\s\S]*?(?:</[^>]*DSML[^>]*>|$)', '', text).strip()
+    return calls, cleaned
+
+
+async def call_shiteru_with_tools(
+    endpoint: str,
+    headers: dict,
+    payload: dict,
+    timeout_sec: int,
+) -> tuple[str, list[dict], dict]:
+    import aiohttp
+
+    session = get_http_session()
+    if inspect.isawaitable(session):
+        session = await session
+
+    async with session.post(
+        endpoint,
+        headers=headers,
+        json=payload,
+        timeout=aiohttp.ClientTimeout(total=timeout_sec),
+    ) as r:
+        data = await r.json(content_type=None)
+        if r.status != 200:
+            err_msg = ""
+            if isinstance(data, dict):
+                err_msg = (data.get("error") or {}).get("message") or str(data)
+            raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError("Response choices empty from Shiteru.")
+
+        msg = choices[0].get("message") or {}
+        content = msg.get("content") or ""
+        raw_calls = msg.get("tool_calls") or []
+        if not raw_calls and content:
+            parsed_calls, cleaned = parse_text_tool_calls(content)
+            if parsed_calls:
+                raw_calls = parsed_calls
+                content = cleaned
+        usage = (data or {}).get("usage") or {}
+        return content, raw_calls, usage
+
+
+async def run_moderation_loop(
+    *,
+    update,
+    context,
+    endpoint: str,
+    headers: dict,
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    max_tokens: int,
+    timeout_sec: int,
+    usage_collector: dict | None = None,
+) -> str:
+    import json
+
+    msg = update.message or update.effective_message
+    chat = update.effective_chat
+    actor = update.effective_user
+    reply_user_id = None
+    contextual_messages = list(messages)
+
+    replied = None
+    if msg and getattr(msg, "reply_to_message", None):
+        replied = msg.reply_to_message.from_user
+
+    hint = ""
+    if replied is not None and getattr(replied, "is_bot", False):
+        hint = (
+            "[Telegram Context: you are replying to your own previous bot message. "
+            "Never target yourself. Identify the member from the conversation history.]"
+        )
+    elif replied is not None:
+        reply_user_id = int(replied.id)
+        reply_name = replied.full_name or (
+            f"@{replied.username}" if getattr(replied, "username", None) else str(replied.id)
+        )
+        hint = (
+            f"[Telegram Context: this message replies to {reply_name} (user_id {reply_user_id}). "
+            f"If the user named no other target, use target=\"{reply_user_id}\".]"
+        )
+
+    if hint and contextual_messages and contextual_messages[-1].get("role") == "user":
+        last_content = contextual_messages[-1]["content"]
+        if isinstance(last_content, str):
+            contextual_messages[-1] = {
+                **contextual_messages[-1],
+                "content": f"{last_content}\n\n{hint}",
+            }
+
+    payload = {
+        "model": model,
+        "messages": contextual_messages,
+        "tools": MOD_TOOLS,
+        "tool_choice": "auto",
+        "temperature": temperature,
+        "max_completion_tokens": max_tokens,
+        "stream": False,
+    }
+
+    content, tool_calls, usage = await call_shiteru_with_tools(
+        endpoint, headers, payload, timeout_sec,
+    )
+    if usage_collector is not None and isinstance(usage, dict):
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if usage.get(k):
+                usage_collector[k] = usage_collector.get(k, 0) + int(usage[k])
+
+    if not tool_calls:
+        return content
+
+    step_messages = list(messages)
+    step_messages.append({
+        "role": "assistant",
+        "content": content or None,
+        "tool_calls": tool_calls,
+    })
+
+    for call in tool_calls:
+        call_id = call.get("id") or "call_default"
+        fn = call.get("function") or {}
+        name = fn.get("name") or ""
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        except Exception:
+            parsed_args = {}
+
+        result = await execute_action(
+            context.bot,
+            chat=chat,
+            actor=actor,
+            action=name,
+            args=parsed_args,
+            reply_user_id=reply_user_id,
+        )
+        tool_output = (
+            f"Action {name} SUCCESS: {result['summary']}"
+            if result.get("ok")
+            else f"Action {name} FAILED: {result.get('error') or result.get('summary')}"
+        )
+        step_messages.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": tool_output,
+        })
+
+    follow_payload = {
+        "model": model,
+        "messages": step_messages,
+        "temperature": temperature,
+        "max_completion_tokens": max_tokens,
+        "stream": False,
+    }
+    final_content, _, final_usage = await call_shiteru_with_tools(
+        endpoint, headers, follow_payload, timeout_sec,
+    )
+    if usage_collector is not None and isinstance(final_usage, dict):
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if final_usage.get(k):
+                usage_collector[k] = usage_collector.get(k, 0) + int(final_usage[k])
+
+    return final_content

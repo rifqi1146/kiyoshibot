@@ -27,19 +27,16 @@ HELPOWNER_TEXT = {
     ),
     "ai": (
         "### AI Settings\n\n"
-        "- `/providerask` — Switch `/ask` provider (Shiteru or CodeBuddy)\n"
         "- `/setsearch` — Configure search engine and depth for `/ask`\n\n"
-        "> `/ask` runs on the same provider pool as Caca."
+        "> `/ask` and Caca both run on Shiteru (`deepseek-v4.1-flash`)."
     ),
     "caca": (
         "### Caca AI Settings\n\n"
-        "- `/providercaca` — Switch Caca provider (Shiteru or CodeBuddy)\n"
-        "- `/cbacc` — Manage CodeBuddy account pool\n"
         "- `/freecaca` — Toggle global free Caca access\n"
         "- `/cacaadmin` — View billing overview and grant credits\n"
         "- `/addcredit` — Add credits to user (reply or @user/id)\n"
         "- `/cacaa` — Manage Caca in groups (enable, disable, status, list)\n\n"
-        "> Manages AI companion provider, accounts, and credit billing."
+        "> Manages Caca moderation tools and credit billing."
     ),
     "access": (
         "### Access & Permissions\n\n"

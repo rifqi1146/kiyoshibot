@@ -13,11 +13,8 @@ from .caca_billing import (
     freecaca_cmd,
     cacaadmin_cmd,
     addcredit_cmd,
-    providercaca_cmd,
-    cbacc_cmd,
     cacabill_callback,
     cacabill_text_handler,
-    cacaprov_callback,
 )
 
 __all__ = [
@@ -31,10 +28,7 @@ __all__ = [
     "freecaca_cmd",
     "cacaadmin_cmd",
     "addcredit_cmd",
-    "providercaca_cmd",
-    "cbacc_cmd",
     "cacabill_callback",
-    "cacaprov_callback",
     "cacabill_text_handler",
     "init_background",
 ]

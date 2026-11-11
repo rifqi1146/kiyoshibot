@@ -22,17 +22,15 @@ from database import caca_db
 from database import caca_billing_db
 from utils.config import OWNER_ID
 from utils import caca_memory
-from . import codebuddy
 
 logger = logging.getLogger(__name__)
 
 CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
 CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
-CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4-flash").strip()
+CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4.1-flash").strip()
 CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
 CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
 
-CACA_PROVIDER = os.getenv("CACA_PROVIDER", "codebuddy").strip().lower()
 _EMOS = ["🌸", "💖", "🧸", "🎀", "🌟", "💫"]
 
 
@@ -412,43 +410,12 @@ def _caca_api_key() -> str:
     return os.getenv("SHITERU_KEY", "").strip()
 
 
-_PROVIDER_FILE = os.path.join("data", "caca_provider.txt")
-_PROVIDER_CHOICES = ("shiteru", "codebuddy")
-
-
 def get_provider() -> str:
-    try:
-        if os.path.exists(_PROVIDER_FILE):
-            forced = (open(_PROVIDER_FILE, encoding="utf-8").read().strip().lower())
-            if forced in _PROVIDER_CHOICES:
-                return forced
-    except Exception as e:
-        logger.warning("Gagal baca caca_provider.txt | err=%s", e)
-    return CACA_PROVIDER if CACA_PROVIDER in _PROVIDER_CHOICES else "codebuddy"
+    return "shiteru"
 
 
 def set_provider(name: str) -> bool:
-    name = (name or "").strip().lower()
-    if name not in _PROVIDER_CHOICES:
-        return False
-    try:
-        os.makedirs(os.path.dirname(_PROVIDER_FILE) or ".", exist_ok=True)
-        with open(_PROVIDER_FILE, "w", encoding="utf-8") as fh:
-            fh.write(name + "\n")
-        if name == "codebuddy":
-            codebuddy.reset_token_cache()
-        return True
-    except Exception as e:
-        logger.warning("Gagal simpan provider Caca | err=%s", e)
-        return False
-
-
-def _use_codebuddy() -> bool:
-    return get_provider() == "codebuddy" and codebuddy.configured()
-
-
-def _codebuddy_model() -> str:
-    return os.getenv("CODEBUDDY_MODEL", "deepseek-v4.1-flash").strip() or "deepseek-v4.1-flash"
+    return (name or "").strip().lower() == "shiteru"
 
 
 async def _shared_http_session():
@@ -491,31 +458,6 @@ def _estimate_tokens(messages: list[dict]) -> int:
 
 
 async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
-    if _use_codebuddy():
-        session = await _shared_http_session()
-        cb_meta: dict = {}
-        try:
-            content, raw_usage = await codebuddy.chat(
-                session,
-                messages,
-                max_tokens=CACA_MAX_TOKENS,
-                temperature=0.9,
-                top_p=0.95,
-                timeout=CACA_TIMEOUT,
-                meta_out=cb_meta,
-            )
-            usage = _usage_from({"usage": raw_usage}) if raw_usage else _usage_from({})
-            logger.info(
-                "Caca chat success | provider=codebuddy account=%s model=%s tokens_max=%s prompt=%s completion=%s",
-                cb_meta.get("account", "unknown"), _codebuddy_model(), CACA_MAX_TOKENS,
-                usage["prompt_tokens"], usage["completion_tokens"],
-            )
-            return content, usage
-        except Exception as e:
-            logger.warning("Caca CodeBuddy gagal, fallback ke Shiteru | err=%s", e)
-            if not _caca_api_key():
-                raise
-
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
@@ -571,37 +513,6 @@ async def _caca_chat(messages: list[dict]) -> str:
 
 
 async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None):
-    if _use_codebuddy():
-        session = await _shared_http_session()
-        got_any = False
-        cb_meta: dict = {}
-        try:
-            async for piece in codebuddy.chat_stream(
-                session,
-                messages,
-                max_tokens=CACA_MAX_TOKENS,
-                temperature=0.9,
-                top_p=0.95,
-                timeout=CACA_TIMEOUT,
-                usage_out=usage_out,
-                meta_out=cb_meta,
-            ):
-                got_any = True
-                yield piece
-            if got_any:
-                logger.info(
-                    "Caca stream success | provider=codebuddy account=%s model=%s tokens_max=%s usage=%s",
-                    cb_meta.get("account", "unknown"), _codebuddy_model(), CACA_MAX_TOKENS, usage_out or {},
-                )
-                return
-        except Exception as e:
-            if got_any:
-                logger.error("Caca CodeBuddy putus di tengah stream | err=%s", e)
-                raise
-            logger.warning("Caca CodeBuddy stream gagal, fallback ke Shiteru | err=%s", e)
-            if not _caca_api_key():
-                raise
-
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
@@ -1036,6 +947,17 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             images=image_urls or None,
         )
 
+        mod_active = False
+        if chat and chat.type in ("group", "supergroup"):
+            try:
+                from handlers.moderation.ai_tools import can_use_moderation, looks_like_moderation_intent
+                if looks_like_moderation_intent(prompt):
+                    mod_active = await can_use_moderation(update, context)
+            except Exception as e:
+                logger.warning("Caca moderation gate failed | err=%r", e)
+                mod_active = False
+
+
         memory_prompt = f"{media_label} {prompt}".strip() if media_label else prompt
 
         billing = {"usage": {}}
@@ -1048,8 +970,28 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stop = asyncio.Event()
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, message_thread_id=thread_id))
-        raw, usage = await _chat_completion(messages)
-        billing["usage"].update(usage)
+        if mod_active:
+            from handlers.moderation.ai_tools import run_moderation_loop
+            raw = await run_moderation_loop(
+                update=update,
+                context=context,
+                endpoint=CACA_ENDPOINT,
+                headers={
+                    "Authorization": f"Bearer {_caca_api_key()}",
+                    "Content-Type": "application/json",
+                },
+                model=CACA_MODEL,
+                messages=messages,
+                temperature=0.9,
+                max_tokens=CACA_MAX_TOKENS,
+                timeout_sec=CACA_TIMEOUT,
+                usage_collector=billing["usage"],
+            )
+            billing["usage"].setdefault("prompt_tokens", 0)
+            billing["usage"].setdefault("completion_tokens", 0)
+        else:
+            raw, usage = await _chat_completion(messages)
+            billing["usage"].update(usage)
         clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
         await _stop_typing_task(stop, typing)

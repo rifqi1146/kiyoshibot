@@ -24,8 +24,7 @@ from handlers.anichin import anichin_callback
 from handlers.firmware import firmware_callback
 from handlers.blacklist import blacklist_callback_gate
 from handlers.welcome import verify_method_callback
-from handlers.caca import cacabill_callback, cacaprov_callback
-from handlers.ask.provider import providerask_callback
+from handlers.caca import cacabill_callback
 from handlers.vps import (
     account_callback,
     firewall_callback,
@@ -70,8 +69,6 @@ def register_callbacks(app):
     app.add_handler(CallbackQueryHandler(firmware_callback, pattern=r"^fw:"))
     app.add_handler(CallbackQueryHandler(verify_method_callback, pattern=r"^vmethod:"))
     app.add_handler(CallbackQueryHandler(cacabill_callback, pattern=r"^cacabill:"))
-    app.add_handler(CallbackQueryHandler(cacaprov_callback, pattern=r"^cacaprov:"))
-    app.add_handler(CallbackQueryHandler(providerask_callback, pattern=r"^askprov:"))
     app.add_handler(CallbackQueryHandler(vps_callback, pattern=r"^vps:"))
     app.add_handler(
         CallbackQueryHandler(

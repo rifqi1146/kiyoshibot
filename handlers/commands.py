@@ -28,7 +28,6 @@ from handlers.ask.ask import (
     ask_cmd as ai_cmd,
     setsearch_cmd,
 )
-from handlers.ask.provider import providerask_cmd
 from handlers.getsticker import getsticker_cmd
 from handlers.groq import groq_query
 from handlers.groups import groups_cmd
@@ -96,8 +95,6 @@ from handlers.caca import (
     freecaca_cmd,
     cacaadmin_cmd,
     addcredit_cmd,
-    providercaca_cmd,
-    cbacc_cmd,
 )
 
 from handlers.moderation import (
@@ -186,9 +183,6 @@ COMMAND_HANDLERS = [
     ("premium", premium_cmd, False),
     ("premiumbenefit", premiumbenefit_cmd, False),
     ("promote", promote_cmd, False),
-    ("providercaca", providercaca_cmd, False),
-    ("providerask", providerask_cmd, False),
-    ("cbacc", cbacc_cmd, False),
     (["q"] + [f"q{i}" for i in range(1, 11)] + ["qr"] + [f"q{i}r" for i in range(1, 11)], q_cmd, False),
     (["qi"] + [f"qi{i}" for i in range(1, 11)] + ["qir"] + [f"qi{i}r" for i in range(1, 11)], qi_cmd, False),
     (["qs"] + [f"qs{i}" for i in range(1, 11)] + ["qsr"] + [f"qs{i}r" for i in range(1, 11)], qs_cmd, False),

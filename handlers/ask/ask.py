@@ -428,7 +428,32 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         stop = asyncio.Event()
         typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, thread_id))
-        raw = await llm.chat(messages)
+        mod_active = False
+        try:
+            from handlers.moderation.ai_tools import can_use_moderation, run_moderation_loop, looks_like_moderation_intent
+            if looks_like_moderation_intent(prompt):
+                mod_active = await can_use_moderation(update, context)
+        except Exception as e:
+            log.warning("/ask moderation gate failed | err=%r", e)
+            mod_active = False
+        raw = ""
+        if mod_active:
+            raw = await run_moderation_loop(
+                update=update,
+                context=context,
+                endpoint=llm.ASK_ENDPOINT,
+                headers={
+                    "Authorization": f"Bearer {llm._api_key()}",
+                    "Content-Type": "application/json",
+                },
+                model=llm.ASK_MODEL,
+                messages=messages,
+                temperature=llm.ASK_TEMPERATURE,
+                max_tokens=llm.ASK_MAX_TOKENS,
+                timeout_sec=llm.ASK_TIMEOUT,
+            )
+        if not raw:
+            raw = await llm.chat(messages)
 
         chunks, as_html, stored = _final_parts(raw)
         if not stored:
