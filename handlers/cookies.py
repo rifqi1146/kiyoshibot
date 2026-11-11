@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import os
 import time
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.config import OWNER_ID
+
+log_cookies = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIES_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "cookies.txt"))
@@ -94,6 +97,11 @@ async def cookies_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         os.replace(tmp_path, COOKIES_PATH)
+        try:
+            from handlers.dl.tiktok import reset_tiktok_cookie_cache
+            reset_tiktok_cookie_cache()
+        except Exception as e:
+            log_cookies.warning("TikTok cookie cache reset failed | err=%r", e)
 
         now = time.time()
         updated_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))

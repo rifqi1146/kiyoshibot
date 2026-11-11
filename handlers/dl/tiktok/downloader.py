@@ -222,9 +222,10 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
         "Connection":"keep-alive",
     }
     last_err=None
-    known_size=int(media.get("size") or 0)
+    declared_sizes=media.get("video_sizes") or {}
     for idx,video_url in enumerate(video_urls,start=1):
         out_path=f"{TMP_DIR}/{uuid.uuid4().hex}_{sanitize_filename(title)}.mp4"
+        known_size=int(declared_sizes.get(video_url) or 0)
         try:
             _ttdbg("direct video download try | index=%s total=%s url=%s",idx,len(video_urls),video_url[:180])
             await _download_with_best_engine(session,video_url,out_path,bot,chat_id,status_msg_id,"Downloading TikTok video...",headers=base_headers,known_size=known_size)

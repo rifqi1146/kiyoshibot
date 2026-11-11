@@ -19,6 +19,7 @@ _CACHE_TTL = NATIVE_CACHE_TTL
 _CACHE_MAX = NATIVE_CACHE_MAX
 
 _session = None
+_cookie_signature: tuple[float, int] | None = None
 _signer = None
 _fingerprint = None
 _init_lock = asyncio.Lock()
@@ -60,14 +61,38 @@ def stats() -> dict:
     return {**_STATS, "cached": len(_cache)}
 
 
+def _apply_cookies(session) -> None:
+    from .utils import tiktok_cookie_records
+
+    for domain, name, value in tiktok_cookie_records():
+        try:
+            session.cookies.set(name, value, domain=domain)
+        except Exception as exc:
+            log.debug("TikTok native cookie set failed | name=%s err=%r", name, exc)
+
+
 async def _client():
-    global _session
-    if _session is not None:
-        return _session
+    global _session, _cookie_signature
+    from .utils import tiktok_cookie_source_signature
+
+    signature = tiktok_cookie_source_signature()
     async with _init_lock:
+        if _session is not None and _cookie_signature != signature:
+            stale = _session
+            _session = None
+            cache_clear()
+            try:
+                await stale.close()
+            except Exception as exc:
+                log.debug("TikTok native session recycle failed | err=%r", exc)
+            log.info("TikTok native session recycled | reason=cookies changed")
         if _session is None:
             from curl_cffi.requests import AsyncSession
+
             _session = AsyncSession(impersonate=NATIVE_IMPERSONATE, timeout=NATIVE_TIMEOUT)
+            _apply_cookies(_session)
+            _cookie_signature = signature
+            log.info("TikTok native session ready | cookies=%s", signature[1])
     return _session
 
 
@@ -196,7 +221,11 @@ async def fetch_item(video_id: str) -> dict:
 
 
 async def fetch_detail(video_id: str, parse) -> dict:
+    from .utils import tiktok_cookie_source_signature
+
     vid = str(video_id or "").strip()
+    if _session is not None and _cookie_signature != tiktok_cookie_source_signature():
+        await _client()
     cached = cache_get(vid)
     if cached is not None:
         return cached
@@ -228,9 +257,10 @@ async def fetch_detail(video_id: str, parse) -> dict:
 
 
 async def close() -> None:
-    global _session, _signer, _fingerprint
+    global _session, _signer, _fingerprint, _cookie_signature
     session = _session
     _session = None
+    _cookie_signature = None
     _signer = None
     _fingerprint = None
     cache_clear()

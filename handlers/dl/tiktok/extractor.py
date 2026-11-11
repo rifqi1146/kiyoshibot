@@ -140,35 +140,51 @@ def _parse_direct_media(item:dict)->dict:
             }
     video=item.get("video") or {}
     duration=_duration_meta(video.get("duration"),video.get("Duration"))
-    width=_int_meta(video.get("width"),video.get("Width"))
-    height=_int_meta(video.get("height"),video.get("Height"))
+    width=0
+    height=0
     bitrate_info=video.get("bitrateInfo") if isinstance(video,dict) else []
-    video_urls=[]
-    candidates=[
-        video.get("playAddr"),
-        video.get("playAddrStruct"),
-        video.get("PlayAddrStruct"),
-        video.get("downloadAddr"),
-        video.get("downloadAddrStruct"),
-        video.get("DownloadAddrStruct"),
-    ]
+    sources=[]
+    for key in ("playAddrStruct","PlayAddrStruct","playAddr","downloadAddrStruct","DownloadAddrStruct","downloadAddr"):
+        value=video.get(key)
+        if isinstance(value,dict) or (isinstance(value,str) and value.strip()):
+            sources.append(value)
     if isinstance(bitrate_info,list):
         for br in bitrate_info:
-            if isinstance(br,dict):
-                width=width or _int_meta(br.get("Width"),br.get("width"))
-                height=height or _int_meta(br.get("Height"),br.get("height"))
-                candidates.append(br.get("PlayAddr"))
-                candidates.append(br.get("playAddr"))
-                candidates.append(br.get("PlayAddrStruct"))
-    for candidate in candidates:
-        if isinstance(candidate,dict):
-            width=width or _int_meta(candidate.get("Width"),candidate.get("width"))
-            height=height or _int_meta(candidate.get("Height"),candidate.get("height"))
-            _add_unique_urls(video_urls,candidate.get("urlList") or candidate.get("UrlList"))
-            _add_unique_urls(video_urls,candidate.get("url") or candidate.get("Uri"))
-        elif isinstance(candidate,str):
-            _add_unique_urls(video_urls,candidate)
+            if not isinstance(br,dict):
+                continue
+            for key in ("PlayAddr","playAddr","PlayAddrStruct"):
+                value=br.get(key)
+                if isinstance(value,dict) or (isinstance(value,str) and value.strip()):
+                    sources.append(value)
+                    break
+    def _pixels(value)->int:
+        if not isinstance(value,dict):
+            return 0
+        return _int_meta(value.get("Width"),value.get("width"))*_int_meta(value.get("Height"),value.get("height"))
+    video_urls=[]
+    video_sizes={}
+    for idx in sorted(range(len(sources)),key=lambda i:_pixels(sources[i]),reverse=True):
+        source=sources[idx]
+        before=len(video_urls)
+        if isinstance(source,dict):
+            width=width or _int_meta(source.get("Width"),source.get("width"))
+            height=height or _int_meta(source.get("Height"),source.get("height"))
+            _add_unique_urls(video_urls,source.get("UrlList") or source.get("urlList"))
+            _add_unique_urls(video_urls,source.get("url") or source.get("Uri"))
+            added=video_urls[before:]
+            declared=_int_meta(source.get("DataSize"),source.get("dataSize"))
+            if declared>0:
+                for url in added:
+                    video_sizes[url]=declared
+        else:
+            _add_unique_urls(video_urls,source)
     if video_urls:
+        primary=sources[sorted(range(len(sources)),key=lambda i:_pixels(sources[i]),reverse=True)[0]] if sources else {}
+        if isinstance(primary,dict):
+            width=_int_meta(primary.get("Width"),primary.get("width")) or width
+            height=_int_meta(primary.get("Height"),primary.get("height")) or height
+        width=width or _int_meta(video.get("width"),video.get("Width"))
+        height=height or _int_meta(video.get("height"),video.get("Height"))
         video_urls=_prioritize_video_urls(video_urls)
         return {
             "kind":"video",
@@ -176,14 +192,16 @@ def _parse_direct_media(item:dict)->dict:
             "desc":desc,
             "video_url":video_urls[0],
             "video_urls":video_urls,
+            "video_sizes":video_sizes,
             "duration":duration,
             "width":width,
             "height":height,
-            "size":_int_meta(video.get("size"),video.get("Size")),
+            "size":video_sizes.get(video_urls[0]) or _int_meta(video.get("size"),video.get("Size")),
         }
     if item.get("isAd") or item.get("is_ad"):
         raise RuntimeError("TikTok ad/sponsored video: direct media URL omitted by TikTok (triggering fallback)")
     raise RuntimeError("TikTok direct media URL not found")
+
 
 def _parse_universal_data(html_text:str)->dict:
     m=UNIVERSAL_RE.search(html_text or "")

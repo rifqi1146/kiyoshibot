@@ -26,6 +26,7 @@ from .constants import (
 log = logging.getLogger(__name__)
 
 _TIKTOK_COOKIE_HEADER_CACHE = None
+_TIKTOK_COOKIE_HEADER_SIGNATURE = None
 
 
 def _decode_tt_base64(val: str) -> bytes:
@@ -141,42 +142,78 @@ def _truncate_text(text: str, limit: int) -> str:
     return text[:limit - 3].rstrip() + "..."
 
 
-def _load_tiktok_cookie_header(path: str) -> str:
-    global _TIKTOK_COOKIE_HEADER_CACHE
-    if _TIKTOK_COOKIE_HEADER_CACHE is not None:
-        return _TIKTOK_COOKIE_HEADER_CACHE
+def _parse_netscape_cookie_file(path: str) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
     if not path or not os.path.exists(path):
-        _ttdbg("tiktok cookie file not found | path=%s", path)
-        _TIKTOK_COOKIE_HEADER_CACHE = ""
-        return _TIKTOK_COOKIE_HEADER_CACHE
-    pairs = []
+        return rows
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for raw in f:
                 line = raw.strip()
-                if not line or line.startswith("#"):
+                if line.startswith("#HttpOnly_"):
+                    line = line[len("#HttpOnly_"):]
+                elif not line or line.startswith("#"):
                     continue
                 parts = line.split("\t")
                 if len(parts) >= 7:
-                    domain = (parts[0] or "").strip().lower()
+                    domain = (parts[0] or "").strip()
                     name = (parts[5] or "").strip()
                     value = (parts[6] or "").strip()
-                    if name and any(d in domain for d in TIKTOK_COOKIE_DOMAINS):
-                        pairs.append(f"{name}={value}")
+                    if name:
+                        rows.append((domain, name, value))
                     continue
-                if "=" in line and "\t" not in line and not line.lower().startswith(("http://", "https://")):
+                if "=" in line and not line.lower().startswith(("http://", "https://")):
                     name, value = line.split("=", 1)
                     name = name.strip()
-                    value = value.strip()
                     if name:
-                        pairs.append(f"{name}={value}")
-        _TIKTOK_COOKIE_HEADER_CACHE = "; ".join(pairs)
-        _ttdbg("tiktok cookie loaded | path=%s pairs=%s", path, len(pairs))
-        return _TIKTOK_COOKIE_HEADER_CACHE
+                        rows.append(("", name, value.strip()))
     except Exception as e:
-        _ttdbg("tiktok cookie load failed | path=%s err=%r", path, e)
-        _TIKTOK_COOKIE_HEADER_CACHE = ""
+        _ttdbg("tiktok cookie file read failed | path=%s err=%r", path, e)
+    return rows
+
+
+def tiktok_cookie_records(path: str | None = None) -> list[tuple[str, str, str]]:
+    rows = _parse_netscape_cookie_file(path or TIKTOK_COOKIES_PATH)
+    out: list[tuple[str, str, str]] = []
+    for domain, name, value in rows:
+        if not domain or any(d in domain.lower() for d in TIKTOK_COOKIE_DOMAINS):
+            out.append((domain or ".tiktok.com", name, value))
+    return out
+
+
+def tiktok_cookie_source_signature(path: str | None = None) -> tuple[float, int]:
+    target = path or TIKTOK_COOKIES_PATH
+    try:
+        st = os.stat(target)
+        return (st.st_mtime, st.st_size)
+    except OSError:
+        return (0.0, 0)
+
+
+def reset_tiktok_cookie_cache() -> None:
+    global _TIKTOK_COOKIE_HEADER_CACHE, _TIKTOK_COOKIE_HEADER_SIGNATURE
+    _TIKTOK_COOKIE_HEADER_CACHE = None
+    _TIKTOK_COOKIE_HEADER_SIGNATURE = None
+
+
+def _load_tiktok_cookie_header(path: str) -> str:
+    global _TIKTOK_COOKIE_HEADER_CACHE, _TIKTOK_COOKIE_HEADER_SIGNATURE
+    signature = tiktok_cookie_source_signature(path)
+    if _TIKTOK_COOKIE_HEADER_CACHE is not None and _TIKTOK_COOKIE_HEADER_SIGNATURE == signature:
         return _TIKTOK_COOKIE_HEADER_CACHE
+    if not path or not os.path.exists(path):
+        _ttdbg("tiktok cookie file not found | path=%s", path)
+        _TIKTOK_COOKIE_HEADER_CACHE = ""
+        _TIKTOK_COOKIE_HEADER_SIGNATURE = signature
+        return _TIKTOK_COOKIE_HEADER_CACHE
+    seen: dict[str, str] = {}
+    for domain, name, value in tiktok_cookie_records(path):
+        if name:
+            seen[name] = value
+    _TIKTOK_COOKIE_HEADER_CACHE = "; ".join(f"{k}={v}" for k, v in seen.items())
+    _TIKTOK_COOKIE_HEADER_SIGNATURE = signature
+    _ttdbg("tiktok cookie loaded | path=%s pairs=%s", path, len(seen))
+    return _TIKTOK_COOKIE_HEADER_CACHE
 
 
 def _build_tiktok_headers(referer: str | None = None, extra_cookie: str | None = None) -> dict:
