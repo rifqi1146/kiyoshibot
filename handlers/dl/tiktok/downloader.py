@@ -156,7 +156,7 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
         stats.log_done("TikTok download",label=os.path.basename(out_path))
 
 async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None,known_size:int=0):
-    aria2_path=shutil.which("aria2c")
+    aria2_path=resolve_aria2()
     if aria2_path:
         try:
             log.info("TikTok download engine | engine=aria2c path=%s progress=%s",aria2_path,TIKTOK_PROGRESS)
@@ -184,7 +184,7 @@ async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,ch
     except Exception as e:
         log.warning("TikTok aiohttp failed, fallback aria2c | err=%r",e)
         _safe_remove_file(out_path,"aiohttp partial")
-    aria2_path=shutil.which("aria2c")
+    aria2_path=resolve_aria2()
     if not aria2_path:
         raise RuntimeError("aiohttp failed and aria2c not found")
     log.info("TikTok download engine | engine=aria2c path=%s progress=%s",aria2_path,TIKTOK_PROGRESS)

@@ -144,7 +144,14 @@ def _parse_direct_media(item:dict)->dict:
     height=_int_meta(video.get("height"),video.get("Height"))
     bitrate_info=video.get("bitrateInfo") if isinstance(video,dict) else []
     video_urls=[]
-    candidates=[video.get("playAddr"),video.get("playAddrStruct"),video.get("downloadAddr"),video.get("downloadAddrStruct")]
+    candidates=[
+        video.get("playAddr"),
+        video.get("playAddrStruct"),
+        video.get("PlayAddrStruct"),
+        video.get("downloadAddr"),
+        video.get("downloadAddrStruct"),
+        video.get("DownloadAddrStruct"),
+    ]
     if isinstance(bitrate_info,list):
         for br in bitrate_info:
             if isinstance(br,dict):
@@ -152,6 +159,7 @@ def _parse_direct_media(item:dict)->dict:
                 height=height or _int_meta(br.get("Height"),br.get("height"))
                 candidates.append(br.get("PlayAddr"))
                 candidates.append(br.get("playAddr"))
+                candidates.append(br.get("PlayAddrStruct"))
     for candidate in candidates:
         if isinstance(candidate,dict):
             width=width or _int_meta(candidate.get("Width"),candidate.get("width"))
