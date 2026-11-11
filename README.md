@@ -48,15 +48,13 @@ spawns a local `telegram-bot-api` server, and the bot itself (`bot.py`).
 
 | Command | What it does |
 |:--|:--|
-| `/ask <question>` | Answer backed by the shared AI provider pool (CodeBuddy accounts or Shiteru) with Firecrawl/Jina pre-search grounding. Owner toggles: `/providerask`, `/setsearch` |
+| `/ask <question>` | Answer backed by Shiteru (`deepseek-v4.1-flash`) with Firecrawl/Jina pre-search grounding. Owner tuning: `/setsearch` |
 | `/groq <question>` | Groq-hosted chat completion with the same RAG context and a 20-message memory window |
-| `/caca` | Persona chat engine ("Caca"): 8 modes (`/mode`), vision for photos and stickers, auto web search, token-billed credits |
+| `/caca` | Persona chat engine ("Caca"): 8 modes (`/mode`), vision for photos and stickers, auto web search, token-billed credits, and AI moderation tools in groups |
 | `/aitext` | Detects AI-generated text |
 | `/aidetect` | Detects AI-generated images |
 | `/cacatopup` / `/buycaca` | Buy Caca credits via QRIS (presets or custom amount) |
 | `/cacasaldo` | Show credit balance per lot with expiry dates |
-| `/providercaca` | Owner picker for the Caca provider and account token status |
-| `/cbacc` | Owner CodeBuddy/WorkBuddy account pool management |
 | `/gsearch <query>` | Google Programmable Search with pagination |
 | `/anime <query>` | Anime search |
 | `/quoteanime` | Random anime quote |
@@ -195,8 +193,7 @@ captcha-backed web verification for new members.
 | `/premium` | Grant, revoke, and list premium users |
 | `/blacklist` | Global user and group blacklist |
 | `/freecaca`, `/cacaadmin`, `/addcredit` | Caca access and credit administration |
-| `/providercaca`, `/cbacc` | Caca provider and account pool |
-| `/providerask`, `/setsearch` | `/ask` provider and runtime tuning |
+| `/setsearch` | `/ask` search engine and depth tuning |
 
 These are documented only in `/helpowner` and are intentionally excluded from
 `data/rag_docs/`, so the AI never offers commands a regular user cannot run.
@@ -486,20 +483,17 @@ connection timeout. Connections without `busy_timeout` raise
 
 | Module | Responsibility |
 |:--|:--|
-| `caca.py` | Turn builder (`_build_persona_messages`), relation block, vision extraction, auto web search, provider routing, streaming, billing hooks. |
+| `caca.py` | Turn builder (`_build_persona_messages`), relation block, vision extraction, auto web search, Shiteru streaming client, AI moderation tools in groups, billing hooks. |
 | `caca_prompt.py` | Owner-authored persona prompts (`default`, `bokep`, `toxic`, `sarkas`, `loli`, `yandere`, `cabul`, `masokis`). **Do not edit.** |
 | `caca_mode.py` | `/mode` persona switcher with credit-based gating. |
 | `caca_group.py` | `/cacaa` per-group controls. |
-| `caca_billing.py` | `/cacatopup`, `/buycaca`, `/cacasaldo`, `/freecaca`, `/cacaadmin`, `/addcredit`, and `/providercaca`. |
-| `codebuddy.py` | WorkBuddy/CodeBuddy gateway client. Stream-only, typed content blocks, `reasoning_effort: none`, per-request session/trace headers. |
-| `codebuddy_store.py` | On-disk account pool (`data/codebuddy_accounts.json`) with rotation cursor and refresh-token bootstrap for email labels. |
+| `caca_billing.py` | `/cacatopup`, `/buycaca`, `/cacasaldo`, `/freecaca`, `/cacaadmin`, and `/addcredit`. |
 
 ### `handlers/ask/` — `/ask`
 
 | Module | Responsibility |
 |:--|:--|
-| `llm.py` | Provider gateway for `/ask`: Shiteru streaming client plus the CodeBuddy account pool, active-provider state in `data/ask_provider.txt`, and automatic fallback to the other provider. |
-| `provider.py` | `/providerask` owner command and `askprov:` inline picker with per-account token status. |
+| `llm.py` | Single-provider client for `/ask`: Shiteru streaming client (`deepseek-v4.1-flash`). |
 | `ask.py` | `/ask` command. Pre-search grounding (Firecrawl/Jina), system instruction with real Jakarta date, RAG in the user turn, draft streaming, and owner-only `/setsearch`. |
 
 ### `handlers/manga/`
@@ -517,7 +511,9 @@ Pillow resize, `send_detail_view`), `rich.py` (Rich detail builders),
 moderation enabled, caller privileged, bot privileged), `actions.py` (ban, kick,
 mute, promote, and friends), `commands.py`, `helpers.py`
 (`resolve_target_user_id` supporting reply, numeric id, `@username`, and
-text-mention), `sudo.py` (`data/sudouser.sqlite3`).
+text-mention), `sudo.py` (`data/sudouser.sqlite3`), and `ai_tools.py` (native
+OpenAI tool-calling engine exposed to `/caca` and `/ask` in groups, with
+per-group target memory, protection guards, and `LOG_CHAT_ID` audit logging).
 
 ### `handlers/stats/`
 
@@ -876,18 +872,13 @@ available, and the MD5 checksum.
 
 ## Caca AI Engine & Credit Billing
 
-### Providers
+### Provider & Model
 
-Primary is **CodeBuddy / WorkBuddy** with a multi-account pool managed by
-`/cbacc`. Fallback is **Shiteru** (`{CACA_API_BASE}/chat/completions`, default
-model `deepseek-v4-flash`). `/providercaca` switches or forces a provider and
-shows token status for every account.
-
-CodeBuddy enforces three hard rules: the request must stream, the first message
-must be `role: system`, and user content must be typed blocks rather than a
-bare string. Thinking is disabled with `reasoning_effort: "none"`. Accounts are
-rotated on 429/limit/token failure, but **only before any output has been
-emitted** — falling back mid-stream would duplicate the reply.
+Single provider is **Shiteru** (`{CACA_API_BASE}/chat/completions`), locked onto
+**`deepseek-v4.1-flash`** with auth via `SHITERU_KEY`. Non-thinking, tolerant
+with persona prompts, and supports native OpenAI tool-calling for group
+moderation actions (`mute_user`, `unmute_user`, `ban_user`, `unban_user`,
+`kick_user`, `promote_user`, `demote_user`, `tag_user`).
 
 ### Persona mechanics
 
@@ -1260,12 +1251,9 @@ All files live under `data/` and are gitignored.
 | `shared_media.sqlite3` | Shared-media gallery |
 | `ship.sqlite3` | `/ship` pair history |
 | `bot.db` | Auto-backup history and metadata used by `/backup` and `/autobackup` |
-| `codebuddy_accounts.json` | CodeBuddy refresh/access token pool |
 | `cookies.txt` | Netscape cookies for yt-dlp/gallery-dl |
 | `ig_session.json` | Instagram Android mobile session |
 | `drakorid_session.json` | Drakor.id login session |
-| `caca_provider.txt` | Forced Caca provider |
-| `ask_provider.txt` | Forced `/ask` provider |
 | `search_settings.json` | `/setsearch` engine and depth |
 
 Two files are legacy and unreferenced: `data/premium.sqlite3` (premium lives in
@@ -1375,14 +1363,11 @@ mandatory. Everything else degrades gracefully when absent.
 
 | Variable | Default | Meaning |
 |:--|:--|:--|
-| `SHITERU_KEY` | — | Caca fallback provider key |
-| `CACA_API_BASE` | `https://shiteru.id/v1` | Caca fallback endpoint |
-| `CACA_MODEL` | `deepseek-v4-flash` | Caca fallback model (must be non-thinking) |
+| `SHITERU_KEY` | — | Single provider API key for Caca & `/ask` |
+| `CACA_API_BASE` | `https://shiteru.id/v1` | Shiteru endpoint base |
+| `CACA_MODEL` | `deepseek-v4.1-flash` | Model for Caca and `/ask` |
 | `CACA_MAX_TOKENS` | 4096 | Output cap, hard-clamped to 4096 |
-| `CACA_PROVIDER` | `codebuddy` | `codebuddy` or `shiteru` |
-| `CODEBUDDY_MODEL` | `deepseek-v4.1-flash` | CodeBuddy model |
 | `CACA_TIMEOUT` | 60 | Per-request timeout (seconds) |
-| `ASK_PROVIDER` | `shiteru` | Default `/ask` provider (`shiteru` or `codebuddy`) |
 | `ASK_API_BASE` | `CACA_API_BASE` | Shiteru-compatible endpoint for `/ask` |
 | `ASK_MODEL` | `CACA_MODEL` | Model used when `/ask` runs on Shiteru |
 | `ASK_MAX_TOKENS` | 4096 | `/ask` output cap |
@@ -1512,9 +1497,7 @@ use the venv interpreter.
 | `/cookies` | Upload a Netscape `cookies.txt` (512 KB cap) | No |
 | `/addsudo`, `/rmsudo`, `/sudolist` | Sudo tier management | No |
 | `/premium add\|del <user>` | Grant/revoke premium. `del` cascades persona mode and memory rows. | No |
-| `/providercaca` | Inline provider picker with account token status | No |
-| `/cbacc` | CodeBuddy account pool: list/add/del/toggle/clear | No |
-| `/providerask`, `/setsearch` | `/ask` provider and runtime tuning | No |
+| `/setsearch` | `/ask` search engine and depth tuning | No |
 
 Owner-only commands are documented in `/helpowner` and deliberately excluded
 from `data/rag_docs/` so the AI never mentions commands users cannot run.
