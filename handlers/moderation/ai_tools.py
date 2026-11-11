@@ -657,7 +657,6 @@ async def run_moderation_loop(
     prompt: str = "",
     usage_collector: dict | None = None,
 ) -> str:
-    import json
 
     msg = update.message or update.effective_message
     chat = update.effective_chat
@@ -692,6 +691,7 @@ async def run_moderation_loop(
         notes += f"[Detected action: {inferred}]\n"
 
     if notes and contextual_messages and contextual_messages[-1].get("role") == "user":
+        last_content = contextual_messages[-1]["content"]
         if isinstance(last_content, str):
             contextual_messages[-1] = {
                 **contextual_messages[-1],
