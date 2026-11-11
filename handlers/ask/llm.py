@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 ASK_API_BASE = os.getenv("ASK_API_BASE", os.getenv("CACA_API_BASE", "https://shiteru.id/v1")).strip().rstrip("/")
 ASK_ENDPOINT = f"{ASK_API_BASE}/chat/completions"
-ASK_MODEL = os.getenv("ASK_MODEL", os.getenv("CACA_MODEL", "deepseek-v4.1-flash")).strip()
+ASK_MODEL = os.getenv("ASK_MODEL", os.getenv("CACA_MODEL", "deepseek-v4-flash")).strip()
 ASK_MAX_TOKENS = min(int(os.getenv("ASK_MAX_TOKENS", "4096")), 8192)
 ASK_TIMEOUT = int(os.getenv("ASK_TIMEOUT", "120"))
 ASK_TEMPERATURE = float(os.getenv("ASK_TEMPERATURE", "0.7"))

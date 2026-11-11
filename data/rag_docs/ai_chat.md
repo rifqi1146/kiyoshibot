@@ -41,3 +41,4 @@ Fitur ini terbuka untuk pengguna yang memiliki saldo credit Caca aktif (atau saa
 - `/mode loli`: lucu, imut, bergaya anime.
 
 Catatan: mengganti mode akan mereset riwayat memori percakapan Caca user tersebut.
+Modes `cabul`, `bokep`, dan `masokis` dijalankan pada model eksplisit (`CACA_MODEL_EXPLICIT`), terpisah dari mode lain, supaya tidak dilunakkan oleh safety model.

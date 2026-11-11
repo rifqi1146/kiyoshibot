@@ -28,7 +28,7 @@ HELPOWNER_TEXT = {
     "ai": (
         "### AI Settings\n\n"
         "- `/setsearch` — Configure search engine and depth for `/ask`\n\n"
-        "> `/ask` and Caca both run on Shiteru (`deepseek-v4.1-flash`)."
+        "> `/ask` and Caca both run on Shiteru (`deepseek-v4-flash`)."
     ),
     "caca": (
         "### Caca AI Settings\n\n"

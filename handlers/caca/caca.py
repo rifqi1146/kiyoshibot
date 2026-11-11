@@ -27,9 +27,19 @@ logger = logging.getLogger(__name__)
 
 CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
 CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
-CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4.1-flash").strip()
+CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4-flash").strip()
 CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
 CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
+
+CACA_MODEL_EXPLICIT = os.getenv("CACA_MODEL_EXPLICIT", CACA_MODEL).strip() or CACA_MODEL
+CACA_EXPLICIT_MODES = frozenset({"cabul", "bokep", "masokis"})
+
+
+def _model_for_mode(mode: str | None) -> str:
+    if mode in CACA_EXPLICIT_MODES:
+        return CACA_MODEL_EXPLICIT
+    return CACA_MODEL
+
 
 _EMOS = ["🌸", "💖", "🧸", "🎀", "🌟", "💫"]
 
@@ -457,14 +467,14 @@ def _estimate_tokens(messages: list[dict]) -> int:
     return max(1, chars // 4)
 
 
-async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
+async def _chat_completion(messages: list[dict], model: str | None = None) -> tuple[str, dict]:
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
 
     session = await _shared_http_session()
     payload = {
-        "model": CACA_MODEL,
+        "model": model or CACA_MODEL,
         "messages": messages,
         "temperature": 0.9,
         "max_completion_tokens": CACA_MAX_TOKENS,
@@ -500,7 +510,7 @@ async def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
 
             usage = _usage_from(data)
             logger.info("Caca chat success | model=%s tokens_max=%s prompt=%s completion=%s",
-                        CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"])
+                        model or CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"])
             return content, usage
     except Exception as e:
         logger.warning("Caca request failed | err=%s", e)
@@ -512,14 +522,14 @@ async def _caca_chat(messages: list[dict]) -> str:
     return content
 
 
-async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None):
+async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None, model: str | None = None):
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
 
     session = await _shared_http_session()
     payload = {
-        "model": CACA_MODEL,
+        "model": model or CACA_MODEL,
         "messages": messages,
         "temperature": 0.9,
         "max_completion_tokens": CACA_MAX_TOKENS,
@@ -578,7 +588,7 @@ async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None)
                         yield content
             if got_any:
                 logger.info("Caca stream success | model=%s tokens_max=%s usage=%s",
-                            CACA_MODEL, CACA_MAX_TOKENS, usage_out or {})
+                            model or CACA_MODEL, CACA_MAX_TOKENS, usage_out or {})
 
                 return
             raise RuntimeError("Response stream kosong dari provider Caca.")
@@ -587,7 +597,7 @@ async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None)
         raise
 
 
-async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing: dict | None = None):
+async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing: dict | None = None, model: str | None = None):
     from utils.rich_stream import stream_to_draft
     bot = context.bot
     draft_id = msg.message_id
@@ -604,7 +614,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
 
     async def gen():
         got = False
-        async for chunk in _caca_chat_stream(messages, usage_out=billing["usage"]):
+        async for chunk in _caca_chat_stream(messages, usage_out=billing["usage"], model=model):
             got = True
             yield chunk
         if not got:
@@ -644,7 +654,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, message_thread_id=thread_id))
         try:
-            raw2, usage2 = await _chat_completion(messages)
+            raw2, usage2 = await _chat_completion(messages, model=model)
             billing["usage"].update(usage2)
             clean_md = _clean_caca_output(raw2) or "Model did not provide an answer."
             chunks = split_message(clean_md, 4000)
@@ -788,7 +798,7 @@ async def _reply_no_credit(context, msg):
     return await _reply_thread(context.bot, msg, "\n".join(lines), parse_mode="HTML", reply_markup=kb)
 
 
-async def _settle_billing(user_id: int, chat_id: int, reservation_id: str | None, billing: dict, messages: list[dict], billed: bool):
+async def _settle_billing(user_id: int, chat_id: int, reservation_id: str | None, billing: dict, messages: list[dict], billed: bool, model: str | None = None):
     usage = (billing or {}).get("usage") or {}
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
@@ -804,7 +814,7 @@ async def _settle_billing(user_id: int, chat_id: int, reservation_id: str | None
             reservation_id=reservation_id,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=CACA_MODEL,
+            model=model or CACA_MODEL,
             is_billed=billed,
         )
         logger.info(
@@ -938,6 +948,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         history = [] if fresh_session else await caca_memory.get_history(user_id)
         mode = caca_db.get_mode(user_id)
+        model = _model_for_mode(mode)
         system_prompt = PERSONAS.get(mode, PERSONAS["default"])
         user_prompt = prompt
 
@@ -964,8 +975,8 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         billing = {"usage": {}}
         is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
         if is_dm:
-            await _caca_stream_dm(update, context, msg, user_id, history, memory_prompt, messages, billing=billing)
-            await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed)
+            await _caca_stream_dm(update, context, msg, user_id, history, memory_prompt, messages, billing=billing, model=model)
+            await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed, model=model)
             return
 
         stop = asyncio.Event()
@@ -981,7 +992,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Authorization": f"Bearer {_caca_api_key()}",
                     "Content-Type": "application/json",
                 },
-                model=CACA_MODEL,
+                model=model,
                 messages=messages,
                 temperature=0.9,
                 max_tokens=CACA_MAX_TOKENS,
@@ -992,7 +1003,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             billing["usage"].setdefault("prompt_tokens", 0)
             billing["usage"].setdefault("completion_tokens", 0)
         else:
-            raw, usage = await _chat_completion(messages)
+            raw, usage = await _chat_completion(messages, model=model)
             billing["usage"].update(usage)
         clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
         chunks = split_message(clean_md, 4000)
@@ -1005,7 +1016,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await caca_memory.set_history(user_id, history, last_id, msg.chat_id)
         if last_id:
             await caca_memory.set_last_message_id(user_id, last_id, msg.chat_id)
-        await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed)
+        await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed, model=model)
 
     except Exception as e:
         if reservation_id:

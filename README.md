@@ -48,7 +48,7 @@ spawns a local `telegram-bot-api` server, and the bot itself (`bot.py`).
 
 | Command | What it does |
 |:--|:--|
-| `/ask <question>` | Answer backed by Shiteru (`deepseek-v4.1-flash`) with Firecrawl/Jina pre-search grounding. Owner tuning: `/setsearch` |
+| `/ask <question>` | Answer backed by Shiteru (`deepseek-v4-flash`) with Firecrawl/Jina pre-search grounding. Owner tuning: `/setsearch` |
 | `/groq <question>` | Groq-hosted chat completion with the same RAG context and a 20-message memory window |
 | `/caca` | Persona chat engine ("Caca"): 8 modes (`/mode`), vision for photos and stickers, auto web search, token-billed credits, and AI moderation tools in groups |
 | `/aitext` | Detects AI-generated text |
@@ -493,7 +493,7 @@ connection timeout. Connections without `busy_timeout` raise
 
 | Module | Responsibility |
 |:--|:--|
-| `llm.py` | Single-provider client for `/ask`: Shiteru streaming client (`deepseek-v4.1-flash`). |
+| `llm.py` | Single-provider client for `/ask`: Shiteru streaming client (`deepseek-v4-flash`). |
 | `ask.py` | `/ask` command. Pre-search grounding (Firecrawl/Jina), system instruction with real Jakarta date, RAG in the user turn, draft streaming, and owner-only `/setsearch`. |
 
 ### `handlers/manga/`
@@ -875,10 +875,12 @@ available, and the MD5 checksum.
 ### Provider & Model
 
 Single provider is **Shiteru** (`{CACA_API_BASE}/chat/completions`), locked onto
-**`deepseek-v4.1-flash`** with auth via `SHITERU_KEY`. Non-thinking, tolerant
+**`deepseek-v4-flash`** with auth via `SHITERU_KEY`. Non-thinking, tolerant
 with persona prompts, and supports native OpenAI tool-calling for group
 moderation actions (`mute_user`, `unmute_user`, `ban_user`, `unban_user`,
 `kick_user`, `promote_user`, `demote_user`, `tag_user`).
+Explicit persona modes (`cabul`, `bokep`, `masokis`) resolve through
+`_model_for_mode()` to `CACA_MODEL_EXPLICIT`, which defaults to `CACA_MODEL`.
 
 ### Persona mechanics
 
@@ -961,7 +963,7 @@ shows "0 credits" to a user who actually has access.
 
 **Placement matters.** For `/ask` the reference block goes into the **current
 user turn**, not the system message. Measured against Shiteru
-(`deepseek-v4.1-flash`) with an identical prompt: reference in `system` →
+(`deepseek-v4-flash`) with an identical prompt: reference in `system` →
 the model answers as a generic software-engineering assistant and denies
 knowing the bot's features; reference in the `user` turn → all feature
 questions answered from the docs. Caca uses the same placement. CodeBuddy
@@ -1365,7 +1367,8 @@ mandatory. Everything else degrades gracefully when absent.
 |:--|:--|:--|
 | `SHITERU_KEY` | — | Single provider API key for Caca & `/ask` |
 | `CACA_API_BASE` | `https://shiteru.id/v1` | Shiteru endpoint base |
-| `CACA_MODEL` | `deepseek-v4.1-flash` | Model for Caca and `/ask` |
+| `CACA_MODEL` | `deepseek-v4-flash` | Model for Caca and `/ask` |
+| `CACA_MODEL_EXPLICIT` | `CACA_MODEL` | Model for explicit persona modes (`cabul`, `bokep`, `masokis`) |
 | `CACA_MAX_TOKENS` | 4096 | Output cap, hard-clamped to 4096 |
 | `CACA_TIMEOUT` | 60 | Per-request timeout (seconds) |
 | `ASK_API_BASE` | `CACA_API_BASE` | Shiteru-compatible endpoint for `/ask` |
