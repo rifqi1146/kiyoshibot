@@ -479,6 +479,9 @@ async def _fetch_tiktok_metadata(url:str,bot=None,chat_id=None,status_msg_id=Non
         except _native.ItemNotFound as e:
             log.info("TikTok post unavailable, skipping scraper chain | url=%s code=%s",url,e.code)
             raise
+        except _native.AudienceGated as e:
+            log.info("TikTok post age restricted, skipping scraper chain | url=%s reason=%s",url,e.reason)
+            raise
         except Exception as e:
             errors.append(f"native={e}")
             log.info("TikTok native metadata missed, fallback fast scraper | url=%s err=%r",url,e)

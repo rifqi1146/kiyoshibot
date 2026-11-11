@@ -29,12 +29,23 @@ _STATS = {"hits": 0, "misses": 0, "errors": 0, "not_found": 0}
 
 NOT_FOUND_CODES = frozenset({10204, 10216, 10222, 2483})
 
+AUDIENCE_GATE_REASON = 209002
+
 
 class ItemNotFound(RuntimeError):
     def __init__(self, video_id: str, code):
         self.video_id = video_id
         self.code = code
         super().__init__(f"TikTok item unavailable (code={code}) id={video_id}")
+
+
+class AudienceGated(RuntimeError):
+    def __init__(self, video_id: str, reason):
+        self.video_id = video_id
+        self.reason = reason
+        super().__init__(
+            f"TikTok post is age restricted (reason={reason}) id={video_id}"
+        )
 
 
 def enabled() -> bool:
@@ -174,6 +185,11 @@ async def fetch_item(video_id: str) -> dict:
                 _STATS["not_found"] += 1
                 raise ItemNotFound(vid, code)
             raise RuntimeError(f"TikTok native detail has no itemStruct (code={code})")
+        if not isinstance(item.get("video"), dict) and not item.get("imagePost"):
+            reason = item.get("ContentClassificationReason")
+            if item.get("isContentClassified") and reason == AUDIENCE_GATE_REASON:
+                _STATS["gated"] = _STATS.get("gated", 0) + 1
+                raise AudienceGated(vid, reason)
         return item
 
     raise RuntimeError(f"TikTok native detail failed: {last_err}")

@@ -120,8 +120,10 @@ def mp4_faststart_meta(path:str)->dict|None:
                             ts,dur=struct.unpack(">IQ",body[20:32])
                         else:
                             ts,dur=0,0
-                        if ts>0:
-                            state["duration"]=max(int(round(dur/ts)),0)
+                        if ts>0 and dur not in (0xFFFFFFFF,0xFFFFFFFFFFFFFFFF):
+                            secs=int(round(dur/ts))
+                            if 0<secs<86400:
+                                state["duration"]=secs
                     elif btype==b"tkhd" and len(body)>=84:
                         ver=body[0]
                         off=76 if ver==0 else 88
