@@ -1,0 +1,1114 @@
+{
+  "common": {
+    "unknown": "未知",
+    "never": "从未",
+    "all_platforms": "全部平台"
+  },
+  "state": {
+    "identity": {
+      "minting": "铸造中",
+      "active": "可用",
+      "cooling": "冷却中",
+      "degraded": "降级",
+      "retired": "已退役"
+    },
+    "task": {
+      "queued": "排队中",
+      "running": "执行中",
+      "done": "已完成",
+      "failed": "已失败"
+    }
+  },
+  "outcome": {
+    "ok": "成功",
+    "business_error": "业务错误",
+    "risk_control": "风控拦截",
+    "network_error": "网络错误"
+  },
+  "notify": {
+    "severity": {
+      "error": "错误",
+      "warning": "警告",
+      "info": "提示"
+    },
+    "endpoint_circuit_open": {
+      "title": "接口已熔断",
+      "body": "{platform} {endpoint} 已熔断：最近 {samples} 次请求中有 {risk_rate}% 命中风控，预计 {retry_after} 秒后重新探测。"
+    },
+    "pool_empty": {
+      "title": "身份池已枯竭",
+      "body": "{platform} 已无可用身份，请求将排队或被拒绝，直到身份池恢复。"
+    },
+    "pool_below_min": {
+      "title": "身份池低于水位线",
+      "body": "{platform} 当前可用身份 {active} 个，低于配置的最小值 {minimum} 个。"
+    },
+    "proxy_unhealthy": {
+      "title": "代理不可用",
+      "body": "代理 {proxy} 连续 {failures} 次探测失败，已移出轮转。"
+    },
+    "signature_stale": {
+      "title": "签名算法可能已失效",
+      "body": "{platform} {endpoint} 的本地签名与浏览器结果在 {parameters} 上不一致，该平台已改用浏览器签名，直到本地算法重新适配。"
+    },
+    "cookie_expiring": {
+      "title": "登录态 cookie 即将过期",
+      "body": "身份 {identity_id} 将在 {days} 天后过期，请重新导入以维持登录态身份池。"
+    },
+    "backup_failed": {
+      "title": "备份失败",
+      "body": "计划备份未能完成：{reason}。"
+    },
+    "footer": "本消息由你的 dtk 实例发出，告警通道可在控制台配置。",
+    "test": {
+      "title": "测试通知",
+      "body": "这是你的 dtk 实例发出的测试通知，由控制台手动触发，发送至通道 {channel}。系统一切正常，无需处理。"
+    },
+    "capacity_warning": {
+      "title": "磁盘空间不足",
+      "body": "{detail}。后台采集仍在运行，达到 {hard_stop}% 时将自动暂停。"
+    },
+    "capacity_paused": {
+      "title": "后台采集已暂停",
+      "body": "{detail}。新的下载任务与定时采集已停止，以保证本实例继续提供读取服务。没有删除任何数据；请释放空间或调高 capacity.hard_stop_percent 以恢复。"
+    },
+    "media_evicted": {
+      "title": "已清理本地媒体",
+      "body": "为保持在 {ceiling} 的媒体容量上限内，已删除 {files} 个下载（共 {freed}）。置顶的下载不会被清理，资料库中的记录也全部保留，删除的只是文件本身。"
+    }
+  },
+  "settings": {
+    "description": {
+      "sched": {
+        "max_wait_seconds": "一个请求最多等待多久才能拿到空闲身份；超时后转为后台任务。",
+        "queue_max": "等待身份的请求队列上限。超出后接口直接拒绝并返回 Retry-After。",
+        "cooldown_base_seconds": "身份第一次被风控后的冷却时长；连续命中会逐次翻倍。",
+        "cooldown_max_seconds": "冷却时长上限。达到上限的身份会被标记为降级，而不是继续冷却。",
+        "circuit_risk_threshold": "触发接口熔断的风控率阈值，取值 0 到 1。",
+        "circuit_min_samples": "熔断前必须观察到的最少请求数，避免几次偶发失败就把接口熔断。",
+        "circuit_min_identities": "熔断前必须有多少个不同身份同时失败。这条用于区分「接口坏了」和「某一个身份坏了」。"
+      },
+      "pool": {
+        "target_size": "身份池为每个平台维持的目标身份数量。",
+        "min_size": "每个平台的身份数下限。低于此值会告警并触发自动补充。",
+        "health_prior": "尚无历史记录的身份所假定的成功率，取值 0 到 1。它决定新身份被调度的积极程度。",
+        "max_fail_streak": "连续失败达到该次数后，这个身份不再计入身份池水位，补池器会去铸造替代品，而不是把一个什么都跑不通的会话继续算作有效。这里用连续失败次数而不是健康分数，是因为没有流量时健康分数为空——把刚铸出来的身份判为不可用，会让低水位变成一个不停铸造的死循环。",
+        "retire_fail_streak": "机器铸造的游客身份连续失败达到这个次数，就会被自动退休并清除 cookie。只在该平台还有连续失败次数低于 pool.max_fail_streak 的身份时才会退休——所有身份都在失败，说明平台在拒绝所有人，这时一个都不退休。导入的身份（尤其是登录态）永远不会被自动退休。实际阈值不会低于 pool.max_fail_streak。设为 0 关闭。每五分钟检查一次。",
+        "douyin": {
+          "min_size": "仅对抖音生效的补充下限。-1 表示沿用 pool.min_size；设为 0 会关闭抖音的自动铸造，同时不再发出它的 pool_empty 和 pool_below_min 告警。手动导入或手动铸造的身份照常可用。",
+          "target_size": "仅对抖音生效的补充目标。-1 表示沿用 pool.target_size。低于该平台补充下限的值会被抬到下限。",
+          "guests_first": "不需要登录的抖音接口先用游客身份，没有游客身份可用时才用已登录的身份。默认开启：游客身份随时可以再铸造，登录态却是某个人的账号，把它花在游客也能答得一样的请求上，只会白白消耗它。需要登录的接口照旧优先或只用登录态。关闭后，登录态和游客身份平摊所有接口。",
+          "direct_egress": "配置了代理时，本机 IP 也算一个出口：每个代理后面都已经有一个抖音身份后，再在本机 IP 上铸造一个，和代理一样只放一个。默认开启。如果这台机器直连不到抖音（比如国内服务器只给 TikTok 配了代理），请关掉：在本机 IP 上铸造会一直失败，每次失败都会让自动补充进入退避。没有配置任何代理时，本机 IP 是唯一的出口，这个开关不起作用。"
+        },
+        "tiktok": {
+          "min_size": "仅对 TikTok 生效的补充下限。-1 表示沿用 pool.min_size；设为 0 会关闭 TikTok 的自动铸造，同时不再发出它的 pool_empty 和 pool_below_min 告警。手动导入或手动铸造的身份照常可用。",
+          "target_size": "仅对 TikTok 生效的补充目标。-1 表示沿用 pool.target_size。低于该平台补充下限的值会被抬到下限。",
+          "guests_first": "不需要登录的 TikTok 接口先用游客身份，没有游客身份可用时才用已登录的身份。默认开启：游客身份随时可以再铸造，登录态却是某个人的账号，把它花在游客也能答得一样的请求上，只会白白消耗它。需要登录的接口照旧优先或只用登录态。关闭后，登录态和游客身份平摊所有接口。",
+          "direct_egress": "配置了代理时，本机 IP 也算一个出口：每个代理后面都已经有一个TikTok身份后，再在本机 IP 上铸造一个，和代理一样只放一个。默认开启。如果这台机器直连不到TikTok（比如国内服务器只给 TikTok 配了代理），请关掉：在本机 IP 上铸造会一直失败，每次失败都会让自动补充进入退避。没有配置任何代理时，本机 IP 是唯一的出口，这个开关不起作用。"
+        },
+        "bilibili": {
+          "min_size": "仅对 B 站生效的补充下限。-1 表示沿用 pool.min_size；设为 0 会关闭 B 站的自动铸造，同时不再发出它的 pool_empty 和 pool_below_min 告警。手动导入或手动铸造的身份照常可用。",
+          "target_size": "仅对 B 站生效的补充目标。-1 表示沿用 pool.target_size。低于该平台补充下限的值会被抬到下限。",
+          "guests_first": "不需要登录的 B 站接口先用游客身份，没有游客身份可用时才用已登录的身份。默认开启：游客身份随时可以再铸造，登录态却是某个人的账号，把它花在游客也能答得一样的请求上，只会白白消耗它。需要登录的接口照旧优先或只用登录态。关闭后，登录态和游客身份平摊所有接口。",
+          "direct_egress": "配置了代理时，本机 IP 也算一个出口：每个代理后面都已经有一个B 站身份后，再在本机 IP 上铸造一个，和代理一样只放一个。默认开启。如果这台机器直连不到B 站（比如国内服务器只给 TikTok 配了代理），请关掉：在本机 IP 上铸造会一直失败，每次失败都会让自动补充进入退避。没有配置任何代理时，本机 IP 是唯一的出口，这个开关不起作用。"
+        }
+      },
+      "signing": {
+        "mode": "由谁生成请求签名：浏览器、内置纯算法，或两者之间自动切换。",
+        "fallback_enabled": "当前模式不偏好的那个签名器，在首选不可用时是否仍可使用。关掉它，才能知道当前到底是谁在扛流量。",
+        "rpc_timeout_seconds": "单次 browser-rpc 签名调用的超时上限。"
+      },
+      "cache": {
+        "content_ttl": "解析后的视频详情可复用多久，超时后重新抓取。",
+        "author_ttl": "解析后的用户主页、音乐或话题可复用多久。",
+        "list_ttl": "解析后的列表页或直播间可复用多久。列表比单条内容变化更快，所以通常是三者中最短的。"
+      },
+      "snapshot": {
+        "min_interval_seconds": "内容历史的去重窗口。同一条内容在窗口内的第二次快照会被跳过而不入库。"
+      },
+      "retention": {
+        "request_log_days": "单条请求日志保留多少天后删除。内容快照永远不会被自动删除。",
+        "identity_events_days": "身份状态变更记录保留多少天。要足够长，以便回答某个身份为什么被淘汰。",
+        "task_days": "已完成的任务记录保留多少天。",
+        "task_result_hours": "任务结果内容保留多少小时。比任务记录本身短，因为结果才是占空间的部分。",
+        "retired_identity_days": "身份退休后其记录保留多久。cookie 在退休时已被立即擦除，这里保留的只是该身份存在过的记录；不设窗口的话，池子每淘汰一个身份，这张表就会多留一行，永不回收。"
+      },
+      "api": {
+        "default_language": "请求未指定语言时使用的默认语言。单个请求始终可以用 ?lang= 或 Accept-Language 头覆盖它。",
+        "default_rate_limit_per_min": "单个 API Key 每分钟允许的请求数。用途是防滥用，不是计费。",
+        "max_wait_seconds": "调用方能传给 ?wait= 的最大值。它限制单个请求能占用连接多久。",
+        "mcp_tool_timeout": "单次 MCP 工具调用允许运行多久，超时后取消。"
+      },
+      "security": {
+        "url_allowlist": "短链跳转时额外允许经过的主机名。内置平台列表始终生效；这里的每一条都按完整主机名精确匹配、不归属任何平台，并且都会扩大 SSRF 攻击面——只有当跳转链卡在某个未列出的中转主机上时才需要添加。",
+        "cors_allow_origins": "允许调用本接口的浏览器来源。留空表示仅同源。填 '*' 等于把你的 API Key 交给用户访问的任何网站。",
+        "cors_allow_credentials": "跨域请求是否允许携带 Cookie。只有在明确列出来源时才有意义，不能与 '*' 同时使用。",
+        "enable_task_webhook": "任务是否可以回调调用方提供的 URL。该 URL 是 SSRF 攻击面，因此默认关闭。"
+      },
+      "notify": {
+        "enabled": "告警发送总开关。关闭后告警仍会记录，但不会发出。",
+        "channels": "告警的投递目标：一个通道描述列表，每项包含 type、url 与 language 三个字段。",
+        "language": "告警文本使用的语言；未单独指定语言的通道会使用它。"
+      },
+      "system": {
+        "check_updates": "控制台是否可以每天向 GitHub 询问一次有没有新版本。请求由运维人员的浏览器发出，从不由这台服务器发出，默认开启。"
+      },
+      "security.request_proxy": "是否允许调用方通过 ?proxy= 使用自己的代理出口。deny 直接拒绝该参数；public 仅允许公网可路由地址；any 连回环和内网地址也允许——这意味着任何持有 API Key 的人都能访问本服务器所在的内网。",
+      "api.public_endpoints": "无需 API Key 即可访问的接口列表，每项写成 '<METHOD> <路径>'，与 API 文档中的写法完全一致，例如 'GET /api/v1/{{platform}}/video'。留空表示所有接口都需要凭证（默认）。管理、认证与初始化类接口无论如何都不会被开放。",
+      "archive.enabled": "在任务结果过期后，继续把解析到的作品与作者保存在数据库中。关闭后本实例只保留日志与指标历史，今天解析过的作品明天就查不到了。",
+      "archive.store_raw": "在归一化记录之外，同时保存平台的原始响应，便于日后补算新字段而无需重爬。默认关闭：解析器会为每个对象都生成一份，它是本实例可选存储项里体积最大的一个。",
+      "retention.content_days": "删除最后一次出现超过指定天数的归档作品。0 表示永不删除（默认）——归档的意义正是比平台活得更久。磁盘安全由容量护栏负责，而不是靠删数据。",
+      "capacity.warn_percent": "磁盘使用率达到该百分比时发出告警。按文件系统实测，因此涵盖 WAL、索引以及共用该卷的其他内容。",
+      "capacity.hard_stop_percent": "磁盘使用率达到该百分比时，后台采集与新的下载任务将暂停。交互式 API 读取永不暂停，也绝不删除任何数据——磁盘写满应当让实例降级，而不是让它下线或毁掉已采集的内容。",
+      "media": {
+        "enabled": "是否允许下载媒体。关闭后拒绝新任务，已保存的文件原样保留；这个开关不会删除任何东西。",
+        "max_bytes": "已保存媒体可以占用的磁盘上限。超过后按最旧优先删除未置顶的下载，直到回到上限以下，并发出一条告警说明删了什么。置顶的下载永远不会被删除。设为 0 则完全关闭清理。",
+        "max_file_bytes": "单个文件的大小上限，按实际写入的字节计算，而不是按服务器声称的大小。达到上限的传输会被拒绝，并且不留下任何残留文件。",
+        "mirror_max_age_seconds": "归档里的媒体链接超过多久之后，下载前需要重新解析作品以获取新链接。带签名的 CDN 链接几小时内就会过期；设为 0 表示每次都重新解析，这会消耗一次身份池的请求配额。"
+      },
+      "watchlist": {
+        "enabled": "是否运行定时采集。关闭后关注列表和已经采集到的内容原样保留，只是不再提交新的采集任务。",
+        "min_interval_seconds": "任何关注目标允许设置的最短间隔。每隔几秒采集一次并不会得到更好的时间序列，只会把整个身份池耗在一个作者身上，让其他请求全部饿死。",
+        "default_interval_seconds": "新增关注目标时，未指定间隔则使用这个值。",
+        "batch_size": "单次调度最多提交多少个到期的关注目标。剩下的仍然是到期状态，会在下一次调度提交，这样大的关注列表会被摊开到几分钟内，而不是一次性堵在正在使用接口的人前面。"
+      },
+      "archive.recheck_after_days": "一个作品距离上次存在性检查多久之后需要重新检查。正是它让「我存的哪些作品已经没了」这个问题有答案——没有它，归档第二天就被删除的作品会永远显示为正常。设为 0 则关闭重新检查。",
+      "archive.recheck_batch": "一次检查扫描多少个作品。每个都是一次经过身份池的真实请求，所以这个值决定了这个答案的成本。",
+      "archive.recheck_pause_seconds": "重新检查或历史回溯的相邻请求之间间隔多少秒。调度器是按身份限速的，这对「按 IP 计数」的平台限制毫无作用——实测：13 秒内发出的 20 个请求全部被拒，而一分钟后的单个请求成功。这些任务没有人在等，所以慢一点不花什么代价。",
+      "security.webhook_secret": "用于给任务回调签名的共享密钥，以 X-Dtk-Signature: sha256=<正文的 HMAC> 头发送。不设置的话，接收方无法区分真实通知和任何猜到回调地址的人。留空则不签名。",
+      "demo": {
+        "enabled": "对外公开一个只读账号和一个 API Key，任何人都能拿它试用这台实例。打开时会生成两者并只显示一次；关闭后所有 demo 会话立即失效、Key 也停止工作，但不会删除任何东西。",
+        "task_retention_minutes": "demo 账号发起的任务保留多久，之后由维护任务清理。单位是分钟不是天：这行记录的存在只是为了让调用方取回结果，取完之后没人会再看它。"
+      }
+    }
+  },
+  "openapi": {
+    "description": "自部署的抖音 / TikTok / B 站数据接口。提交链接即可获得归一化后的内容。\n\n所有响应共用同一个信封，出错时也一样：`success`、`data`、`error`、`meta`。错误码稳定且永不翻译，旁边的消息会按你请求的语言渲染。任何接口后面追加 `?lang=en` 即可切换为英文，本文档也一样。\n\n### 一次请求是怎么走的\n\n向平台抓取数据要真实消耗一次上游请求和一个身份，可能需要数秒。因此数据类接口**默认是异步的**：先把工作排队，立刻返回 `202` 和一个任务 ID。\n\n```\nPOST /api/v1/parse            -> 202 {{\"task_id\": \"...\", \"state\": \"queued\"}}\nGET  /api/v1/tasks/{{task_id}}  -> 200 {{\"state\": \"done\", \"data\": {{...}}}}\n```\n\n取结果有三种方式，区别只在于「由谁来等」。\n\n**自己轮询任务。** 反复 `GET /api/v1/tasks/{{task_id}}`，直到 `state` 变成 `done` 或 `failed`。任何情况下都可用，有自己事件循环的客户端应该这么做。\n\n**让服务端替你等 —— `?wait=`。** 加上 `?wait=10`，连接会被保持住，直到任务有结果为止，最多等这么多秒。**这就是把调用变成同步的方式**，它是为那些根本没法轮询的客户端准备的：iOS 快捷指令、一行 shell 命令、表格软件。\n\n- 在时限内完成：返回 `200`，`data` 里就是结果，与任务接口返回的完全一致。任务本身失败时，会按正常的失败信封返回，并带上它自己的状态码。\n- 时限内没完成：返回 `202`，带任务 ID 和 `state: \"running\"`。**这不是错误，也没有丢东西**——工作还在跑，稍后用同一个任务 ID 就能取到。\n- 超过本实例的上限（`api.max_wait_seconds`，在参数上以 `maximum` 显示）：返回 `400`。是拒绝而不是悄悄缩短，因为一个要求阻塞五分钟的调用方必须知道自己做不到，否则它会把提前返回的 `202` 当成失败。\n- 省略或传 `0`：立刻返回 `202`。传负数：`400`。\n\n内部机制不因此改变：无论哪种方式，工作都走同一个队列。`?wait=` 决定的只是「谁来持有这个连接」。\n\n**让服务端回调你 —— `callback_url`。** 提交时给一个地址，任务完成后结果会被 POST 过去，既不用轮询也不用阻塞。该主机必须在运营方的 `security.url_allowlist` 里。\n\n### 结果可以取多次\n\n任务结果会保留 `retention.task_result_hours` 小时，在此期间可以随便取多少次。短时间内两个完全相同的请求会被合并到同一个任务上，而不是跑两遍；`?refresh=true` 可以同时关掉这个合并和响应缓存，代价是真的消耗一个身份去重新抓一次。",
+    "tag": {
+      "admin": "实例管理，需要 admin 权限范围。",
+      "archive": "本实例已采集的内容，全部从本地存储读取。",
+      "auth": "登录、会话，以及当前登录的账号。",
+      "content": "与平台无关的读取接口：传入链接或 ID 即可。",
+      "downloads": "本实例保存在自己磁盘上的媒体。它只是水槽而不是中继：字节永远不会回传给调用方。",
+      "transcriptions": "对已经保存到磁盘的视频按需生成完整文本转写。",
+      "ios": "本实例提供的 iOS 快捷指令，可直接安装。",
+      "setup": "首次运行：在管理员账号存在之前，只有这些接口会应答。",
+      "system": "健康检查、版本与诊断。",
+      "tasks": "异步任务的提交、轮询与事件推送。",
+      "tools": "基础能力：链接解析、签名计算与游客身份铸造。"
+    },
+    "op": {
+      "transcriptions_create": {
+        "summary": "转写已下载的视频",
+        "description": "为一个已经下载完成的视频创建或复用完整文本转写。已有结果返回 200，新建或加入仍在运行的任务返回 202。"
+      },
+      "transcriptions_get": {
+        "summary": "读取转写结果",
+        "description": "读取持久化的全文、语言、时长、模型、来源和生命周期元数据。"
+      },
+      "transcriptions_cancel": {
+        "summary": "取消转写任务",
+        "description": "取消排队中或运行中的转写；已经完成的结果保持不变。"
+      },
+      "transcriptions_list": {
+        "summary": "列出转写记录",
+        "description": "按创建时间从新到旧列出持久化转写记录，支持筛选和实时进度，但不在列表中嵌入完整转写全文。"
+      },
+      "transcriptions_delete": {
+        "summary": "删除转写记录",
+        "description": "以原子操作删除已经结束的转写文本和元数据，不删除源下载记录或媒体文件。"
+      },
+      "api_keys_create": {
+        "summary": "创建 API 密钥",
+        "description": "生成密钥，并且只展示这一次。"
+      },
+      "api_keys_list": {
+        "summary": "列出 API 密钥",
+        "description": "本实例的所有 API 密钥，最新的在前。"
+      },
+      "api_keys_revoke": {
+        "summary": "吊销 API 密钥",
+        "description": "吊销一个 API 密钥。"
+      },
+      "api_keys_update": {
+        "summary": "重命名 API 密钥或修改其作用域",
+        "description": "修改密钥的名称或作用域，密钥本身不变：已经持有它的程序照常使用，从下一次调用起按新作用域生效。作用域是整体替换而不是追加，且不能超出你自己拥有的作用域。已吊销的密钥和公开的 demo 密钥会被拒绝，后者的作用域由 demo 本身决定。"
+      },
+      "archive_backfill": {
+        "summary": "回溯归档作者的历史作品",
+        "description": "翻过第一页，把某个作者的历史作品全部归档。和关注列表刻意分开：关注列表针对的是「新增内容」并且会一直运行，而回溯是一次性的、成本完全不同的操作。遇到第一个空页、达到页数上限，或者平台表示没有更多历史时停止。"
+      },
+      "archive_delete": {
+        "summary": "删除已归档的作品",
+        "description": "归档接口里唯一会真正销毁数据的调用。不可撤销，也没有回收站：记录会被删除，它的合集归属一并删除，除非把 `media` 设为 false，否则磁盘上已保存的文件也会一起删掉。`media` 默认为 true，因为对着一个本实例已经存下来的视频说“删除”，本来就是这个意思。先删文件再删记录，所以最坏情况是留下没有记录的字节，而不是留下一条指向已消失文件、却仍然提供下载的记录。"
+      },
+      "archive_export": {
+        "summary": "导出归档",
+        "description": "以 NDJSON 流式导出所有匹配的作品，逐页输出而非在内存中拼装，因此不会因为你的数据量变大而导致导出失败。需要 archive:export 权限，普通只读密钥不具备。"
+      },
+      "archive_export_selected": {
+        "summary": "导出选中的作品",
+        "description": "以 NDJSON 流式导出请求体里列出的作品，格式和权限（archive:export）都与按筛选条件导出相同。用于手动挑选的集合：跨页勾选的卡片之间没有共同的筛选条件。归档里没有的作品会被跳过，不会因此拒绝其余作品。"
+      },
+      "archive_get": {
+        "summary": "获取单条归档作品",
+        "description": "返回本实例最后一次看到的该作品，含媒体清单。其中的 CDN 签名链接会过期，web_url 才是长期有效的部分。"
+      },
+      "archive_list": {
+        "summary": "检索归档内容",
+        "description": "分页返回本实例已采集的内容，按最近一次出现时间倒序。数据来自本地存储——不消耗身份、不发起请求，即使作品已被删除也仍然在这里，并由 availability 字段标明。多个筛选条件可组合，翻页使用游标。"
+      },
+      "archive_recheck": {
+        "summary": "重新检查作品是否还在",
+        "description": "验证已归档的作品在平台上是否仍然存在。已删除的作品会返回「不存在」，这是检查结果而不是失败：记录会被保留并标记为已删除，因此它仍然可以被搜索和导出，只是带上了真实状态。每个作品都是一次经过身份池的真实请求，所以批量有上限，并且整个过程在后台运行。"
+      },
+      "archive_stats": {
+        "summary": "归档统计",
+        "description": "本实例已保存的作品数与作者数，并按平台细分。"
+      },
+      "audit_list": {
+        "summary": "读取审计日志",
+        "description": "敏感操作记录，最新的在前。"
+      },
+      "auth_demo": {
+        "summary": "登录页用的 demo 凭据",
+        "description": "当这台实例开着公开演示时，返回用来预填登录表单的用户名和密码。演示模式关闭时只返回 `enabled: false`，不含其它任何内容。"
+      },
+      "auth_login": {
+        "summary": "用密码换取会话 Cookie",
+        "description": "登录控制台并获得会话 Cookie。"
+      },
+      "auth_logout": {
+        "summary": "吊销当前会话",
+        "description": "刻意设计为幂等：重复登出不算错误。"
+      },
+      "auth_me": {
+        "summary": "当前身份主体",
+        "description": "当前凭据属于谁。"
+      },
+      "auth_password": {
+        "summary": "修改自己的密码",
+        "description": "即使在已登录的会话中，也仍需提供当前密码。"
+      },
+      "auth_session_revoke": {
+        "summary": "吊销你的某个会话",
+        "description": "session_ref 是列表中的摘要，而不是令牌本身。"
+      },
+      "auth_sessions": {
+        "summary": "列出你的活跃会话",
+        "description": "当前以你的身份登录的每一台设备。"
+      },
+      "auth_sessions_revoke_all": {
+        "summary": "登出其他所有设备",
+        "description": "退出除当前设备之外的所有登录。"
+      },
+      "author_bookmarks": {
+        "summary": "获取账号收藏的作品",
+        "description": "分页获取账号收藏的作品，跨全部收藏夹——这是「收藏」页的另一半，/user/collections 列的是收藏夹本身；一个账号可以有收藏却没有收藏夹。只能读账号自己的收藏，所以 identity 是必填的：把它指向从该账号自己的会话导入的身份，结果也不会进缓存。TikTok 还需要指明账号，游客身份会被直接拒绝。抖音则完全不接受账号参数——它的接口只回答发出请求的那个会话——所以在抖音上传 url 或 sec_user_id 会直接报错，而不是被悄悄忽略。想读别人公开的收藏夹，请改用 /collection/posts。"
+      },
+      "author_collections": {
+        "summary": "获取收藏夹列表",
+        "description": "分页获取收藏夹，每一条都会说明自己是否公开。两个平台在「能问谁」这件事上不同：TikTok 接受作者参数，游客身份能看到该作者公开的收藏夹，所以空页意味着没有公开的收藏夹，而不是没有收藏夹。抖音则完全不接受作者参数——它的接口里没有任何用户 id，只回答发出请求的那个会话自己的收藏夹，因此在抖音上 identity 是必填的，必须指向导入的身份，结果也不会进缓存；在抖音上传 url 或 sec_user_id 会直接报错，而不是被悄悄忽略。B 站接受作者参数（mid 或空间链接），一次返回全部公开收藏夹。要读取某个收藏夹里的作品，把它的 id 传给 /collection/posts。"
+      },
+      "author_followers": {
+        "summary": "获取作者的粉丝列表",
+        "description": "分页获取关注该作者的账号。仅支持 TikTok：抖音的关注关系只对已登录身份开放，在抖音上请求会返回错误并列出支持该功能的平台。"
+      },
+      "author_following": {
+        "summary": "获取作者关注的账号",
+        "description": "分页获取该作者关注的账号。仅支持 TikTok；相比粉丝列表，账号隐藏关注列表的情况更常见，因此返回空页是正常结果。"
+      },
+      "author_likes": {
+        "summary": "获取作者点赞过的作品",
+        "description": "分页获取作者公开点赞过的作品。TikTok 允许游客身份请求，返回空页通常表示作者未公开点赞列表；抖音则完全不向游客身份提供该列表，需要导入已登录的身份。"
+      },
+      "author_posts": {
+        "summary": "获取作者的作品列表",
+        "description": "按时间倒序获取作者本人的作品列表，字段结构与单条作品接口一致。通过 cursor 翻页。"
+      },
+      "author_profile": {
+        "summary": "获取作者主页信息",
+        "description": "获取作者主页公开信息：昵称、签名、头像、认证状态，以及粉丝数、关注数、获赞数与作品数。"
+      },
+      "author_reposts": {
+        "summary": "获取作者转发的作品",
+        "description": "分页获取作者转发到自己主页上的作品。仅支持 TikTok。这些是别人的视频，这一点正是它与 /user/posts 的区别——TikTok 为它单独开了一个 tab。这个 tab 是公开的，游客身份即可读取，无需导入身份。每一条携带的是原作者，而不是转发它的那个账号。"
+      },
+      "backup_create": {
+        "summary": "创建备份归档",
+        "description": "排入一次导出任务。"
+      },
+      "backup_list": {
+        "summary": "列出备份归档",
+        "description": "服务端可见的归档，最新的在前。"
+      },
+      "backup_restore": {
+        "summary": "从备份归档恢复",
+        "description": "排入一次归档恢复任务。"
+      },
+      "batch": {
+        "summary": "批量提交多个链接",
+        "description": "一次提交多个链接，为每个链接返回一个任务 ID。各链接独立调度，其中一个失败不会阻塞其余链接。"
+      },
+      "collection_detail": {
+        "summary": "获取单个收藏夹的名称、封面与数量",
+        "description": "按 id 获取单个收藏夹自身的元信息。仅支持 TikTok。/user/collections 列的是某个作者的收藏夹，但必须通过作者来问；这个接口只要收藏夹 id——分享链接里就只有这个——因此它是唯一能查出一个陌生收藏夹 id 究竟是什么的途径。它还会给出收藏夹归属于谁、以及是否公开。公开的收藏夹用游客身份即可读取，私密的则需要从其所有者会话导入的身份。"
+      },
+      "collection_posts": {
+        "summary": "获取某个收藏夹内的作品",
+        "description": "分页获取单个收藏夹里的作品，有收藏夹的平台都支持。请求指名的是收藏夹而不是账号，所以作者设为公开的收藏夹用游客身份即可读取，无需导入任何身份；私密的则会被直接拒绝，而不是返回空页。在 TikTok 上，这是「收藏」页三个视图中的第三个，另外两个是 /user/collections 和 /user/bookmarks。"
+      },
+      "collections_add": {
+        "summary": "向合集添加作品",
+        "description": "重复添加已在合集中的作品不会报错，而是当作无操作：控制台会把选中的全部发过来，其中一部分本来就已经在里面了。不在归档中的作品会被跳过，一张过期的卡片不会让其余十九张一起失败。返回新加入的数量。"
+      },
+      "collections_create": {
+        "summary": "新建合集",
+        "description": "创建一个命名的集合，在加入作品之前是空的。名称不区分大小写且唯一，其中的空白会被折叠。`note` 是控制台显示在名称下方的自由文本，不会被解析。"
+      },
+      "collections_delete": {
+        "summary": "删除合集",
+        "description": "只删除合集本身。作品仍留在归档里，文件也仍在磁盘上：合集只是一个标签，删标签不等于删掉被贴标签的东西。"
+      },
+      "collections_list": {
+        "summary": "列出合集",
+        "description": "所有合集及各自包含的作品数量。合集是资料库里唯一不由作品本身推导出来的分组——作者、平台、收录时间都能从记录里算出来，只有合集是人手动分的。"
+      },
+      "collections_remove": {
+        "summary": "从合集中移出作品",
+        "description": "只解除归属关系，作品仍留在归档中。用 POST 而不是 DELETE，因为它带请求体，而带请求体的 DELETE 经常会被中间层丢掉。"
+      },
+      "collections_update": {
+        "summary": "重命名合集",
+        "description": "修改名称、备注或两者，成员不受影响。把 `note` 传成 null 表示清空；整个字段不传表示保持原样——这是两个不同的请求，否则看起来完全一样。"
+      },
+      "comment_replies": {
+        "summary": "获取某条评论下的回复",
+        "description": "获取某条评论下的回复。需同时传入 comment_id 与所属作品（用 url 或 aweme_id 之一指定）。"
+      },
+      "comments": {
+        "summary": "获取作品的一级评论",
+        "description": "获取作品的一级评论，含评论作者、点赞数与回复数。通过 cursor 翻页，响应中不再返回游标即表示已是最后一页。"
+      },
+      "content_detail": {
+        "summary": "获取单条作品（视频或图集）",
+        "description": "获取单条作品（视频或图集），包含媒体地址、文案、统计数据与作者信息。使用 url 或 aweme_id 之一指定作品。"
+      },
+      "demo_rotate": {
+        "summary": "重新签发 demo 凭据",
+        "description": "生成新的 demo 密码和 API Key，吊销旧 Key，并结束所有已打开的 demo 会话。两个明文只在这一次返回。"
+      },
+      "demo_show": {
+        "summary": "查看 demo 账号",
+        "description": "这台实例当前对外公开的 demo 信息：是否开启、账号名、API Key 前缀、其作用域，以及当前版本会发布但这把 Key 还没有的作用域。不会返回密码和完整 Key。"
+      },
+      "diagnose": {
+        "summary": "运行六步自检",
+        "description": "排入与初始化向导收尾时相同的自检（见文档 15）。"
+      },
+      "downloads_delete_files": {
+        "summary": "删除下载的文件",
+        "description": "删除一条下载存下的文件，但保留记录，记录随后显示为「已清理」——和容量上限触发的清理一样，重新请求这次下载就能把文件取回来。同一个作品的多条下载共用一个目录：这个接口会删除该目录并标记其中所有记录；其中任何一条还在进行中或已置顶时，会拒绝执行。要连作品和记录一起删除，请用 POST /api/v1/archive/delete。"
+      },
+      "downloads_cancel": {
+        "summary": "取消下载",
+        "description": "停止一个尚未完成的传输。不会删除任何东西：已经下载完整的文件保持原样，记录也会保留。删除文件请用 DELETE /api/v1/downloads/{{download_id}}/files，或者等容量达到上限时由清理任务处理。"
+      },
+      "downloads_create": {
+        "summary": "保存作品媒体到本地",
+        "description": "把一个已归档作品的媒体文件下载到本实例自己的磁盘。参数是内容标识而不是 URL：调用方无法决定去连接哪个主机。返回 202 和一个下载 ID；文件落在部署者的媒体卷上，本接口永远不会把字节回传给调用方。"
+      },
+      "downloads_dedupe": {
+        "summary": "清理重复下载",
+        "description": "每个作品只保留一份，其余删除。重复下载本来就是常事——第一次失败了、镜像链接过期了、文件被淘汰了——每次尝试都会留下一条记录，其中成功的那些会在磁盘上留下同一个视频的完整副本。保留的是**仍然有文件、且最新**的那一份：最新是因为它取自最新鲜的镜像，有文件是因为如果保留一条已被淘汰的记录而删掉一条文件还在的，就会把唯一的副本删掉。只有当没有任何保留下来的记录还在用同一个目录时，该目录才会被删除——同一个作品的两次下载会落在同一个目录里，按 id 去删旧记录的路径，删掉的会是新记录刚写进去的文件。传 `dry_run` 可以先看看会删什么。"
+      },
+      "downloads_file": {
+        "summary": "下载一个已存储的文件",
+        "description": "把本实例已经存下来的某个文件发给浏览器。路径是从存储记录重建的——该下载自己的目录，加上一个必须出现在它文件清单里的名字——所以调用方能选的只有「哪一条记录」，而不是「读磁盘上的哪个位置」。不会发起抓取：为控制媒体容量而被清理掉的文件会返回 404，重新请求这次下载才会把它取回来。"
+      },
+      "downloads_get": {
+        "summary": "单条下载",
+        "description": "一条下载记录及其全部文件：文件名、大小、sha256、内容类型，以及文件是否仍在磁盘上。"
+      },
+      "downloads_list": {
+        "summary": "下载列表",
+        "description": "本实例被要求保存的内容，最新的在前，含每个文件的大小与 sha256。on_disk 为 false 表示曾经下载过、后来为了控制媒体容量上限被清理掉了——这和从未下载过不同，重新请求一次即可恢复。仍在下载中的条目还带有 progress，实时从下载器读取：已写入的 bytes、所有文件大小都已知时的 bytes_expected（在此之前为 null）、最近几秒的 bytes_per_second，以及每个文件各自的这几项。下载结束后它为 null。"
+      },
+      "downloads_pin": {
+        "summary": "置顶 / 取消置顶",
+        "description": "把一条下载排除在按容量清理之外。这是保住某个文件不被上限清掉的唯一方式；平台已经删除的作品无法重新下载。"
+      },
+      "downloads_retry": {
+        "summary": "重新下载",
+        "description": "把一个已结束的下载重新跑一遍。这里没有断点续传，也不可能有：sidecar 写的是 `<name>.part`，每次尝试都会清空重来，而它这么设计的原因在上游——媒体 URL 是带签名且会过期的，一小时前抓到的字节没法接在一个现在返回 403 的链接后面。有效的做法是重新请求：如果本地存的镜像链接已经过期，会先重新解析这个作品拿到新的。下载还在进行时会被拒绝：卡住的下载由维护任务负责标记失败，在那之前重试只会和第一次在同一个目录里打架。"
+      },
+      "downloads_storage": {
+        "summary": "媒体存储用量",
+        "description": "已保存媒体占用了多少磁盘、上限是多少。用量直接测量卷而不是对数据库求和，同时返回下载器容器是否可达。"
+      },
+      "endpoints_access": {
+        "summary": "哪些接口无需密钥即可访问",
+        "description": "列出所有接口，并标明当前是否需要凭据。"
+      },
+      "endpoints_health": {
+        "summary": "各接口的健康与熔断状态",
+        "description": "列出所有已声明的接口，无论是否有流量。"
+      },
+      "health": {
+        "summary": "实例健康状态",
+        "description": "报告数据库、缓存、浏览器 RPC 与身份池的健康状况，可供监控系统轮询。"
+      },
+      "identities_cookies": {
+        "summary": "查看某个身份的 Cookie 组成",
+        "description": "返回该身份持有的 Cookie 名称、作用分类与掩码后的值，绝不返回真实值。"
+      },
+      "identities_cookies_reveal": {
+        "summary": "读取某个身份的完整 Cookie",
+        "description": "返回将要发出的完整 Cookie，含真实值。该操作会被审计记录。"
+      },
+      "identities_export": {
+        "summary": "导出身份为文件",
+        "description": "导出完整身份，包含 Cookie。产物是一份凭证文件。"
+      },
+      "identities_import": {
+        "summary": "导入已登录的 Cookie",
+        "description": "识别粘贴格式，报告解析结果，然后加密存储。登录态 Cookie 就是账号本身：各平台一般不会因为读取数据而封号，但不排除封号的可能，导入它的后果和风险由你自行承担。"
+      },
+      "identities_import_bundle": {
+        "summary": "导入身份文件",
+        "description": "从本程序导出的文件恢复身份，连同指纹一并还原。"
+      },
+      "identities_list": {
+        "summary": "列出身份及其状态与健康度",
+        "description": "身份池，最新的在前。默认不含已退休的身份，除非设置了 include_retired、state 指定了退休状态，或 identity_id 指名了某一个。每一行会给出登录态何时过期（expires_at，访客为 null）。meta.total 是符合条件的身份总数，meta.retired 是同样条件下被略去的已退休身份数。"
+      },
+      "identities_mint": {
+        "summary": "铸造访客身份",
+        "description": "为请求的每个身份排入一个铸造任务。"
+      },
+      "identities_pool": {
+        "summary": "身份池水位与自动补充阈值",
+        "description": "后台补充任务按平台比较的那两个数字。`usable` 统计的是仍然存活、且连续失败次数低于 `pool.max_fail_streak` 的身份，而不是行数——一个每次请求都失败的身份依然算存活，只数行会让一个已经不能用的池子看起来是满的。低于该平台的 `min_size` 时，worker 每分钟铸造一个身份，直到回到它的 `target_size`。每个平台行带着自己的一对阈值：设置了 `pool.<platform>.min_size` / `target_size` 就用它们，否则沿用全局的 `pool.min_size` / `pool.target_size`（`min_inherited` / `target_inherited` 表示是哪一种）。某个平台的 `min_size` 为 0 时 `auto` 为 false，表示关闭它的自动铸造和水位告警。顶层的 `min_size` 和 `target_size` 是全局那一对。`can_mint` 表示某个平台能否在这里铸造：B 站通过普通 HTTP 铸造，抖音和 TikTok 需要浏览器容器。为 false 时两个阈值不起作用，该平台的池子里只有手动导入的身份。顶层的 `can_mint` 在任一平台可以铸造时为 true。`logins` 按平台统计已登录的身份：`rotating` 是轮换会分配给需要登录的接口的，`reserved` 是只有指名它的请求才用得到的，`cooling` 是冷却结束后会重新参与轮换的，`limited` 是只在不需要登录的接口上参与轮换的。`login_required_for` 列出在 `rotating` 为 0 时会返回 IDENTITY_LOGIN_REQUIRED 的接口。`activity.backoffs` 是按平台给出的铸造退避状态。"
+      },
+      "identities_reset": {
+        "summary": "让身份重新参与轮换",
+        "description": "清除冷却时间和连续失败计数，并把身份标记为可用。身份池本来就会自行恢复，而且刻意恢复得慢——一个反复失败的身份通常确实该被观察一段时间——所以这个接口是给自动恢复无从判断的那种情况准备的：这些失败不是身份自己的问题。已退休的身份不能重置，因为退休时它的 Cookie 已被清空，没有会话可以放回轮换。重置会连同原先的状态一起写进该身份的历史，所以记录里仍然看得出它曾经出过问题，以及有人做了相反的判断。"
+      },
+      "identities_rotation": {
+        "summary": "设置身份参与哪些接口的轮换",
+        "description": "让一个身份整体退出轮换，或只在部分接口上参与轮换。null 表示所有接口都参与，这是默认值；空列表表示只服务用 identity= 指定了它的请求；接口名列表（必须属于该身份所在的平台）表示只在这些接口上参与轮换。指定了该身份的请求永远不会因此被拒。这样的身份不计入身份池水位，也不会随导出一起带走。"
+      },
+      "identities_update": {
+        "summary": "修改身份的备注",
+        "description": "写入或清除身份的备注，比如这个登录态登的是哪个账号。只能一行，去掉首尾空格后最多 200 个字符；传 null 或空白即清除。请求链路上没有任何地方读取它。已退休的身份保留备注，也仍然可以修改。返回值与列表中的身份相同。"
+      },
+      "identities_coverage": {
+        "summary": "每个接口由哪些身份服务",
+        "description": "按平台、按接口统计轮换可以分配的身份数，算法与调度器一致：身份没有轮换清单、或者清单里列了这个接口，就算服务这个接口；处于 active 或 degraded 状态的算 `ready`。每个平台带 `guests_first`（即它的 pool.<platform>.guests_first）和 `reserved`（只服务指名请求的身份数）；每个接口带能力表里的 `login`、`paging_login`、`session_bound`，以及 `ready`、`signed_in`（其中的登录态）、`cooling` 和 `dedicated`（清单里专门列了这个接口的）。用 identity= 指名身份的请求完全不受这些限制。"
+      },
+      "identities_retire": {
+        "summary": "退役一个身份",
+        "description": "退役并清除。统计数据保留，凭据不保留（见文档 05）。"
+      },
+      "identities_session": {
+        "summary": "检查身份的登录态是否仍然有效",
+        "description": "向平台询问这个身份携带的是谁的会话。"
+      },
+      "identities_test": {
+        "summary": "探测单个身份",
+        "description": "用该身份排入一次真实请求。"
+      },
+      "ios_shortcut": {
+        "summary": "iOS 快捷指令版本信息",
+        "description": "配套 iOS 快捷指令的版本号、下载链接与更新说明，按请求语言渲染。"
+      },
+      "metrics_timeseries": {
+        "summary": "请求量与结果随时间的变化",
+        "description": "原始分桶数据。序列选择与缩放在浏览器端完成（见文档 07）。"
+      },
+      "mix_posts": {
+        "summary": "获取合辑 / 播放列表内的作品",
+        "description": "分页获取一个合辑内的作品——抖音称为合辑，TikTok 称为播放列表，B 站称为合集（B 站一次返回全部视频）。/user/mixes 可列出某作者的合辑；作品里也带着合辑 ID：抖音在 mix_info 字段，TikTok 在 playlistId 字段。"
+      },
+      "notify_test": {
+        "summary": "发送测试告警",
+        "description": "在真正出事之前，先验证通知渠道可用。"
+      },
+      "parse": {
+        "summary": "解析任意受支持的链接",
+        "description": "自动识别链接所属平台与内容类型，返回归一化记录。附加 ?wait= 可阻塞等待结果，无需轮询任务。"
+      },
+      "proxies_create": {
+        "summary": "添加一个代理",
+        "description": "向池中添加一个出口。"
+      },
+      "proxies_delete": {
+        "summary": "删除代理并退役其关联身份",
+        "description": "删除一个出口，并退役绑定在它上面的每个身份。"
+      },
+      "proxies_get": {
+        "summary": "查看单个代理及其关联身份",
+        "description": "一个出口，以及绑定在它上面的身份：删除它时会一并退役的，也是共用这个地址的。"
+      },
+      "proxies_import": {
+        "summary": "批量导入粘贴的代理列表",
+        "description": "接收多行文本，并逐行报告处理结果。"
+      },
+      "proxies_list": {
+        "summary": "列出代理",
+        "description": "所有已配置的出口，最早的在前。"
+      },
+      "proxies_test": {
+        "summary": "探测单个代理",
+        "description": "为该出口排入一次连通性与 GeoIP 探测。"
+      },
+      "proxies_update": {
+        "summary": "修改一个代理",
+        "description": "修改某个代理的 URL、标签或地区。"
+      },
+      "request_log": {
+        "summary": "读取请求日志",
+        "description": "最近的请求，最新的在前，可按条件筛选。"
+      },
+      "settings_list": {
+        "summary": "读取全部运行时设置",
+        "description": "每一项运行时设置，含当前值及其来源。"
+      },
+      "settings_reset": {
+        "summary": "将一项设置恢复为继承值",
+        "description": "删除覆盖值，使该项回落到环境变量或默认值。"
+      },
+      "settings_update": {
+        "summary": "修改一项运行时设置",
+        "description": "修改一项运行时设置，无需重启即刻生效。"
+      },
+      "setup_init": {
+        "summary": "创建第一个管理员账号",
+        "description": "消耗初始化令牌并创建管理员。"
+      },
+      "setup_status": {
+        "summary": "本实例是否已有管理员",
+        "description": "必须免鉴权：这是初始化向导问的第一个问题。"
+      },
+      "system_capabilities": {
+        "summary": "各平台支持的接口",
+        "description": "列出本实例认识的每个平台及其支持的操作。不在某平台列表中的操作，在该平台上会返回 UNSUPPORTED_CONTENT。`session_bound` 标记的操作只回答发起请求的身份本人的数据，不带 `identity` 会被拒绝。`login` 和 `paging_login` 说明游客身份在这个接口上会少拿到什么——`none`、`preferred` 或 `required`——分别对应第一页和之后每一页；之后各页没有区别时 `paging_login` 为 null。"
+      },
+      "task_cancel": {
+        "summary": "取消任务",
+        "description": "放弃一个还没开始的任务。只有排队中的任务会被停止；已经在运行的任务保持原样并如实返回运行中，因为它的请求已经发出、身份配额已经花掉——记录一个 worker 从未遇到的失败会让接口的风控率失真。不会删除任何东西。"
+      },
+      "task_events": {
+        "summary": "订阅任务进度",
+        "description": "以 Server-Sent Events 推送，直到任务结束或超时。"
+      },
+      "task_get": {
+        "summary": "查询任务",
+        "description": "返回任务状态，完成后附带结果。结果会过期，任务不存在时请重新提交。"
+      },
+      "tools_decode": {
+        "summary": "反解签名参数",
+        "description": "把签名参数拆开，说明其中到底是什么——即 /tools/sign 的逆向。粘贴一整条已签名的 URL，其中每个参数都会按它实际封住的那段字符串来解读。属于哈希的值会明确标注为哈希，并与你提供的候选输入做比对，而不是凭空猜测；由平台下发而非计算得出的值也会如实说明。"
+      },
+      "tools_identity": {
+        "summary": "铸造并返回一个游客身份",
+        "description": "驱动真实浏览器访问平台，返回平台下发的 cookie —— 这部分工作无法用算法生成。耗时数十秒，需要 identity:manage 权限和 operator 角色，且不做任何存储；若希望将身份加入本实例的身份池，请改用管理端的铸造接口。"
+      },
+      "tools_parse_batch": {
+        "summary": "批量识别链接与作品 ID",
+        "description": "`/tools/parse-url` 一次只能处理一个，而人们手上真正有的是从表格里复制出来的一列，或者是抓取脚本的输出。这个接口不发起任何网络请求，所以一千行也只是一次调用、不消耗身份。每一行先当链接解析，再当裸作品 ID 解析；ID 会用它自身内嵌的时间戳校验——两个平台的作品 ID 高 32 位就是签发时的 Unix 秒。这个校验区分不了“从来不存在”和“已被删除”——看起来合理的 ID 就是合理的——但它能免费指出输入错误，而不是让错误变成一次消耗身份、最后得到同样答案的上游请求。空行和重复行会被自动去掉。"
+      },
+      "tools_parse_url": {
+        "summary": "识别分享链接",
+        "description": "在不发起任何请求的前提下解析链接指向：平台、资源类型，以及标识该资源的 ID。这就是 v4 中十余个独立 ID 提取接口的合并版本。短链必须实际跟随跳转才能解析，因此会返回「需要展开」。"
+      },
+      "tools_sign": {
+        "summary": "为平台 API URL 计算签名",
+        "description": "计算平台 API URL 所需的签名参数。纯算术运算，不消耗身份；B 站的两个 WBI 公开 key 需要从平台自己的 nav 接口获取，最多每小时一次。User-Agent 会被计入签名，因此发送请求时必须使用响应中回显的同一个 UA；TikTok 还会校验 TLS 指纹与 UA 是否自洽。"
+      },
+      "users_create": {
+        "summary": "创建控制台账号",
+        "description": "创建一个控制台账号。"
+      },
+      "users_delete": {
+        "summary": "删除控制台账号",
+        "description": "删除一个控制台账号并吊销其会话。"
+      },
+      "users_list": {
+        "summary": "列出控制台账号",
+        "description": "所有控制台账号。"
+      },
+      "users_update": {
+        "summary": "修改角色或重置密码",
+        "description": "管理员代他人执行的密码重置。"
+      },
+      "watchlist_create": {
+        "summary": "监视一个目标",
+        "description": "开始按计划采集某个作者或作品。"
+      },
+      "watchlist_delete": {
+        "summary": "停止监视一个目标",
+        "description": "不再采集该目标。"
+      },
+      "watchlist_list": {
+        "summary": "列出被监视的目标",
+        "description": "本实例定时采集的所有目标，最快到期的在前。"
+      },
+      "watchlist_pause": {
+        "summary": "暂停全部监视目标",
+        "description": "停止所有定时采集，但保留列表。"
+      },
+      "watchlist_update": {
+        "summary": "修改或暂停一个监视目标",
+        "description": "修改采集间隔、翻页深度，或是否继续运行。"
+      },
+      "popular": {
+        "summary": "站点精选的作品列表",
+        "description": "获取站点自己维护的榜单中的一页：B 站的综合热门、每周必看、入站必刷或排行榜。仅 B 站支持。"
+      },
+      "content_parts": {
+        "summary": "视频的分P列表",
+        "description": "按顺序列出多P视频的每一P，含序号、标题和时长。仅 B 站支持。"
+      },
+      "related_posts": {
+        "summary": "作品的相关推荐",
+        "description": "获取平台播放页在某个作品旁推荐的作品，一次一批。推荐结果会变，同样的请求稍后可能得到不同的答复；不存在的作品 ID 也会得到一批作品，所以有答复不代表作品存在。"
+      },
+      "music_detail": {
+        "summary": "音乐详情",
+        "description": "获取作品所用的一首音乐：标题、作者、时长、音频与封面，以及使用它的作品数、它是否为某个作品的原声、发布它的账号。支持抖音与 TikTok。"
+      },
+      "music_posts": {
+        "summary": "使用某音乐的作品",
+        "description": "获取使用同一首音乐的作品，一次一页。两个平台的游客身份都能翻页。支持抖音与 TikTok。"
+      },
+      "hashtag_detail": {
+        "summary": "话题详情",
+        "description": "获取一个话题页：名称、封面、各项计数，以及列出其作品所用的 ID。两个平台都支持按链接或 ID 查询，TikTok 还支持按名称。"
+      },
+      "hashtag_posts": {
+        "summary": "话题下的作品",
+        "description": "按话题的数字 ID 获取其下的作品，一次一页。支持 TikTok；抖音对游客身份不返回任何内容，暂未提供。"
+      },
+      "search_posts": {
+        "summary": "搜索作品",
+        "description": "按关键词搜索作品，一次一页。B 站的游客身份可以翻页；TikTok 只给游客一页较少的结果，之后的每一页都需要已登录的身份；抖音拒绝游客搜索，暂未提供。"
+      },
+      "search_authors": {
+        "summary": "搜索账号",
+        "description": "按关键词搜索账号，一次一页，每个账号都带有作者类接口所用的 ID。B 站的游客身份可以翻页；TikTok 只回答游客的第一页。"
+      },
+      "author_mixes": {
+        "summary": "作者的合集列表",
+        "description": "获取作者发布的合集，一次一页——抖音的合集、TikTok 的播放列表、B 站的合集——每一个都带有 /mix/posts 所用的 mix_id。"
+      },
+      "live_room": {
+        "summary": "直播间信息",
+        "description": "获取一个直播间：是否正在直播、标题、封面与主播，正在直播时还有观看人数和拉流地址（每种协议、每档清晰度各一条）。可以用直播间链接、链接里的标识来查；抖音和 TikTok 还可以用本场直播自己的 live_id 来查，抖音 App 分享出来的链接带的也是它。只读取直播间，不做任何录制。"
+      },
+      "live_ranking": {
+        "summary": "直播间观众榜",
+        "description": "获取一场直播的观众榜，按 /live 返回的 live_id 来查：最多 200 位观众，从榜首开始，顺序与直播间页面一致；游客拿不到背后的分值，所以不返回分值。仅限抖音。选择了不上榜的观众只保留名次，不返回账号。"
+      },
+      "live_status": {
+        "summary": "直播间是否在播",
+        "description": "一次查询最多 100 场直播是否仍在进行，按 /live 返回的 live_id 来查：每场一个 is_live，顺序与请求一致。支持抖音和 TikTok。已结束的直播和不存在的 ID 都返回 false。"
+      },
+      "trending": {
+        "summary": "热榜",
+        "description": "获取一整张热榜：大家正在搜索的词，按名次排列，带热度和平台自己的词条页面。支持抖音的四个榜单与 B 站热搜。"
+      }
+    },
+    "param": {
+      "action": "仅返回该动作，例如 `settings.update`。",
+      "api_keys_update.key_id": "要修改的密钥。",
+      "audit_list.before_id": "与 `before` 一起使用，填已经显示的最后一条的 ID：与它时间戳相同、排在它之后的条目也会返回，翻页时不会漏掉任何一条。",
+      "audit_list.user_id": "仅返回该控制台账号的操作。",
+      "authenticated": "为 true 时只返回已登录的身份，为 false 时只返回访客身份。",
+      "author_uid": "仅返回该作者的作品。",
+      "availability": "仅返回上游状态为此的作品。",
+      "aweme_id": "作品 ID，与 url 二选一，二者必须且只能提供一个。B 站是 BV 号（如 BV1xx411c7mD），也接受 av 号。",
+      "before": "仅返回早于该时间戳的条目，翻页时用它。",
+      "board": "要读的榜单：hot（综合热门，按页码翻页）、weekly（每周必看；游标是上一期的期号）、precious（入站必刷，只有一页）或 rank（全站排行榜 Top 100，只有一页）。",
+      "collection": "仅返回该合集内的作品，按合集 ID 过滤。与这里其他过滤条件不同，它不是作品自身的属性——是有人把作品放进去的。",
+      "collection_id": "要操作的合集 ID。",
+      "comment_id": "要查询回复的父评论 ID，可从评论接口的返回中获得。",
+      "confirm": "对标记为「有破坏性」的配置项必须显式确认。",
+      "content_id": "作品 ID。",
+      "count": "每页条数。上限随平台不同：抖音最多 50，TikTok 超过 35 就会拒绝，B 站超过 20 就会拒绝。超出时返回 400 并说明上限——拒绝，而不是悄悄截短。",
+      "cursor": "上一页返回的游标，首页请留空。",
+      "download_id": "发起下载时返回的下载 ID。",
+      "downloads_list.q": "作品标题或作者（以归档中的为准）中的子串，也可以是作品 ID 的一部分。按子串匹配而非按词匹配，因此中英文行为一致。",
+      "duration_bucket": "仅返回该时长区间的作品。",
+      "enabled": "仅返回已启用的条目，或仅返回已暂停的。",
+      "endpoint": "仅限该端点。",
+      "entry_id": "监控列表条目 ID。",
+      "explain": "把这次请求原样报告回来——已签名的 URL、请求头，以及该身份的 cookie，这样就能在本实例之外复现同一个请求。返回内容含凭据，因此需要 `identity:manage` 权限和 operator 角色，会记入审计日志，并且对没有该权限的读取者会从存储的任务结果中剔除。它隐含 `refresh`：解释一个命中缓存的响应，描述的会是本次请求根本没发出过的那一次调用。",
+      "hashtag_detail.name": "仅 TikTok：话题名称，带不带 # 都可以，可代替 url 与 hashtag_id。抖音只能按 ID 查询话题。",
+      "hashtag_id": "话题的数字 ID，可代替 url：抖音话题链接末尾的数字，或 /hashtag 返回的 hashtag_id。",
+      "healthy_only": "仅列出上次探测通过的代理。",
+      "hours": "统计窗口回溯多少小时。",
+      "identities_list.identity_id": "只返回这一个身份，无论是否已退休。",
+      "identity": "按 ID 指定用哪个身份发送，且只用这一个。用于只有该账号能看到的内容，例如用你从自己浏览器导入的 Cookie 抓取自己的私密作品。需要 identity:manage 权限；该请求永远不会由其他身份代发，也永远不会命中响应缓存。",
+      "identity_id": "要操作的身份 ID。",
+      "include_raw": "在归一化结果之外，同时返回平台自身的原始响应。",
+      "include_retired": "同时列出已退休的身份。它们会为统计保留 90 天，不再持有任何 Cookie。",
+      "key": "要操作的配置项，取值见列表接口。",
+      "key_id": "要吊销的密钥 ID。",
+      "keyword": "要搜索的内容，就像在平台搜索框里输入的那样。",
+      "kind": "仅返回该类型的条目。",
+      "live_id": "仅限抖音和 TikTok：本场直播自己的 ID，可代替 url 和 room_id——即直播间信息里返回的 live_id，或抖音 App 分享链接里的那串数字。",
+      "live_ranking.live_id": "要查询的那场直播：直播间正在直播时 /live 返回的 live_id。",
+      "live_ids": "要查询的直播，用英文逗号分隔：/live 返回的 live_id，一次最多 100 个。",
+      "lang": "人类可读文本的响应语言，可选 en 或 zh，其余值一律回退英文。",
+      "limit": "最多返回多少条。",
+      "mine_only": "仅列出你自己创建的密钥，而不是所有人的。",
+      "minutes": "回溯多少分钟。早于日志保留期的记录已经不在了。",
+      "mix_id": "要读取的合集、播放列表或 B 站合集：/user/mixes 返回的 mix_id。作品里也带着它：抖音在 mix_info 字段，TikTok 在 playlistId 字段。",
+      "music_id": "音乐 ID，可代替 url：作品 music 字段中的 music_id，或音乐链接末尾的数字。两者只能提供一个。",
+      "name": "文件名，需与下载记录中列出的完全一致。",
+      "offset": "跳过多少条。",
+      "on_disk": "为 true 时仅返回文件仍在本地的下载记录。",
+      "outcome": "仅返回这些结果类型。重复该参数可同时指定多个。",
+      "part": "仅 B 站：多P视频的第几P，从 1 开始。链接里的 ?p= 也表示同一个意思。不传则为第 1 P。",
+      "pinned": "仅返回已固定的下载，或仅返回未固定的。",
+      "platform": "请求针对的平台：douyin、tiktok 或 bilibili，必须与传入的链接一致。并非每个接口在每个平台上都有。",
+      "proxy": "通过该代理发起上游请求，需填写完整 URL，例如 http://host:port。除非管理员启用了 security.request_proxy，否则该参数会被拒绝。",
+      "proxy_id": "要操作的代理 ID。",
+      "q": "标题或描述中的子串。按子串匹配而非按词匹配，因此中英文行为一致。",
+      "refresh": "忽略缓存和正在进行中的相同任务，重新发起一次请求。有两个机制会让重复调用拿到上一次的结果——本实例会合并到一个已在运行或刚刚完成的相同任务，以及会缓存整理后的响应体——这个参数会同时关掉两者。新取到的结果仍然会写入缓存。它会消耗一个身份和一次上游请求，适合用来确认内容有没有变化，而不是每次调用都带上。缓存能存多久取决于请求的内容，在控制台里可以改：单个作品用 cache.content_ttl（默认 30 分钟），作者主页用 cache.author_ttl（15 分钟），所有分页接口用 cache.list_ttl（5 分钟）。条目到期自动清除，同时 Redis 设了低于容器上限的内存封顶，快满时会先淘汰最久未用、且带过期时间的键，所以缓存不会无限增长。",
+      "request_id": "仅返回该请求 ID 对应的那一条。",
+      "request_log.identity_id": "仅返回由该身份发出的请求。",
+      "request_log.proxy_id": "仅返回经由该代理发出的请求。",
+      "room_id": "直播间，可代替 url：live.douyin.com 或 live.bilibili.com 链接中的数字；TikTok 则填正在直播的账号的 @用户名。",
+      "rotation": "只返回在所有接口上参与轮换的身份（rotating）、只服务指定它的请求的身份（reserved），或只在部分接口上参与轮换的身份（limited）。",
+      "sec_user_id": "作者的稳定 ID，与 url 二选一。在 TikTok 上即 secUid；在 B 站上是数字 mid。",
+      "session_ref": "会话摘要，取自列表接口。",
+      "sort": "hot（最热）或 new（最新）。只有 B 站可选；抖音和 TikTok 按自己的方式排序，接受 hot，拒绝 new。翻到后面的页时，带上游标的同时请传同一个值。",
+      "source": "只返回铸造的身份，或只返回导入的身份。",
+      "state": "仅返回处于该状态的条目。",
+      "step": "分桶宽度，单位为秒。",
+      "stored": "为 true 时仅返回媒体文件当前仍由本实例保存的作品，false 则返回其余的。和 `collection` 一样，它描述的是「留下了什么」而不是作品本身。",
+      "tag": "仅返回带该标签的作品。",
+      "task_id": "提交任务时返回的任务 ID。",
+      "timeout": "流保持打开多少秒后关闭。",
+      "transcription_id": "发起转写时返回的转写 ID。",
+      "transcriptions_list.q": "转写文本、作品标题（以归档中的为准）或作品 ID 中的子串。按子串匹配而非按词匹配，因此中英文行为一致。",
+      "trending.board": "哪一个榜单：hot（默认）、entertainment（娱乐）、society（社会）或 challenge（挑战）。抖音四个都有；B 站只有 hot，其他会被拒绝。",
+      "url": "资源链接。允许直接传入包含链接的整段文本，因此可以把 App 复制的内容原样提交。",
+      "user_id": "要操作的控制台账号 ID。",
+      "wait": "保持连接直到任务完成，最多等这么多秒——**这就是把调用变成同步的方式**。在时限内完成返回 200 和结果；没完成则返回 202、任务 ID 和 `state: running`，这不是错误，也不会丢任何东西。超过参数上显示的 `maximum` 上限会返回 400，是拒绝而不是悄悄缩短。省略或传 0 会立刻返回 202。详见本文档顶部的说明。",
+      "serves": "只返回轮换可以分配给这个接口的身份，例如 `douyin.author_posts`：包括正常参与轮换的，以及清单里列了这个接口的。只服务指名请求的身份不会匹配；接口从第一页起就需要登录时，游客身份也不会匹配。",
+      "ready": "只返回调度器此刻会分配出去的身份：正常的，以及作为兜底的降级身份。和 `serves` 一起用时，就是覆盖卡片里「可分配」数到的那些身份。"
+    },
+    "field": {
+      "ApiKeyCreate": {
+        "expires_at": "密钥的失效时间，必须是将来的时间点；留空表示永不过期。",
+        "name": "这个密钥是做什么用的。会显示在列表和审计日志里。",
+        "rate_limit": "每分钟请求数。留空表示使用实例默认值。仅用于防滥用——本项目不涉及计费。",
+        "scopes": "该密钥被允许做什么。密钥永远不能获得创建者本人没有的权限，所以上限就是你自己的权限。"
+      },
+      "ApiKeyUpdate": {
+        "name": "给密钥改名。会显示在列表和审计日志里。",
+        "scopes": "用这份列表整体替换密钥的作用域。和创建时一样，不能超出你自己拥有的作用域。"
+      },
+      "ArchiveDelete": {
+        "items": "要操作的作品。超过上限请分两次调用，而不是让一个事务横跨整个归档。",
+        "media": "同时删除已保存的媒体文件。默认为 true——当屏幕上是一段已经存在硬盘上的视频时，「删除」本来就是这个意思；设为 false 则保留文件、只删记录。"
+      },
+      "BackfillRequest": {
+        "author_id": "作者的稳定 ID——抖音是 `sec_user_id`，TikTok 是 `secUid`，B 站是数字 `mid`——而不是用户名，用户名是可以改的。",
+        "pages": "回溯抓取多少页作品。每页对应一次上游请求。",
+        "platform": "作者所在的平台。"
+      },
+      "BackupRequest": {
+        "include_identities": "把身份池及其 cookie 一并备份。默认关闭：一个身份绑定在特定出口和特定指纹上，把它恢复到另一台机器等于复活一份不该从新地址使用的凭据。"
+      },
+      "BatchItem": {
+        "include_raw": "同时返回这一条的平台原始响应（未解析）。",
+        "url": "一条链接，`/parse` 接受的任意形式都可以。"
+      },
+      "BatchParseRequest": {
+        "text": "链接、作品 ID，或整段分享文案，每行一条。空行和重复项会被丢弃。"
+      },
+      "BatchRequest": {
+        "callback_url": "每条结果完成时 POST 到哪里。仅限白名单内的主机。",
+        "items": "要提交的链接。每条各自生成一个任务、各有自己的 ID 和结局，因此一条坏链接不会把整个请求糊成一个错误。"
+      },
+      "CollectionCreate": {
+        "name": "合集名称。不区分大小写唯一，由数据库保证。",
+        "note": "自由备注，供你自己使用。"
+      },
+      "CollectionUpdate": {
+        "name": "重命名。整个字段省略则名称保持不变。",
+        "note": "替换备注。省略字段表示保持不变，显式传 null 表示清空——两者是区分开的，所以不会悄悄抹掉没人提过的文字。"
+      },
+      "ContentRef": {
+        "content_id": "`aweme_id`、TikTok 的对应 ID，或 B 站的 BV 号。是字符串而非整数：19 位 ID 超出 JavaScript 安全整数范围，JSON 解析器会把它四舍五入。",
+        "platform": "作品所在的平台。"
+      },
+      "ContentSelection": {
+        "items": "要操作的作品。超过上限请分两次调用，而不是让一个事务横跨整个归档。"
+      },
+      "DecodeRequest": {
+        "parameter": "当取值形态有歧义时，指明它是哪个参数。",
+        "user_agent": "待校验的 User-Agent，用来比对签名当时用的那个。",
+        "value": "一条已签名的 URL、一段 query、一对 `name=value`，或者单独一个参数值。"
+      },
+      "DedupeRequest": {
+        "dry_run": "只报告会删掉哪些，不实际删除。"
+      },
+      "DiagnoseRequest": {
+        "include_smoke_test": "是否执行端到端那一步——它会抓取一条固定的公开链接，因此会消耗一个身份。跳过则整个自检完全在本地进行。",
+        "platform": "端到端那一步从哪个平台抓取。留空时自动选择本实例能服务的平台：轮换中活跃身份最多的那个；既没有浏览器也没有身份的实例选 Bilibili。"
+      },
+      "DownloadRequest": {
+        "content_id": "作品 ID，取归档中保存的形式。是字符串而非整数：19 位 ID 超出 JavaScript 安全整数范围。",
+        "part": "仅 B 站：多P视频的第几P，从 1 开始。不传时取链接里 `?p=` 指定的那一P，没有则为第 1 P。第 2 P 起存放在第 1 P 旁边单独的目录里。",
+        "platform": "作品所在的平台。提供了 `url` 时可由它推断。",
+        "skip_existing": "当本实例已经保存过该作品的媒体时，直接返回已有的下载记录，而不重新抓取。重跑一个订阅时想要的正是这个：三条新作品，另外四十条已经在硬盘上了。",
+        "url": "分享链接，或包含链接的分享文案。只会取出其中的作品 ID 使用；这里的内容不决定去连哪个主机。"
+      },
+      "TranscriptionRequest": {
+        "download_id": "包含源视频的下载记录 UUID。",
+        "normalize": "对数字、日期、金额等表达执行基于上下文的中文逆文本归一化。",
+        "refresh": "创建新的转写记录，而不是复用已有成功结果。"
+      },
+      "TranscriptionDeleteRequest": {
+        "ids": "需要在同一个原子操作中删除的已结束转写记录 ID。"
+      },
+      "DtkError": {
+        "code": "机器可读的稳定标识符，永不翻译。",
+        "details": "这个错误具体是关于什么的，按名称组织——出错的字段、拒绝请求的端点、没找到的 ID。具体结构随 `code` 而定；其中永远不含凭据。",
+        "message": "给人看的句子，按调用方要求的语言渲染。",
+        "retry_after": "对于会自行恢复的错误，还需要等待多少秒。",
+        "retryable": "同样的请求再发一次有没有可能成功。凡是请求本身的问题都是 false，这样读到它的 agent 就不会一直重试一个永远不会成功的 URL。"
+      },
+      "DtkResponse": {
+        "data": "该接口自己的返回内容。",
+        "error": "出了什么问题，或为 null。每次失败时都会有。",
+        "meta": "关于这次调用本身而非其结果：报 bug 时该引用的 request id、答案是否来自缓存、耗时多少，以及有翻页时的游标。",
+        "success": "只要 `error` 不为空就是 false，反之亦然。"
+      },
+      "IdentityBundle": {
+        "dry_run": "只报告文件里有什么，不实际写入。",
+        "identities": "导出文件里的 `identities` 数组，原样传入。",
+        "proxy_id": "把导入的每个身份都绑定到这个出口。",
+        "version": "导出文件的格式版本。是校验而非信任：来自更新版本的文件可能带有本版本会静默丢弃的字段。"
+      },
+      "IdentityExport": {
+        "identity_ids": "要导出的身份。导出文件包含每个身份的完整 cookie，请按凭据文件对待。"
+      },
+      "IdentityImport": {
+        "cookies": "cookie 本体，支持人们手上实际会有的各种形式：`Cookie:` 请求头、DevTools 导出的 JSON、cookies.txt 文件，或 `name=value` 键值对。格式由程序自动识别，不需要你声明。",
+        "dry_run": "只报告识别到了什么，不实际存储。粘错的 cookie 一眼能看出来，事后调试就难多了。",
+        "language": "那个浏览器的 `navigator.language`，例如 `zh-CN`。",
+        "platform": "这份 cookie 属于哪个平台。",
+        "proxy_id": "以该身份发出的请求只走这个出口。留空时，这个身份会一直从这台服务器直连出去：身份的出口在存入时就固定了。",
+        "reserved": "存入时就不参与轮换，只服务带 identity= 指定它的请求。等同于把它的轮换设为空列表，只是在轮换有机会分配它之前就设好了。",
+        "timezone": "那个浏览器的 IANA 时区，例如 `Asia/Shanghai`。应与出口所在地一致。",
+        "user_agent": "这份 cookie 所来自的浏览器的 User-Agent。两个平台都会把它计入签名，所以用另一个 UA 发送这份 cookie，是它们看得见的自相矛盾。",
+        "note": "和它一起保存的备注，比如它登录的是哪个账号。只能一行，去掉首尾空格后最多 200 个字符。"
+      },
+      "IdentityRequest": {
+        "platform": "为哪个平台铸造访客会话。",
+        "proxy": "在这个出口后面铸造，使 cookie 与你之后使用它的地址相符。"
+      },
+      "LoginRequest": {
+        "password": "该账号的密码。输错会按账号和来源地址分别限速。",
+        "username": "控制台账号。"
+      },
+      "MintRequest": {
+        "count": "铸造几个。每一个都要驱动一个真实的无头浏览器去访问平台，因此每个身份耗时数十秒。",
+        "platform": "为哪个平台铸造新身份。",
+        "proxy_id": "在这个出口后面铸造，并把身份绑定到它。身份是从某一个地址铸造出来的，之后必须继续用同一个地址。留空时，每个身份会取一个健康且尚未绑定任何身份的代理；只有完全没有配置代理时才直连铸造。"
+      },
+      "NotificationTest": {
+        "channel": "通过哪个已配置的通道发送测试。留空则所有已配置的通道各发一次。"
+      },
+      "ParseRequest": {
+        "callback_url": "任务完成时把结果 POST 到哪里，用于替代轮询。主机必须在运营方的 `security.url_allowlist` 里。",
+        "include_raw": "同时返回平台自己的原始响应（未解析）。体积很大——单条作品可达数百 KB——所以默认关闭。",
+        "url": "分享链接、作品页 URL，或平台 App 复制到剪贴板的整段文案（链接埋在其中）。短链会被自动跟随展开。"
+      },
+      "PasswordChange": {
+        "current_password": "当前正在使用的密码。即使是管理员改自己的密码也会校验。",
+        "new_password": "新密码。该账号的其他所有会话都会被登出。"
+      },
+      "RotationRequest": {
+        "endpoints": "轮换可以把这个身份分配给哪些接口。null 表示全部接口，这是每个身份的默认值；空列表表示一个都不分配，只有用 `identity=` 指定了它的请求才会用到它；也可以写接口名，例如 `douyin.author_posts`。这个字段必填，这样漏传不会被当成解除限制。"
+      },
+      "PinRequest": {
+        "pinned": "为 true 时该下载将永久豁免按体积清理；为 false 则重新纳入清理范围。"
+      },
+      "ProxyCreate": {
+        "country": "出口所在国家的 ISO 代码。用于让在它后面铸造的身份拥有自洽的区域设置；留空则在首次探测时实测。",
+        "label": "在控制台里怎么称呼它。",
+        "timezone": "出口所在的 IANA 时区，理由同 `country`。",
+        "url": "出口地址，形如 `scheme://user:pass@host:port`。加密存储，且永不完整返回。"
+      },
+      "ProxyImport": {
+        "label": "应用到这次粘贴的每一条代理上；多于一条时会自动编号。",
+        "text": "代理列表，每行一条，支持常见的几种写法——`host:port:user:pass`、`user:pass@host:port`，或完整 URL。"
+      },
+      "ProxyUpdate": {
+        "country": "更正所在国家。",
+        "healthy": "覆盖上次探测的结论。适用于你确知可用但探测失败的出口，反之亦然。",
+        "label": "重命名。",
+        "timezone": "更正所在时区。",
+        "url": "更换出口地址。"
+      },
+      "RecheckRequest": {
+        "limit": "检查多少条作品。每一条都是一次经由身份池的真实请求，所以数量在这里就设了上限，而不是交给调用方决定。",
+        "older_than_days": "只重新检查最后一次见到至少是这么多天以前的作品。"
+      },
+      "RestoreRequest": {
+        "confirm": "必填。恢复操作会把归档中的用户、API 密钥和配置写入一个正在运行的实例，且无法从控制台撤销。",
+        "path": "备份列表返回的文件名——是文件名，不是路径。服务端会把它拼到备份目录下，因此任何带目录的取值都会被拒绝，而不是被解析。"
+      },
+      "RetireRequest": {
+        "reason": "记录到该身份的事件时间线上，方便日后有人查阅时知道它为什么被退役。"
+      },
+      "RetryRequest": {
+        "download_id": "要重试的下载，取自下载列表。"
+      },
+      "SettingUpdate": {
+        "confirm": "对标记为 SENSITIVE 的配置项必填。放宽 URL 白名单、或打开下载代理，不该是误点一下就发生的事。",
+        "value": "新的取值，类型需与该配置项声明的一致。在期望数字的地方传字符串会被拒绝，而不是自动转换。"
+      },
+      "SetupInit": {
+        "password": "该账号的密码。以哈希形式存储，永不返回。",
+        "token": "本实例首次启动时打印到日志里的初始化令牌。只能使用一次，且不会再次签发。",
+        "username": "第一个管理员的用户名。可用字母、数字、点、短横线和下划线。"
+      },
+      "SignRequest": {
+        "cookies": "这个请求将要携带的 cookie，任意粘贴格式均可。抖音自己的签名是对其中的访客 ID 计算的，缺了它就无法产出签名请求头。",
+        "ms_token": "要封进签名里的 TikTok 会话令牌。",
+        "platform": "用哪个平台的算法来签名。",
+        "url": "要签名的 API URL，需包含 query。",
+        "user_agent": "这个请求将要使用的 User-Agent。"
+      },
+      "UserCreate": {
+        "password": "该账号的初始密码。以哈希形式存储，永不返回。",
+        "role": "该账号被允许做什么。你不能创建一个角色高于你自己的账号。",
+        "username": "可用字母、数字、点、短横线和下划线。唯一，且创建后不可改名。"
+      },
+      "UserUpdate": {
+        "password": "设置新密码，同时登出该账号的所有会话。",
+        "role": "修改该账号被允许做什么。最后一个管理员不能被降级。"
+      },
+      "WatchCreate": {
+        "interval_seconds": "多久跑一次。留空表示 `watchlist.default_interval_seconds`。低于 `watchlist.min_interval_seconds` 的取值会被拒绝，而不是悄悄抬到一个你没要求的数字。",
+        "kind": "`author` 监控某人是否有新作品，`content` 监控某条作品的各项计数。",
+        "label": "在控制台里怎么称呼它。留空则用第一次成功运行的结果自动填上，所以直接粘一个裸 ID 也没问题。",
+        "pages": "一次运行翻多少页作者作品。默认 1 页是有用的默认值：监控关注的是「新增了什么」，回溯抓取是另一回事。",
+        "platform": "监控目标所在的平台。",
+        "target_id": "`sec_user_id` 或 `aweme_id`，按平台自己的叫法。"
+      },
+      "WatchUpdate": {
+        "enabled": "暂停或重新启用。暂停的条目会保留它的历史。",
+        "interval_seconds": "修改运行频率。下限与创建时相同。",
+        "label": "修改它在控制台里的名称。传 null 或空字符串即清除，下一次成功运行会重新用平台上的名字填上；不传则保持不变。",
+        "pages": "修改一次运行翻多少页。"
+      },
+      "IdentityUpdate": {
+        "note": "备注；传 null 即清除。只能一行，去掉首尾空格后最多 200 个字符；空白也会清除。这个字段必填，这样空的请求体不会被当成清除备注。"
+      }
+    },
+    "response": {
+      "200": "请求结果。",
+      "201": "已创建，`data` 是新建的资源。",
+      "202": "已接受并排队，`data.task_id` 指明可轮询的任务。",
+      "400": "请求被拒绝，`error.code` 说明原因。",
+      "401": "缺少 API 密钥或会话，或者它已失效。",
+      "403": "已通过认证，但该凭据不具备所需的 scope。",
+      "404": "资源不存在，或平台表示该内容已消失。",
+      "429": "触发限流，`error.retry_after` 说明何时可以重试。",
+      "500": "未处理的错误。可用 `meta.request_id` 在日志中定位。",
+      "502": "平台拒绝了请求、扣留了数据，或改变了响应结构。",
+      "503": "身份池、队列或某个上游接口不可用。",
+      "error": "请求失败。code 字段稳定且机器可读，message 字段按语言本地化。"
+    },
+    "security": {
+      "api_key": "在控制台的「API Key」页面创建，然后放在这个请求头里发送。也可以用 Bearer 授权头。",
+      "session": "登录控制台后自动设置。浏览器会自动带上，所以你在已登录状态下可以直接用这里的「Try it out」。"
+    },
+    "envelope": "所有响应都是这个形状，出错时也一样。`data` 装的是各接口自己的数据，`success` 为 false 时它一定是 null；`error.code` 是稳定的机器可读标识，永远不翻译，而 `error.message` 会按你请求的语言渲染。"
+  },
+  "circuit": {
+    "reason": {
+      "risk_across_identities": "最近 {samples} 次请求中有 {risk_rate}% 触发风控，涉及 {identities} 个身份"
+    }
+  },
+  "diagnose": {
+    "reason": {
+      "components_unreachable": "无法连接：{components}",
+      "components_browser_rpc_down": "postgres 与 redis 可以连接，但 browser-rpc 不可用（{detail}）",
+      "components_sidecar_down": "postgres 与 redis 可以连接，但已配置的 {components} 没有响应",
+      "components_db_connections": "高负载时 api 和 worker 合计最多会开 {budget} 个数据库连接，而 Postgres 只接受 {max_connections} 个",
+      "components_ok": "所有组件均可连接",
+      "egress_unreachable": "无法直连任何平台域名",
+      "egress_partial": "{total} 个平台域名中有 {reachable} 个可以连接",
+      "egress_ok": "所有平台域名均可连接",
+      "proxies_no_session": "没有可用的数据库会话或加密器，无法读取代理列表",
+      "proxies_unreadable": "读取代理列表失败，请看组件检查那一步",
+      "proxies_none": "未配置任何代理",
+      "proxies_all_failed": "已配置的 {total} 个代理全都没有响应",
+      "proxies_partial": "{total} 个代理中有 {working} 个响应",
+      "proxies_ok": "{working} 个代理全部响应正常",
+      "pool_no_session": "没有可用的数据库会话",
+      "pool_unreadable": "读取身份表失败，请看组件检查那一步",
+      "pool_empty": "没有处于活跃状态的身份",
+      "pool_below_minimum": "活跃身份 {active} 个，低于下限 {minimum} 个",
+      "pool_ok": "活跃身份 {active} 个",
+      "signing_no_registry": "未提供签名器注册表",
+      "signing_no_browser_rpc": "未配置 browser-rpc，没有第二个签名器可以和原生算法对照",
+      "signing_mismatch": "在 {platforms} 上，原生签名与浏览器签名结果不一致",
+      "signing_ok": "原生签名与浏览器签名一致",
+      "smoke_not_configured": "未配置冒烟测试链接",
+      "smoke_failed": "端到端抓取失败：{error}",
+      "smoke_ok": "端到端抓取成功",
+      "step_crashed": "检查本身出错了：{error}",
+      "signing_not_comparable": "无法比对 {platforms} 的纯算与浏览器签名"
+    },
+    "action": {
+      "components_unreachable": "请确认 postgres 与 redis 容器正在运行，并检查 DTK_DATABASE_URL、DTK_REDIS_URL 是否指向它们。",
+      "components_browser_rpc_down": "身份铸造和签名回退都不可用。请启动浏览器容器，或者手动导入 Cookie 并继续使用原生签名器。",
+      "components_sidecar_down": "容器恢复响应之前，媒体下载或转写都会失败。请启动对应的 compose profile；如果这台机器本就不运行它，请删掉 DTK_DOWNLOADER_URL 或 DTK_TRANSCRIBER_URL。",
+      "components_db_connections": "流量把连接池占满之后，请求会以 \"too many clients already\" 失败。请调小 .env 里的 DTK_DB_POOL_SIZE 和 DTK_DB_MAX_OVERFLOW，或者调大 Postgres 的 max_connections（docker/compose.yml 在 postgres 的启动命令里设置它），然后重启。",
+      "egress_unreachable": "这台机器没有通往平台的可用线路。请检查 DNS、主机防火墙，以及出站流量是否必须走代理。",
+      "egress_partial": "访问不通的那个平台将完全依赖可用的代理。",
+      "proxies_none": "所有身份都会共用这台机器的出口 IP。初次试用没有问题，但身份池一忙就会带来关联风险。",
+      "proxies_all_failed": "请检查代理的账号密码，以及服务商是否仍然放行这台机器的 IP。绑在失效代理上的身份无法自行恢复。",
+      "proxies_partial": "请停用或更换失败的代理，否则绑在上面的身份会一直失败。",
+      "pool_empty": "请铸造身份或导入 Cookie。身份池里一个可用身份都没有时，所有请求都会被拒绝或排队。",
+      "pool_below_minimum": "请再铸造一些身份；如果这是有意为之，也可以调低 pool.min_size。",
+      "signing_no_browser_rpc": "配置 DTK_BROWSER_RPC_URL 即可启用影子比对，在风控率上升之前就发现失效的签名算法。",
+      "signing_mismatch": "原生算法已经和平台的实现产生偏差。这些平台目前改由 browser-rpc 签名；请附上这份报告提交 issue，以便更新算法。",
+      "smoke_failed": "请先看上面失败的步骤；冒烟测试失败通常是代理、身份池或签名环节的连带结果，而不是它本身的问题。",
+      "step_crashed": "这是 dtk 的缺陷。请附上这份报告反馈给我们。",
+      "signing_not_comparable": "浏览器参考实现的算法版本与本地端口不同，因此结构化比对无法给出任何结论。纯算路径不受影响，仍在正常提供服务；如需恢复该检查，请依据当前 bundle 重新推导校验不变量。"
+    }
+  },
+  "health": {
+    "detail": {
+      "timeout": "{seconds} 秒内无响应",
+      "not_configured": "未配置"
+    }
+  },
+  "identity": {
+    "import": {
+      "warning": {
+        "no_cookies": "无法从粘贴的内容里解析出任何 cookie。",
+        "logged_in_session": "这份 cookie 带着已登录的会话，作用等同于账号密码。请使用专门的小号，不要用常用账号。",
+        "unknown_browser": "无法从 User-Agent 判断浏览器，也就没有可以匹配的 TLS 指纹。请填写复制这些 cookie 时所用的完整 User-Agent。",
+        "no_useful_cookies": "可选 cookie 一个都没有，这个身份会很脆弱。补上 {optional} 里的任意一个都会好很多。"
+      }
+    }
+  },
+  "api": {
+    "body_limit": {
+      "exceeded": "请求体超出本实例允许的大小，上限为 {limit_kib} KiB。"
+    }
+  }
+}

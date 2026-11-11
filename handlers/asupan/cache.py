@@ -9,7 +9,7 @@ SEND_ATTEMPTS = 5
 
 async def _send_next_asupan(bot, keyword):
     if not LOG_CHAT_ID:
-        raise RuntimeError("LOG_CHAT_ID kosong")
+        raise RuntimeError("LOG_CHAT_ID is empty")
 
     last_err = None
     for attempt in range(1, SEND_ATTEMPTS + 1):

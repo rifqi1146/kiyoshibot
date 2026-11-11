@@ -1,0 +1,371 @@
+"""Async task queue.
+
+Submit and collect are separate operations. The scheduler may have no identity
+available at any moment, so an endpoint that promises an immediate answer would
+hold connections open under pressure - and held connections occupy the very
+workers needed to drain the backlog, which is how a slowdown turns into a
+collapse. See docs/design/06-api-auth-mcp.md.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from dtk.core.errors import ErrorCode, QueueFull, TaskNotFound
+from dtk.core.logging import get_logger
+from dtk.core.redis import get_redis
+from dtk.core.types import RejectReason, TaskState
+from dtk.db.models import Task
+
+log = get_logger(__name__)
+
+QUEUE_KEY = "tasks:queue"
+DONE_CHANNEL = "tasks:done:{task_id}"
+#: Long-polling waiters block on this list, so a finished task wakes them
+#: immediately instead of after the next poll tick.
+SIGNAL_KEY = "tasks:signal:{task_id}"
+SIGNAL_TTL = 120
+
+
+@dataclass(frozen=True, slots=True)
+class TaskView:
+    id: uuid.UUID
+    state: TaskState
+    endpoint: str
+    result: dict[str, Any] | None
+    error: dict[str, Any] | None
+    created_at: datetime
+    finished_at: datetime | None
+    is_demo: bool = False
+    #: Sent as one named identity, so its result is what that session can see
+    #: - a logged-in account's bookmarks, likes, private folders. Reading it
+    #: back costs what naming the identity cost.
+    pinned: bool = False
+
+
+async def create(
+    session: AsyncSession,
+    endpoint: str,
+    params: dict[str, Any],
+    *,
+    api_key_id: uuid.UUID | None = None,
+    is_demo: bool = False,
+) -> uuid.UUID:
+    """Write the task row. It is not runnable until :func:`enqueue` publishes it.
+
+    ``is_demo`` travels with the row rather than being re-derived later: the
+    worker reads it to decide whether to archive, and the sweep reads it to
+    decide how long to keep the row, and both run long after the request that
+    knew who the caller was has gone.
+
+    The queue write is deliberately NOT here, and this split is the whole
+    lesson of the incident on 2026-09-08. The two steps commit at different
+    moments and only the caller knows when its transaction ends, so a function
+    that did both would have to guess - and it guessed wrong: an id on the
+    queue is claimable within microseconds, a worker parked in BLPOP is woken
+    by the push itself, and it looks the row up on its own connection. Under
+    READ COMMITTED an uncommitted INSERT is simply not there, so the worker
+    found nothing, logged the task unavailable and dropped it while the row
+    committed a millisecond later and stayed ``queued`` forever.
+
+    Three separate call sites carried a comment asserting "commit before the
+    worker can pop the id" and all three were wrong, because the ordering was
+    never theirs to control. Now it is.
+    """
+    task_id = uuid.uuid4()
+    session.add(
+        Task(
+            id=task_id,
+            api_key_id=api_key_id,
+            endpoint=endpoint,
+            params=params,
+            state=TaskState.QUEUED.value,
+            created_at=datetime.now(UTC),
+            is_demo=is_demo,
+        )
+    )
+    await session.flush()
+    log.debug("task.created", task_id=str(task_id), endpoint=endpoint)
+    return task_id
+
+
+async def enqueue(task_id: uuid.UUID, *, endpoint: str = "") -> None:
+    """Publish an already-committed task to the workers.
+
+    Call this only after the transaction that wrote the row has committed. A
+    worker can claim the id before this coroutine returns.
+    """
+    await get_redis().rpush(QUEUE_KEY, str(task_id))
+    log.info("task.submitted", task_id=str(task_id), endpoint=endpoint)
+
+
+async def refuse_when_queue_full(config: Any, *, endpoint: str) -> None:
+    """Shed load rather than accept work nobody will get to.
+
+    ``sched.queue_max`` was a setting the console exposed and nothing read, and
+    RejectReason.QUEUE_FULL was defined and never raised - so the queue grew
+    without bound and every caller waited instead of being told to come back.
+    Doc 03 is explicit that rejecting early beats queueing: a caller left
+    hanging is worse off than one that gets a Retry-After immediately.
+
+    Lives here rather than beside the route that first needed it because the
+    download and transcription starts are services shared with MCP, and a copy
+    of this check in each had already drifted from the original by one log line.
+    """
+    ceiling = int(config.get("sched.queue_max"))
+    if ceiling <= 0:
+        return
+    depth = int(await get_redis().llen(QUEUE_KEY))
+    if depth < ceiling:
+        return
+    retry_after = max(1, int(config.get("sched.max_wait_seconds")))
+    log.warning("task.queue_full", endpoint=endpoint, depth=depth, ceiling=ceiling)
+    raise QueueFull(
+        f"{depth} tasks are already queued, at the configured ceiling of {ceiling}",
+        retry_after=retry_after,
+        details={"reject_reason": RejectReason.QUEUE_FULL.value, "queued": depth},
+    )
+
+
+async def submit_now(
+    endpoint: str,
+    params: dict[str, Any],
+    *,
+    api_key_id: uuid.UUID | None = None,
+    is_demo: bool = False,
+) -> uuid.UUID:
+    """Write, commit and publish, for a caller with no transaction of its own.
+
+    Takes no session, on purpose: that is what makes the unsafe ordering
+    inexpressible here rather than merely discouraged.
+    """
+    from dtk.core.db import session_scope
+
+    async with session_scope() as session:
+        task_id = await create(session, endpoint, params, api_key_id=api_key_id, is_demo=is_demo)
+    await enqueue(task_id, endpoint=endpoint)
+    return task_id
+
+
+async def claim(timeout: int = 5) -> uuid.UUID | None:
+    """Block until a task is available, for a worker loop."""
+    popped = await get_redis().blpop([QUEUE_KEY], timeout=timeout)
+    if not popped:
+        return None
+    _key, value = popped
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        return None
+
+
+async def mark_running(session: AsyncSession, task_id: uuid.UUID) -> None:
+    task = await session.get(Task, task_id)
+    if task is not None:
+        task.state = TaskState.RUNNING.value
+        task.started_at = datetime.now(UTC)
+
+
+async def finish(
+    session: AsyncSession,
+    task_id: uuid.UUID,
+    *,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> None:
+    task = await session.get(Task, task_id)
+    if task is None:
+        return
+    task.state = (TaskState.FAILED if error else TaskState.DONE).value
+    task.result = result
+    task.error = error
+    task.finished_at = datetime.now(UTC)
+    await session.flush()
+    log.info("task.finished", task_id=str(task_id), state=task.state)
+
+
+async def wake_waiters(task_id: uuid.UUID) -> None:
+    """Tell anyone long-polling this task to read it again.
+
+    Call it after the commit that made the task final, never before. It used to
+    be the last step of :func:`finish`, which runs inside the caller's
+    transaction: a waiter woke, read the row before that commit landed, saw it
+    still running, and went back to a blocking wait of up to five seconds - so
+    a request refused in milliseconds answered five seconds later.
+    """
+    await _signal(task_id)
+
+
+async def settle_unpublished(session: AsyncSession, task_id: uuid.UUID, reason: str) -> None:
+    """Fail a committed task whose id never reached the queue, as far as possible.
+
+    Called when the publish failed, which almost always means Redis is down -
+    and waking the waiters goes through Redis. So the row is committed first
+    and the wake-up attempted after, on its own; if even the commit fails, the
+    task stays queued and the orphan sweep picks it up, which is a delay rather
+    than a loss.
+    """
+    from dtk.core.errors import Internal
+    from dtk.worker import serialize_error
+
+    try:
+        await finish(session, task_id, error=serialize_error(Internal(reason)))
+    except Exception as exc:
+        log.warning("task.settle_finish_failed", task_id=str(task_id), error=type(exc).__name__)
+    try:
+        await session.commit()
+    except Exception as exc:
+        log.warning("task.settle_commit_failed", task_id=str(task_id), error=type(exc).__name__)
+        return
+    try:
+        await wake_waiters(task_id)
+    except Exception as exc:
+        log.warning("task.settle_signal_failed", task_id=str(task_id), error=type(exc).__name__)
+
+
+async def _signal(task_id: uuid.UUID) -> None:
+    redis = get_redis()
+    key = SIGNAL_KEY.format(task_id=task_id)
+    await redis.rpush(key, "1")
+    await redis.expire(key, SIGNAL_TTL)
+
+
+async def cancel(session: AsyncSession, task_id: uuid.UUID) -> str:
+    """Give up on a task that has not finished. Returns what happened.
+
+    Only a queued task is actually stopped. A running one is left alone and
+    reported as such rather than marked failed: the request is already in
+    flight against a platform, the identity's quota is already spent, and
+    recording a failure the worker did not have would make the endpoint's risk
+    rate lie - which is what the circuit breaker reads.
+
+    The id stays on the Redis queue. Removing an element from the middle of a
+    list is O(n) and racy, and the worker skips a task that is no longer queued
+    when it pops one, which costs a single lookup.
+    """
+    task = await session.get(Task, task_id)
+    if task is None:
+        raise TaskNotFound("no such task, or its result has expired")
+    if task.state != TaskState.QUEUED.value:
+        return task.state
+    task.state = TaskState.FAILED.value
+    # CANCELLED, not INVALID_PARAM. The old code told the caller their
+    # perfectly valid request was malformed, in a code that sits in
+    # NON_RETRYABLE - so an agent reading the result learned never to try that
+    # URL again, and a synchronous `?wait=` caller got HTTP 400 for a link that
+    # was fine.
+    task.error = {"code": ErrorCode.CANCELLED.value, "message": "cancelled by the caller"}
+    task.finished_at = datetime.now(UTC)
+    await session.flush()
+    # No wake-up here, for the reason wake_waiters gives: the caller commits,
+    # then wakes.
+    log.info("task.cancelled", task_id=str(task_id))
+    return TaskState.FAILED.value
+
+
+async def get(session: AsyncSession, task_id: uuid.UUID) -> TaskView:
+    task = await session.get(Task, task_id)
+    if task is None:
+        raise TaskNotFound("no such task, or its result has expired")
+    return TaskView(
+        id=task.id,
+        state=TaskState(task.state),
+        endpoint=task.endpoint,
+        result=task.result,
+        error=task.error,
+        created_at=task.created_at,
+        finished_at=task.finished_at,
+        is_demo=task.is_demo,
+        pinned=bool((task.params or {}).get("identity")),
+    )
+
+
+async def wait_for(session: AsyncSession, task_id: uuid.UUID, seconds: float) -> TaskView | None:
+    """Server-side long poll.
+
+    Moves the polling loop off the caller without changing the semantics: the
+    work still runs through the same asynchronous path. Simple clients - an iOS
+    Shortcut, a curl one-liner - cannot write a polling loop at all, which is
+    the reason this exists.
+    """
+    view = await get(session, task_id)
+    if view.state in (TaskState.DONE, TaskState.FAILED):
+        return view
+
+    deadline = datetime.now(UTC) + timedelta(seconds=seconds)
+    redis = get_redis()
+    key = SIGNAL_KEY.format(task_id=task_id)
+    while datetime.now(UTC) < deadline:
+        remaining = (deadline - datetime.now(UTC)).total_seconds()
+        if remaining <= 0:
+            break
+        await redis.blpop([key], timeout=max(1, int(min(remaining, 5))))
+        await session.commit()
+        view = await get(session, task_id)
+        if view.state in (TaskState.DONE, TaskState.FAILED):
+            return view
+    return None
+
+
+async def expire_results(session: AsyncSession, *, hours: int) -> int:
+    """Blank out payloads past their retention window, keeping the metadata."""
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+    rows = (
+        await session.execute(
+            select(Task).where(
+                Task.finished_at.is_not(None),
+                Task.finished_at < cutoff,
+                Task.result.is_not(None),
+            )
+        )
+    ).scalars()
+    count = 0
+    for task in rows:
+        task.result = None
+        task.error = None
+        count += 1
+    return count
+
+
+def serialize(view: TaskView) -> dict[str, Any]:
+    return json.loads(
+        json.dumps(
+            {
+                "task_id": str(view.id),
+                "state": view.state.value,
+                "endpoint": view.endpoint,
+                "result": view.result,
+                "error": view.error,
+                "created_at": view.created_at,
+                "finished_at": view.finished_at,
+            },
+            default=str,
+        )
+    )
+
+
+__all__ = [
+    "DONE_CHANNEL",
+    "QUEUE_KEY",
+    "SIGNAL_KEY",
+    "TaskView",
+    "cancel",
+    "claim",
+    "expire_results",
+    "finish",
+    "get",
+    "mark_running",
+    "refuse_when_queue_full",
+    "serialize",
+    "settle_unpublished",
+    "submit_now",
+    "wait_for",
+    "wake_waiters",
+]

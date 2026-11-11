@@ -82,9 +82,9 @@ def _save_cf_session(cookies: list[dict], ua: str) -> None:
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(data, f)
         os.replace(tmp_file, CF_COOKIE_FILE)
-        log.debug("Sesi Cloudflare tersimpan | cookies=%s", len(jar))
+        log.debug("Cloudflare session saved | cookies=%s", len(jar))
     except Exception as e:
-        log.debug("Gagal menyimpan sesi Cloudflare: %r", e)
+        log.debug("Failed to save Cloudflare session: %r", e)
 
 
 def _cf_session_fresh(data: dict | None) -> bool:
@@ -135,13 +135,13 @@ def _search_via_curl(query: str, cf: dict) -> list[dict] | None:
         return None
 
     if resp.status_code != 200:
-        log.info("Search via curl_cffi HTTP %s (cookie mungkin expired)", resp.status_code)
+        log.info("curl_cffi search HTTP %s (cookie likely expired)", resp.status_code)
         return None
 
     try:
         data = resp.json()
     except Exception as e:
-        log.warning("Search via curl_cffi bukan JSON (kemungkinan challenge CF): %r", e)
+        log.warning("curl_cffi search returned non-JSON (likely a CF challenge): %r", e)
         return None
 
     if data.get("code") == -1:
@@ -165,7 +165,7 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
             if cookies and ua:
                 _save_cf_session(cookies, ua)
         except Exception as e:
-            log.debug("Gagal capture sesi Cloudflare: %r", e)
+            log.debug("Failed to capture Cloudflare session: %r", e)
 
         js_script = f"""
         (async () => {{
@@ -190,7 +190,7 @@ def _fetch_api_in_browser(query: str) -> list[dict]:
                     return [];
                 }}
 
-                // Saring foto/slideshow dan kembalikan array video MP4 murni
+                // Drop photo/slideshow entries and return plain MP4 videos only
                 return data.data.videos.filter(v => !v.images || v.images.length === 0).map(v => ({{
                     id: v.video_id || v.id,
                     unique_id: (v.author && v.author.unique_id) ? v.author.unique_id : "_",
@@ -225,7 +225,7 @@ async def _search_keyword(query: str) -> list[dict]:
         if cf is None:
             break
         if not _cf_session_fresh(cf):
-            log.debug("Sesi Cloudflare lewat TTL, tetap dicoba via curl")
+            log.debug("Cloudflare session past TTL, retrying over curl anyway")
 
         async with _api_gate():
             cf = _load_cf_session() or cf
@@ -235,14 +235,14 @@ async def _search_keyword(query: str) -> list[dict]:
                 items = _RATE_LIMITED
 
         if items is _RATE_LIMITED:
-            log.warning("Search keyword=%r kena rate limit, ulangi", query)
+            log.warning("Search keyword=%r hit the rate limit, retrying", query)
             await asyncio.sleep(API_MIN_INTERVAL)
             continue
         if items is not None:
             return items
         break
     else:
-        log.warning("Search keyword=%r tetap rate-limited, lewati", query)
+        log.warning("Search keyword=%r still rate-limited, skipping", query)
         return []
 
     async with _api_gate():
@@ -281,9 +281,9 @@ async def _prime_and_get_url(video_item: dict) -> str | None:
                 url = vid_data.get("play") or vid_data.get("hdplay") or vid_data.get("wmplay")
                 if url and not url.startswith("/"):
                     return url
-                log.debug("Resolve relatif/aneh | id=%s url=%s", video_item.get("id"), str(url)[:60])
+                log.debug("Resolve returned a relative/odd URL | id=%s url=%s", video_item.get("id"), str(url)[:60])
             else:
-                log.debug("Resolve gagal | id=%s code=%s msg=%s",
+                log.debug("Resolve failed | id=%s code=%s msg=%s",
                           video_item.get("id"), data.get("code"), data.get("msg"))
         except Exception as e:
             log.debug("Resolve error | id=%s err=%r", video_item.get("id"), e)
@@ -346,12 +346,12 @@ async def _acquire_item(keyword: str | None) -> dict | None:
                 item = _pop_pool(norm)
                 if item:
                     return item
-                log.info("Mengisi pool asupan | query=%s", q)
+                log.info("Filling asupan pool | query=%s", q)
                 new_videos = await _search_keyword(q)
                 if not new_videos:
                     return None
                 _VIDEO_POOLS[norm] = new_videos
-                log.info("Pool asupan keyword=%r terisi: %s video", q, len(new_videos))
+                log.info("Asupan pool keyword=%r filled: %s videos", q, len(new_videos))
                 return _pop_pool(norm)
         finally:
             if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
@@ -365,12 +365,12 @@ async def _acquire_item(keyword: str | None) -> dict | None:
 
         for _ in range(3):
             kw = random.choice(DEFAULT_ASUPAN_KEYWORDS)
-            log.info("Mengisi pool asupan | query=%s", kw)
+            log.info("Filling asupan pool | query=%s", kw)
             new_videos = await _search_keyword(kw)
             if new_videos:
                 _DEFAULT_KEYWORD = kw
                 _VIDEO_POOLS[kw.lower()] = new_videos
-                log.info("Pool asupan keyword=%r terisi: %s video", kw, len(new_videos))
+                log.info("Asupan pool keyword=%r filled: %s videos", kw, len(new_videos))
                 return _pop_pool(kw.lower())
 
         return None
@@ -389,12 +389,12 @@ async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str |
                 item = _pop_pool(norm)
                 if item:
                     return item, q
-                log.info("Mengisi pool asupan (scraper) | query=%s", q)
+                log.info("Filling asupan pool (scraper) | query=%s", q)
                 new_videos = await tiktoksource.search_videos(q)
                 if not new_videos:
                     return None, q
                 _VIDEO_POOLS[norm] = new_videos
-                log.info("Pool asupan (scraper) keyword=%r terisi: %s video", q, len(new_videos))
+                log.info("Asupan pool (scraper) keyword=%r filled: %s videos", q, len(new_videos))
                 return _pop_pool(norm), q
         finally:
             if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
@@ -408,12 +408,12 @@ async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str |
 
         for _ in range(3):
             kw = random.choice(DEFAULT_ASUPAN_KEYWORDS)
-            log.info("Mengisi pool asupan (scraper) | query=%s", kw)
+            log.info("Filling asupan pool (scraper) | query=%s", kw)
             new_videos = await tiktoksource.search_videos(kw)
             if new_videos:
                 _DEFAULT_KEYWORD_SCRAPER = kw
                 _VIDEO_POOLS["scraper:" + kw.lower()] = new_videos
-                log.info("Pool asupan (scraper) keyword=%r terisi: %s video", kw, len(new_videos))
+                log.info("Asupan pool (scraper) keyword=%r filled: %s videos", kw, len(new_videos))
                 return _pop_pool("scraper:" + kw.lower()), kw
 
         return None, None
@@ -430,9 +430,9 @@ async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
                 if url:
                     log.info("[ASUPAN] source=scraper | keyword=%r id=%s", kw_used, vid.get("id"))
                     return url
-            log.info("[ASUPAN] source=scraper kosong -> fallback tikwm")
+            log.info("[ASUPAN] source=scraper empty -> falling back to tikwm")
         except Exception as e:
-            log.warning("[ASUPAN] source=scraper error (%r) -> fallback", e)
+            log.warning("[ASUPAN] source=scraper error (%r) -> falling back", e)
 
     for _ in range(5):
         video_item = await _acquire_item(keyword)

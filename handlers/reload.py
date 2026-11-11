@@ -64,6 +64,11 @@ async def _pre_reload_cleanup(app):
         await shutdown_mtproto_uploader(app)
     except Exception as e:
         log.warning("Reload cleanup mtproto failed | err=%r",e)
+    try:
+        from handlers.asupan import tiktoksource
+        await tiktoksource.close()
+    except Exception as e:
+        log.warning("Reload cleanup tiktok search failed | err=%r",e)
 
 def _reload_modules():
     importlib.invalidate_caches()

@@ -1,0 +1,438 @@
+"""Liveness, readiness and the detailed status page.
+
+``/healthz`` and ``/readyz`` are separate for one specific reason (doc 15): a
+liveness probe that touches the database turns a brief database hiccup into an
+orchestrator restarting every api container at once, and the restart storm is
+what keeps the database down. Liveness answers "is this process wedged"; it
+reads no dependency, holds no lock and allocates nothing.
+
+Both live outside ``/api/v1``: they are infrastructure endpoints polled by an
+orchestrator or a load balancer, and they answer with a flat object rather than
+the API envelope so a probe can match on one field. ``/api/v1/system/status``
+is the API-shaped view and does go through the envelope.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, Final
+
+import httpx
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import func, select, text
+
+from dtk import __version__
+from dtk.api.deps import Principal
+from dtk.api.routes.openapi import I18N_KEY
+from dtk.api.routes.support import demo_read, ok
+from dtk.core.db import session_scope
+from dtk.core.logging import get_logger
+from dtk.core.redis import get_redis
+from dtk.core.types import BrowserFamily, IdentityState, Platform
+from dtk.db.models import Identity
+from dtk.db.repositories import IdentityRepository
+from dtk.media.client import DownloaderClient
+from dtk.ops import sidecars
+from dtk.transcriber import TranscriberClient
+from dtk.transport.emulation import (
+    EmulationUnavailable,
+    UnknownBrowserFamily,
+    known_majors,
+    select_profile,
+)
+
+log = get_logger(__name__)
+
+router = APIRouter(tags=["system"])
+
+#: Process start, captured at import. Uptime is a diagnostic, so a monotonic
+#: reading is the right source: a clock adjustment must not make it jump.
+_STARTED_MONOTONIC = time.monotonic()
+
+#: A dependency check that takes longer than this is a failed check. The probe
+#: has its own timeout and a hung check would burn it.
+PROBE_TIMEOUT_SECONDS = 3.0
+
+#: Set by the build so a bug report can name the exact tree.
+COMMIT_ENV_VAR = "DTK_COMMIT"
+
+
+def uptime_seconds() -> int:
+    return int(time.monotonic() - _STARTED_MONOTONIC)
+
+
+async def _probe(name: str, check: Coroutine[Any, Any, Any]) -> dict[str, Any]:
+    """Run one dependency check under a deadline.
+
+    A hung dependency must not hold the probe open: an orchestrator that never
+    gets an answer treats the container as failed anyway, and it gets there
+    faster with a bounded check.
+    """
+    started = time.monotonic()
+    try:
+        await asyncio.wait_for(check, timeout=PROBE_TIMEOUT_SECONDS)
+    except TimeoutError:
+        log.warning("system.probe_timeout", component=name)
+        return {"ok": False, "latency_ms": None, "error": "timeout"}
+    except Exception as exc:
+        log.warning("system.probe_failed", component=name, error=str(exc)[:200])
+        return {"ok": False, "latency_ms": None, "error": type(exc).__name__}
+    return {"ok": True, "latency_ms": int((time.monotonic() - started) * 1000)}
+
+
+async def _select_one() -> None:
+    async with session_scope() as session:
+        await session.execute(text("SELECT 1"))
+
+
+async def _probe_postgres() -> dict[str, Any]:
+    return await _probe("postgres", _select_one())
+
+
+async def _probe_redis() -> dict[str, Any]:
+    return await _probe("redis", get_redis().ping())
+
+
+@router.get("/healthz", summary="Liveness", include_in_schema=False)
+async def healthz() -> JSONResponse:
+    """Process liveness. Touches no dependency, on purpose (doc 15).
+
+    The request still passes through the session middleware, but a session that
+    issues no statement never checks a connection out of the pool, so a
+    database outage cannot fail this probe.
+    """
+    return JSONResponse({"status": "ok", "uptime_seconds": uptime_seconds()})
+
+
+@router.get("/readyz", summary="Readiness", include_in_schema=False)
+async def readyz() -> JSONResponse:
+    """Readiness: can this process serve a request right now?
+
+    The browser RPC is excluded deliberately - minting is not on the request
+    path, so an instance without it is degraded, not unready.
+    """
+    postgres = await _probe_postgres()
+    redis = await _probe_redis()
+    ready = bool(postgres["ok"] and redis["ok"])
+    return JSONResponse(
+        {
+            "status": "ok" if ready else "unavailable",
+            "components": {"postgres": postgres, "redis": redis},
+        },
+        status_code=200 if ready else 503,
+    )
+
+
+@router.get(
+    "/api/v1/system/status",
+    summary="Instance status",
+    openapi_extra={I18N_KEY: "health"},
+)
+async def system_status(request: Request, principal: Principal = Depends(demo_read)) -> Any:
+    """Version, component health, pool census and storage use.
+
+    Authenticated: it names component versions and row counts, which is more
+    than an unauthenticated probe has any reason to learn.
+    """
+    postgres = await _probe_postgres()
+    redis = await _probe_redis()
+
+    session = request.state.db
+    per_platform: dict[str, dict[str, int]] = {}
+    for platform in Platform:
+        counts = await IdentityRepository(session).count_by_state(platform=platform)
+        per_platform[platform.value] = {
+            state.value: counts.get(state.value, 0) for state in IdentityState
+        }
+    pool: dict[str, Any] = dict(per_platform)
+    pool["total_active"] = sum(
+        counts[IdentityState.ACTIVE.value] for counts in per_platform.values()
+    )
+
+    # Concurrently: each is bounded on its own, and in sequence their ceilings
+    # added up to a status page that took four seconds to say a sidecar was down.
+    browser_rpc, downloader, transcriber = await asyncio.gather(
+        _browser_rpc_with_profile(request),
+        _downloader_status(request),
+        _transcriber_status(request),
+    )
+
+    return ok(
+        request,
+        {
+            "version": __version__,
+            "commit": os.environ.get(COMMIT_ENV_VAR),
+            "uptime_seconds": uptime_seconds(),
+            "settings_version": request.app.state.config.version,
+            "components": {
+                "postgres": postgres,
+                "redis": redis,
+                "browser_rpc": browser_rpc,
+                "downloader": downloader,
+                "transcriber": transcriber,
+            },
+            "pool": pool,
+            # Beside `pool`, not inside it. Every reader of `pool` sums the
+            # values of each platform's map as identity states, so a key added
+            # there would be counted into the Overview's total as a state.
+            "reserved_active": await _reserved_active(session),
+            "storage": await _storage(session),
+        },
+    )
+
+
+async def _reserved_active(session: Any) -> dict[str, int]:
+    """Active identities kept out of rotation, per platform (#789).
+
+    The census counts them as active, and they are; what they are not is
+    capacity. Only a request that names one can use it, so "schedulable right
+    now" is the active count minus this one - the same rule
+    :meth:`dtk.identity.pool.IdentityPool.usable_count` applies when it decides
+    whether to mint, where counting a reserved account held the level at its
+    target while ordinary traffic had nothing to use.
+    """
+    rows = await session.execute(
+        select(Identity.platform, func.count())
+        .where(
+            Identity.state == IdentityState.ACTIVE.value,
+            Identity.rotation_endpoints.is_not(None),
+        )
+        .group_by(Identity.platform)
+    )
+    counts = {str(platform): int(count) for platform, count in rows.tuples().all()}
+    return {platform.value: counts.get(platform.value, 0) for platform in Platform}
+
+
+#: Ceiling for the browser probe below. Short on purpose: the page polls, and a
+#: browser that cannot answer a health check in a second is not one the pool
+#: should be told is fine.
+BROWSER_PROBE_TIMEOUT_SECONDS: Final = 1.0
+
+#: The family the drift check is about. Both platforms are signed from Chromium
+#: and every minted fingerprint carries a Chrome family, so the wreq side of the
+#: comparison is a Chrome profile or it is nothing.
+DRIFT_FAMILY: Final = BrowserFamily.CHROME
+
+
+def wreq_profile_major(chromium_major: int | None) -> int | None:
+    """The TLS profile major this process would actually emulate.
+
+    Local, and therefore knowable whether or not browser-rpc answers: it is a
+    property of the installed wreq, not of the browser container. It was
+    reported by nobody, so the System page read it as missing and told the
+    operator that browser-rpc had not sent a version - while displaying, one
+    row above, the version browser-rpc had just sent.
+
+    Answered against the browser's major rather than as "the newest profile
+    shipped", because the number is only meaningful as the other half of the
+    drift comparison: what matters is the profile a request from *that* browser
+    would be sent with, which is the exact major if wreq has one and the
+    nearest below it otherwise.
+    """
+    try:
+        majors = known_majors(DRIFT_FAMILY)
+    except UnknownBrowserFamily:
+        # A wreq build with no Chrome profiles at all. Nothing to compare, and
+        # the transport would already be failing louder than this row.
+        return None
+    if not majors:
+        return None
+    if chromium_major is None:
+        return max(majors)
+    try:
+        return select_profile(DRIFT_FAMILY, chromium_major).profile.major
+    except EmulationUnavailable:
+        # A browser older than every profile wreq ships. There is no candidate
+        # below it, and the oldest one is what the page should be arguing about.
+        return min(majors)
+
+
+async def _browser_rpc_with_profile(request: Request) -> dict[str, Any]:
+    """The browser probe, plus the wreq major it is meant to be compared with.
+
+    The two numbers live in one component because neither means anything alone:
+    the card is a single claim about whether the browser that mints the cookies
+    and the client that replays them agree on a major version.
+    """
+    status = await _browser_rpc_status(request)
+    major = status.get("chromium_major")
+    status["wreq_profile_major"] = wreq_profile_major(major if isinstance(major, int) else None)
+    return status
+
+
+async def _browser_rpc_status(request: Request) -> dict[str, Any]:
+    """Configured, and answering.
+
+    An earlier version reported only whether a URL was set, on the reasoning
+    that probing would put a multi-second dependency behind a polled page. The
+    reasoning was right and the conclusion was not: the System page then said
+    "unknown" for a browser that was running perfectly, which is the one
+    question an operator opens that row to answer. /rpc/health is a local call
+    that returns in milliseconds, so it is bounded rather than skipped, and a
+    timeout is reported as unhealthy rather than as unknown.
+    """
+    url = str(getattr(request.app.state.settings, "browser_rpc_url", "") or "")
+    if not url:
+        return {"configured": False, "ok": None}
+
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=BROWSER_PROBE_TIMEOUT_SECONDS) as client:
+            response = await client.get(f"{url.rstrip('/')}/rpc/health")
+            body = response.json() if response.is_success else {}
+    except Exception as exc:
+        # Named by type only: the message quotes the URL, which is internal but
+        # is still not something a status row needs to carry.
+        log.warning("system.browser_rpc.unreachable", error=type(exc).__name__)
+        return {"configured": True, "ok": False, "detail_code": "unreachable"}
+
+    status = str(body.get("status") or "")
+    return {
+        "configured": True,
+        "ok": status == "ok",
+        "latency_ms": int((time.perf_counter() - started) * 1000),
+        "chromium_major": body.get("chromium_major"),
+        "warm_contexts": body.get("warm_contexts"),
+        "detail_code": None if status == "ok" else "degraded",
+    }
+
+
+#: How long a sidecar's answer is reused. Four console pages poll this route
+#: every five seconds, and the downloader answers /health by walking the media
+#: volume - fine once, not fine as a steady background load on someone's disk.
+#: Short enough that "I just started the profile" shows up on the next refresh
+#: but one.
+SIDECAR_CACHE_SECONDS: Final = 10.0
+
+_sidecar_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+
+
+async def _cached_sidecar(
+    name: str, url: str, probe: Callable[[], Awaitable[dict[str, Any]]]
+) -> dict[str, Any]:
+    key = (name, url)
+    hit = _sidecar_cache.get(key)
+    now = time.monotonic()
+    if hit is not None and now - hit[0] < SIDECAR_CACHE_SECONDS:
+        return dict(hit[1])
+    status = await probe()
+    _sidecar_cache[key] = (now, status)
+    return dict(status)
+
+
+async def _downloader_status(request: Request) -> dict[str, Any]:
+    """The media downloader, through the same client the download routes use."""
+    settings = request.app.state.settings
+    url = str(getattr(settings, "downloader_url", "") or "")
+    if not url:
+        return sidecars.not_configured()
+
+    async def probe() -> dict[str, Any]:
+        client = DownloaderClient(url, token=str(getattr(settings, "downloader_token", "") or ""))
+        try:
+            return await sidecars.downloader_status(client)
+        finally:
+            await client.aclose()
+
+    return await _cached_sidecar(sidecars.DOWNLOADER, url, probe)
+
+
+async def _transcriber_status(request: Request) -> dict[str, Any]:
+    """The transcriber, with its token: unlike the downloader, its /health checks it."""
+    settings = request.app.state.settings
+    url = str(getattr(settings, "transcriber_url", "") or "")
+    if not url:
+        return sidecars.not_configured()
+
+    async def probe() -> dict[str, Any]:
+        client = TranscriberClient(url, token=str(getattr(settings, "transcriber_token", "") or ""))
+        try:
+            return await sidecars.transcriber_status(client)
+        finally:
+            await client.aclose()
+
+    return await _cached_sidecar(sidecars.TRANSCRIBER, url, probe)
+
+
+async def _hypertable_counts(session: Any, counts: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Replace a hypertable's parent-relation estimate with the chunk sum.
+
+    ``approximate_row_count`` walks the chunks, which is where a hypertable's
+    rows actually are. It is best effort in both directions: a server without
+    TimescaleDB has no such function, and a table nobody has analyzed still
+    answers 0 - so a zero it returns is left as NULL rather than reported as an
+    empty table.
+    """
+    from dtk.db.models import HYPERTABLES
+
+    for name in HYPERTABLES:
+        if name not in counts:
+            continue
+        try:
+            value = (
+                await session.execute(text("SELECT approximate_row_count(:name)"), {"name": name})
+            ).scalar_one()
+        except Exception:
+            continue
+        counts[name] = int(value) if value else None
+    return list(counts.items())
+
+
+async def _storage(session: Any) -> dict[str, Any]:
+    """Disk use and row counts, estimated rather than counted.
+
+    ``count(*)`` on the request log is a full scan of the largest table in the
+    system; the planner's estimate is accurate enough to size a retention
+    policy and costs nothing.
+    """
+    try:
+        size = (
+            await session.execute(text("SELECT pg_database_size(current_database())"))
+        ).scalar_one()
+        # Three of these four are TimescaleDB hypertables, and reltuples on the
+        # parent relation describes the parent - which stores nothing, because
+        # every row lives in a chunk. GREATEST(reltuples, 0) then turned the
+        # never-analyzed sentinel of -1 into a confident 0, so the status page
+        # told an operator the request log was empty while it held 839 rows.
+        #
+        # approximate_row_count() sums the chunks and is the right question to
+        # ask; NULL when it cannot answer, rather than a number that is wrong.
+        estimates = (
+            await session.execute(
+                text(
+                    "SELECT relname, "
+                    "  CASE WHEN reltuples < 0 THEN NULL "
+                    "       ELSE reltuples::bigint END AS rows "
+                    "FROM pg_class WHERE relname = ANY(:names)"
+                ),
+                {"names": ["request_log", "identity_events", "content_snapshots", "tasks"]},
+            )
+        ).all()
+        estimates = await _hypertable_counts(session, dict(estimates))
+        identities = (
+            await session.execute(select(func.count()).select_from(Identity))
+        ).scalar_one()
+    except Exception as exc:
+        log.warning("system.storage_unavailable", error=str(exc)[:200])
+        return {"db_size_bytes": None, "rows": {}}
+    return {
+        "db_size_bytes": int(size),
+        # None where the estimate is genuinely unknown - a relation nobody has
+        # analyzed, or a server without TimescaleDB. A null says "I do not know";
+        # a 0 says "it is empty", and only one of those was ever true here.
+        "rows": {name: (int(rows) if rows is not None else None) for name, rows in estimates},
+        "identities": int(identities),
+    }
+
+
+__all__ = [
+    "COMMIT_ENV_VAR",
+    "PROBE_TIMEOUT_SECONDS",
+    "SIDECAR_CACHE_SECONDS",
+    "router",
+    "uptime_seconds",
+]

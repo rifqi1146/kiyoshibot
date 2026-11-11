@@ -125,10 +125,10 @@ async def startup_tasks(app):
     async def _warmup_tiktokapi():
         from handlers.asupan import tiktoksource
         if not tiktoksource.configured():
-            log.info("tiktokapi asupan disabled, pakai tikwm")
+            log.info("tiktok search disabled, using tikwm")
             return
         ok = await tiktoksource.warmup()
-        log.info("✓ tiktokapi asupan source %s", "ready" if ok else "TIDAK siap")
+        log.info("✓ tiktok search source %s", "ready" if ok else "NOT ready")
     _create_background_task(app,_warmup_tiktokapi(),"tiktokapi warmup")
     try:
         from database import vps_db

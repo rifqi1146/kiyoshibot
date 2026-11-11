@@ -232,6 +232,11 @@ async def post_shutdown(app):
         await close_reddit_session()
     except Exception:
         log.exception("Failed to close Reddit session")
+    try:
+        from handlers.asupan import tiktoksource
+        await tiktoksource.close()
+    except Exception:
+        log.exception("Failed to close tiktok search session")
     await close_http_session()
     log.info("HTTP session closed")
 

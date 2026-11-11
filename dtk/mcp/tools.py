@@ -1,0 +1,1138 @@
+"""The tool set.
+
+Ten tools, and deliberately few: every extra tool measurably lowers an agent's
+selection accuracy, and this surface has to stay pickable in one shot
+(docs/design/06-api-auth-mcp.md). A new capability is an argument to an existing
+tool unless it is a different kind of act. The two that change this instance -
+download_media and transcribe_video - are that: each writes to the operator's
+disk, so each has a write scope of its own rather than riding on a read tool.
+
+Nothing here manages identities, imports cookies, lists proxies or reads an API
+key. An agent must not be able to touch credentials, and the way to guarantee
+that is to give it no tool that could - not to check a scope inside one.
+
+Every tool blocks. REST is asynchronous-first because a promise of an immediate
+answer collapses under load, but an MCP client's model of a tool is "call it,
+get an answer": handing back a task id and asking the agent to poll burns its
+context, and most agents simply give up. So the work still goes through the same
+asynchronous path and the waiting happens here, bounded by
+``api.mcp_tool_timeout``; only when that bound is hit does the agent hear about
+a task id.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Mapping
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, Final
+
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
+from pydantic import Field
+
+from dtk.core.errors import (
+    DtkError,
+    ErrorCode,
+    ForbiddenScope,
+    InvalidParam,
+    InvalidUrl,
+    NotConfigured,
+    TaskNotFound,
+)
+from dtk.core.logging import get_logger
+from dtk.core.types import PLATFORM_READ_SCOPES, Platform, Scope, TaskState, UserRole
+from dtk.mcp import prose, routing
+from dtk.mcp.context import EndpointHealth, McpContext, PoolSnapshot, TaskOutcome
+from dtk.platforms.paging import MAX_PAGE_SIZE
+from dtk.urls import first_url, identify
+
+log = get_logger(__name__)
+
+#: Failures whose explanation is incomplete without the endpoint's health: an
+#: agent needs to know whether the endpoint is tripped and when it last worked.
+_HEALTH_CODES: Final[frozenset[ErrorCode]] = frozenset(
+    {
+        ErrorCode.ENDPOINT_CIRCUIT_OPEN,
+        ErrorCode.IDENTITY_POOL_EXHAUSTED,
+        ErrorCode.UPSTREAM_RISK_CONTROL,
+        ErrorCode.SIGNING_FAILED,
+        # Split out of INTERNAL, which already carried the health; whether the
+        # endpoint worked a minute ago is what tells one dead egress from a
+        # platform this host cannot reach at all.
+        ErrorCode.UPSTREAM_UNREACHABLE,
+        ErrorCode.INTERNAL,
+    }
+)
+
+#: Default window for a metric history query.
+HISTORY_DEFAULT_DAYS: Final = 30
+#: Ceiling on returned points. A year of five-minute snapshots would drown the
+#: agent's context for no gain.
+HISTORY_MAX_POINTS: Final = 500
+#: Progress snapshots are produced by the worker at this cadence. Polling any
+#: faster only repeats the same Redis value and creates noisier clients.
+TRANSCRIPTION_PROGRESS_POLL_SECONDS: Final = 1.0
+
+_TRANSCRIPTION_STAGE_PROGRESS: Final[dict[str, float]] = {
+    "queued": 0.0,
+    "decode": 1.0,
+    "vad": 3.0,
+    "punctuation": 95.0,
+    "normalization": 98.0,
+    "done": 100.0,
+}
+
+_TRANSCRIPTION_STAGE_MESSAGES: Final[dict[str, str]] = {
+    "queued": "Queued for transcription.",
+    "decode": "Decoding audio.",
+    "vad": "Detecting speech segments.",
+    "asr": "Transcribing audio.",
+    "punctuation": "Adding punctuation.",
+    "normalization": "Normalizing Chinese numbers and dates.",
+    "done": "Transcription complete.",
+}
+
+PlatformArg = Annotated[
+    str,
+    Field(description="Platform to query: 'douyin', 'tiktok' or 'bilibili'."),
+]
+CursorArg = Annotated[
+    str | None,
+    Field(
+        default=None,
+        description=(
+            "Opaque cursor from the previous page's 'cursor' field. Omit for the first page; "
+            "pass it back unchanged, never parse it."
+        ),
+    ),
+]
+#: The platforms whose own ceiling is below the tool set's, as an agent reads them.
+_LOWER_CEILINGS = "; ".join(
+    f"at most {ceiling} on {platform.value}"
+    for platform, ceiling in MAX_PAGE_SIZE.items()
+    if ceiling < routing.MAX_COUNT
+)
+
+CountArg = Annotated[
+    int | None,
+    Field(
+        default=None,
+        description=(
+            f"Items per page, {routing.MIN_COUNT}-{routing.MAX_COUNT}; {_LOWER_CEILINGS}. "
+            "Omit to use the platform's own default."
+        ),
+    ),
+]
+
+
+SortArg = Annotated[
+    str | None,
+    Field(
+        default=None,
+        description=(
+            "'hot' (the default) or 'new'. Only bilibili offers 'new'; douyin and tiktok "
+            "rank comments their own way and refuse it. Pass the same value with a later "
+            "page's cursor."
+        ),
+    ),
+]
+
+
+class ToolSet:
+    """The tool implementations, bound to one :class:`McpContext`.
+
+    Methods are registered with the MCP server as-is, so their signatures and
+    docstrings are the schema and the description an agent sees. The trailing
+    ``context`` parameter is the SDK's own handle on the call; it is excluded
+    from the schema an agent sees, and it is how a tool reaches the caller the
+    transport authenticated.
+    """
+
+    def __init__(self, context: McpContext) -> None:
+        self._ctx = context
+
+    # -- shared plumbing ---------------------------------------------------
+
+    def _authorize(self, platform: Platform, context: Context | None) -> None:
+        """Refuse a platform this caller's key was not granted.
+
+        The transport guard can only check that a key has *some* read scope: the
+        platform is inside the JSON-RPC body, not in the headers. Without this
+        second check a key scoped to one platform would read the other through
+        MCP, which ``/api/v1/{platform}/...`` refuses.
+        """
+        self._ctx.authorize(platform, _caller(context))
+
+    def _authorize_scope(self, scope: Scope, context: Context | None) -> Any | None:
+        caller = _caller(context)
+        if caller is None:
+            return None
+        if not caller.permits(scope):
+            raise ForbiddenScope(
+                "this credential lacks the scope required for this tool",
+                details=caller.denial(scopes=[scope]),
+            )
+        return caller
+
+    async def _health(self, endpoint: str | None) -> EndpointHealth | None:
+        if not endpoint:
+            return None
+        try:
+            return await self._ctx.pool.endpoint(endpoint)
+        except Exception as exc:  # reporting must never mask the failure it explains
+            log.warning("mcp.health_lookup_failed", endpoint=endpoint, error=repr(exc))
+            return None
+
+    async def _snapshot(self) -> PoolSnapshot | None:
+        try:
+            return await self._ctx.pool.snapshot()
+        except Exception as exc:  # reporting must never mask the failure it explains
+            log.warning("mcp.pool_snapshot_failed", error=repr(exc))
+            return None
+
+    async def _guarded(self, work: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+        """Convert any failure into prose the agent can act on.
+
+        A domain error carries its own code and advice. Anything else is a bug
+        or an outage: the SDK would hand the agent a bare "Error executing tool
+        X" with nothing to decide on, so it becomes an INTERNAL sentence here.
+        The exception itself is logged rather than sent - it may name a host, a
+        query or a header, and none of that belongs in a model's context.
+        """
+        try:
+            return await work
+        except DtkError as exc:
+            endpoint = exc.details.get("endpoint") if exc.details else None
+            health = await self._health(endpoint if exc.code in _HEALTH_CODES else None)
+            raise ToolError(prose.describe_error(exc, endpoint=endpoint, health=health)) from None
+        except (ToolError, MCPError):
+            # ToolError already carries prose; MCPError is a protocol-level
+            # message the kernel has to answer itself, not a tool failure.
+            raise
+        except Exception as exc:
+            log.exception("mcp.tool_crashed", error=repr(exc))
+            raise ToolError(
+                prose.describe(
+                    ErrorCode.INTERNAL,
+                    "the request failed inside dtk rather than at the platform",
+                )
+            ) from None
+
+    async def _settle(self, outcome: TaskOutcome, endpoint: str) -> dict[str, Any]:
+        """Unwrap a finished task, or raise its failure as prose."""
+        where = outcome.endpoint or endpoint
+        if outcome.state is TaskState.FAILED or outcome.error is not None:
+            code_text = str((outcome.error or {}).get("code") or ErrorCode.INTERNAL.value)
+            try:
+                code = ErrorCode(code_text)
+            except ValueError:
+                code = ErrorCode.INTERNAL
+            health = await self._health(where if code in _HEALTH_CODES else None)
+            raise ToolError(prose.describe_task_error(outcome.error, endpoint=where, health=health))
+        if outcome.expired:
+            # An empty success would read as "this post has no data".
+            raise ToolError(prose.expired_result_message(outcome.task_id, where or None))
+        return outcome.result or {}
+
+    async def _run(
+        self, endpoint: str, params: dict[str, Any], *, is_demo: bool = False
+    ) -> tuple[dict[str, Any] | None, str, float]:
+        """Submit, then wait.
+
+        Returns ``(payload, task_id, timeout)``; payload is ``None`` only when
+        the wait timed out and the work is still going. The timeout travels back
+        with it so the message quotes the wait that actually happened, not the
+        one a hot reload installed in the meantime.
+        """
+        task_id = await self._ctx.tasks.submit(endpoint, params, is_demo=is_demo)
+        timeout = self._ctx.tool_timeout
+        outcome = await self._ctx.tasks.wait(task_id, timeout)
+        if outcome is None or not outcome.settled:
+            log.info("mcp.tool_timeout", endpoint=endpoint, task_id=task_id, timeout=timeout)
+            return None, task_id, timeout
+        return await self._settle(outcome, endpoint), task_id, timeout
+
+    async def _pending(self, task_id: str, endpoint: str, timeout: float) -> dict[str, Any]:
+        snapshot = await self._snapshot()
+        return {
+            "status": "pending",
+            "task_id": task_id,
+            "message": prose.timeout_message(task_id, timeout, snapshot, endpoint=endpoint),
+        }
+
+    async def _fetch(
+        self,
+        endpoint: str,
+        params: dict[str, Any],
+        extra: dict[str, Any],
+        *,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        # A demo key reaches these tools too. Unmarked, its tasks were archived
+        # and logged like an operator's and outlived the demo retention window,
+        # which the REST routes and the media tools already mark.
+        is_demo = getattr(_caller(context), "role", None) is UserRole.DEMO
+        payload, task_id, timeout = await self._run(endpoint, params, is_demo=is_demo)
+        if payload is None:
+            return await self._pending(task_id, endpoint, timeout)
+        data, meta = _unwrap(payload)
+        answer = {"status": "ok", "task_id": task_id, **extra, "data": data}
+        if meta.get("cached") is not None:
+            # Worth one word: a cached answer may be minutes old, and an agent
+            # comparing two calls should know which one cost a real request.
+            answer["cached"] = bool(meta["cached"])
+        if meta.get("guest_fallback"):
+            # An agent reading an author's feed takes the first item to be the
+            # newest post; from a guest, on Douyin, it is not. On Bilibili's
+            # comments a guest sees three.
+            answer["guest_fallback"] = True
+            answer["note"] = prose.guest_fallback_note(endpoint)
+        return answer
+
+    # -- tools -------------------------------------------------------------
+
+    async def parse_url(
+        self,
+        url: Annotated[
+            str,
+            Field(
+                description=(
+                    "A Douyin, TikTok or Bilibili link, or the share text containing one. Short links "
+                    "(v.douyin.com, vm.tiktok.com, b23.tv) are followed automatically."
+                )
+            ),
+        ],
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Fetch whatever a Douyin, TikTok or Bilibili link points at.
+
+        The entry point to use when you have a link rather than an id: it works
+        out the platform and the resource type itself and returns the normalized
+        post or author - or, for a link to one, the sound, the hashtag or the
+        live room (with its pull URLs while it is on). Short links are expanded
+        server-side.
+        """
+        return await self._guarded(self._parse_url(url, context))
+
+    async def _parse_url(self, url: str, context: Context | None = None) -> dict[str, Any]:
+        candidate = first_url(url or "")
+        if candidate is None:
+            raise InvalidUrl(
+                "no URL was found in the input",
+                details={"reason": "no_url"},
+            )
+        kind = identify(candidate)
+        if not kind.allowed or kind.platform is None:
+            raise InvalidUrl(
+                "that link is not a supported Douyin, TikTok or Bilibili URL",
+                details={"reason": "host_not_allowed"},
+            )
+        self._authorize(kind.platform, context)
+
+        endpoint, params = routing.route_url(kind)
+        return await self._fetch(
+            endpoint,
+            params,
+            {
+                "platform": kind.platform.value,
+                "resource": kind.resource.value,
+                "url": kind.url,
+            },
+            context=context,
+        )
+
+    async def get_video(
+        self,
+        platform: PlatformArg,
+        content_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "The post id as a string: Douyin aweme_id, TikTok item id, Bilibili bvid "
+                    "(an av number is accepted). Always a string - these ids exceed the "
+                    "JavaScript safe integer range."
+                )
+            ),
+        ],
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Get one post (video or image album) by its id.
+
+        Returns the normalized post: author, stats, media URLs and tags. Use
+        parse_url instead when you have a link rather than an id.
+        """
+        return await self._guarded(self._get_video(platform, content_id, context))
+
+    async def _get_video(
+        self, platform: str, content_id: str, context: Context | None = None
+    ) -> dict[str, Any]:
+        target = routing.coerce_platform(platform)
+        self._authorize(target, context)
+        identifier = routing.require_text(content_id, "content_id")
+        endpoint, params = routing.build_task(target, routing.Capability.CONTENT_DETAIL, identifier)
+        return await self._fetch(
+            endpoint, params, {"platform": target.value, "content_id": identifier}, context=context
+        )
+
+    async def get_user(
+        self,
+        platform: PlatformArg,
+        uid: Annotated[
+            str,
+            Field(
+                description=(
+                    "Douyin: the sec_user_id (starts with 'MS4wLjAB'). TikTok: the secUid, or "
+                    "the @handle if that is all you have. Bilibili: the numeric mid."
+                )
+            ),
+        ],
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Get an author profile.
+
+        The returned 'uid' is the stable key for that author; pass it to
+        list_user_posts. A TikTok @handle can change, so prefer the uid from
+        this result over the handle for any follow-up call.
+        """
+        return await self._guarded(self._get_user(platform, uid, context))
+
+    async def _get_user(
+        self, platform: str, uid: str, context: Context | None = None
+    ) -> dict[str, Any]:
+        target = routing.coerce_platform(platform)
+        self._authorize(target, context)
+        identifier = routing.require_text(uid, "uid")
+        endpoint, params = routing.build_task(target, routing.Capability.AUTHOR_PROFILE, identifier)
+        return await self._fetch(
+            endpoint, params, {"platform": target.value, "uid": identifier}, context=context
+        )
+
+    async def list_user_posts(
+        self,
+        platform: PlatformArg,
+        uid: Annotated[
+            str,
+            Field(
+                description=(
+                    "The author's stable id: Douyin sec_user_id, TikTok secUid, Bilibili mid. "
+                    "A TikTok @handle is not accepted here - call get_user first to obtain the "
+                    "uid."
+                )
+            ),
+        ],
+        cursor: CursorArg = None,
+        count: CountArg = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """List an author's posts, one page at a time.
+
+        The result carries 'cursor' and 'has_more'; pass the cursor back
+        unchanged for the next page. Stop when 'has_more' is false.
+        """
+        return await self._guarded(self._list_user_posts(platform, uid, cursor, count, context))
+
+    async def _list_user_posts(
+        self,
+        platform: str,
+        uid: str,
+        cursor: str | None,
+        count: int | None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        target = routing.coerce_platform(platform)
+        self._authorize(target, context)
+        identifier = routing.require_text(uid, "uid")
+        endpoint, params = routing.build_task(
+            target, routing.Capability.AUTHOR_POSTS, identifier, cursor=cursor, count=count
+        )
+        return await self._fetch(
+            endpoint, params, {"platform": target.value, "uid": identifier}, context=context
+        )
+
+    async def list_comments(
+        self,
+        platform: PlatformArg,
+        content_id: Annotated[
+            str, Field(description="The post id whose top-level comments you want.")
+        ],
+        cursor: CursorArg = None,
+        count: CountArg = None,
+        sort: SortArg = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """List the top-level comments on a post, one page at a time.
+
+        The result carries 'cursor' and 'has_more'; pass the cursor back
+        unchanged for the next page.
+        """
+        return await self._guarded(
+            self._list_comments(platform, content_id, cursor, count, sort, context)
+        )
+
+    async def _list_comments(
+        self,
+        platform: str,
+        content_id: str,
+        cursor: str | None,
+        count: int | None,
+        sort: str | None = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        target = routing.coerce_platform(platform)
+        self._authorize(target, context)
+        identifier = routing.require_text(content_id, "content_id")
+        endpoint, params = routing.build_task(
+            target,
+            routing.Capability.COMMENTS,
+            identifier,
+            cursor=cursor,
+            count=count,
+            sort=routing.coerce_sort(sort),
+        )
+        return await self._fetch(
+            endpoint, params, {"platform": target.value, "content_id": identifier}, context=context
+        )
+
+    async def get_content_history(
+        self,
+        platform: PlatformArg,
+        content_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "A post id, or an author id for follower history. Only ids this instance "
+                    "has fetched before have any history."
+                )
+            ),
+        ],
+        since: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description=(
+                    "ISO 8601 date or timestamp, for example '2026-01-15' or "
+                    f"'2026-01-15T00:00:00Z'. Defaults to the last {HISTORY_DEFAULT_DAYS} days."
+                ),
+            ),
+        ] = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Read the recorded metric history for one post or author.
+
+        Answers "how did this grow" from snapshots already stored locally: it
+        makes no upstream request and costs no identity quota. Metrics the
+        platform did not report are null, never zero - a null is missing data,
+        a zero is a real measurement. Points come back oldest first; when there
+        are more than fit, the most recent ones are kept and 'truncated' is
+        true, so widen 'since' only if you need the earlier part of the curve.
+        """
+        return await self._guarded(self._get_content_history(platform, content_id, since, context))
+
+    async def _get_content_history(
+        self, platform: str, content_id: str, since: str | None, context: Context | None = None
+    ) -> dict[str, Any]:
+        target = routing.coerce_platform(platform)
+        self._authorize(target, context)
+        identifier = routing.require_text(content_id, "content_id")
+        start = _parse_since(since)
+        points = await self._ctx.history.history(
+            target, identifier, since=start, limit=HISTORY_MAX_POINTS
+        )
+        return {
+            "status": "ok",
+            "platform": target.value,
+            "content_id": identifier,
+            "since": start.isoformat(),
+            "point_count": len(points),
+            "truncated": len(points) >= HISTORY_MAX_POINTS,
+            "points": [point.as_dict() for point in points],
+        }
+
+    async def pool_status(self, context: Context | None = None) -> dict[str, Any]:
+        """Report identity-pool and endpoint health.
+
+        Call this when a request failed or timed out and you need to decide
+        whether to wait, to try a different platform, or to stop. It reports
+        counts and circuit states only; no credential is ever exposed.
+        """
+        return await self._guarded(self._pool_status(context))
+
+    async def _pool_status(self, context: Context | None = None) -> dict[str, Any]:
+        caller = _caller(context)
+        if caller is not None and not caller.permits(*PLATFORM_READ_SCOPES):
+            raise ForbiddenScope(
+                "this credential lacks platform read access",
+                details=caller.denial(scopes=PLATFORM_READ_SCOPES),
+            )
+        snapshot = await self._ctx.pool.snapshot()
+        return {
+            "status": "ok",
+            "observed_at": snapshot.observed_at.isoformat(),
+            "identities": {
+                platform: dict(states) for platform, states in snapshot.identities.items()
+            },
+            "usable_identities": snapshot.usable(),
+            "endpoints": [
+                {
+                    "endpoint": entry.endpoint,
+                    "state": entry.state,
+                    "retry_after_seconds": entry.retry_after_seconds,
+                    "reason": entry.reason,
+                    "requests_recent": entry.total,
+                    "ok_recent": entry.ok,
+                    "risk_control_recent": entry.risk,
+                    "last_success_at": (
+                        entry.last_success_at.isoformat() if entry.last_success_at else None
+                    ),
+                }
+                for entry in snapshot.endpoints
+            ],
+            "summary": prose.summarize_pool(snapshot),
+        }
+
+    async def get_task_result(
+        self,
+        task_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "The task id from a tool call that reported status 'pending'. There is no "
+                    "other reason to call this tool."
+                )
+            ),
+        ],
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Collect the result of a call that had not finished in time.
+
+        Only useful after another tool returned status 'pending' with a task id.
+        Never start here: every other tool already waits for its own answer.
+        """
+        return await self._guarded(self._get_task_result(task_id, context))
+
+    async def _get_task_result(
+        self, task_id: str, context: Context | None = None
+    ) -> dict[str, Any]:
+        identifier = routing.require_text(task_id, "task_id")
+        try:
+            outcome = await self._ctx.tasks.result(identifier)
+        except TaskNotFound as exc:
+            raise ToolError(prose.describe_error(exc)) from None
+
+        # A task id is not a capability: collecting a result costs the scope that
+        # queueing the work needed. A platform endpoint goes through the same
+        # authorizer as the tool that queued it. Everything else used to go
+        # through nothing, which held while the transport admitted only
+        # platform-read keys; once media and transcription keys could reach it,
+        # they could read any task by id - a proxy probe's exit IP, a minted
+        # identity's id. Those now get the table GET /api/v1/tasks/{id} uses.
+        platform = _platform_of(outcome.endpoint)
+        if platform is not None:
+            self._authorize(platform, context)
+        else:
+            self._authorize_task(outcome.endpoint, context)
+        if outcome.pinned:
+            self._authorize_pinned(context)
+
+        if not outcome.settled:
+            snapshot = await self._snapshot()
+            return {
+                "status": "pending",
+                "task_id": identifier,
+                "message": prose.unfinished_task_message(identifier, outcome.state.value, snapshot),
+            }
+        payload = await self._settle(outcome, "")
+        data, _meta = _unwrap(payload)
+        if outcome.endpoint == "media.download":
+            return await self._download_answer(identifier, _record_id(data, "download_id"))
+        if outcome.endpoint == "media.transcribe":
+            return await self._transcription_answer(
+                identifier, _record_id(data, "transcription_id"), reused=None
+            )
+        return {"status": "ok", "task_id": identifier, "data": data}
+
+    def _authorize_task(self, endpoint: str | None, context: Context | None) -> None:
+        caller = _caller(context)
+        if caller is None:  # stdio: the local process owner
+            return
+        # Imported here for the reason authorize_platform gives: the route
+        # package imports this one to mount the server.
+        from dtk.api.routes.operations import scopes_for_task
+
+        # A row with no endpoint matches nothing and falls back to admin, which
+        # is the safe direction for a task this build cannot place.
+        caller.require(*scopes_for_task(endpoint or ""))
+        # The role half, as GET /api/v1/tasks/{id} applies it. A key carries
+        # its owner's role, so a viewer's key holding the scope stops here.
+        from dtk.api.routes.operations import role_for_task
+        from dtk.api.routes.support import ROLE_RANK
+
+        floor = role_for_task(endpoint or "")
+        if ROLE_RANK[caller.role] < ROLE_RANK[floor]:
+            raise ForbiddenScope(
+                "reading this task requires a higher role", details=caller.denial(roles=[floor])
+            )
+
+    def _authorize_pinned(self, context: Context | None) -> None:
+        """A task sent as a named identity holds that session's private view.
+
+        No tool here can name one, but a task id is not a capability: the REST
+        API can, and an id travels. Collecting it costs what naming it costs.
+        """
+        caller = _caller(context)
+        if caller is None:  # stdio: the local process owner
+            return
+        from dtk.api.routes.support import POOL_ROLE, POOL_SCOPES, handles_credentials
+
+        if not handles_credentials(caller):
+            raise ForbiddenScope(
+                "reading this task requires a higher role",
+                details=caller.denial(scopes=POOL_SCOPES, roles=[POOL_ROLE]),
+            )
+
+    async def _download_answer(self, task_id: str | None, download_id: str) -> dict[str, Any]:
+        """The stored download, or why there is none - never "ok" for nothing."""
+        gateway = self._ctx.downloads
+        if gateway is None:
+            raise NotConfigured("media downloads are not configured on this instance")
+        record = await gateway.get(download_id)
+        state = str(record.get("state") or "")
+        if state in ("failed", "cancelled"):
+            raise ToolError(
+                prose.unsettled_media_message("download", download_id, state, record.get("error"))
+            )
+        return {"status": "ok", "task_id": task_id, "download_id": download_id, "data": record}
+
+    async def _transcription_answer(
+        self, task_id: str | None, transcription_id: str, *, reused: str | None
+    ) -> dict[str, Any]:
+        """The stored transcript, or why there is none."""
+        gateway = self._ctx.transcriptions
+        if gateway is None:
+            raise NotConfigured("transcription is not configured on this instance")
+        record = await gateway.get(transcription_id)
+        state = str(record.get("state") or "")
+        if state in ("failed", "cancelled"):
+            raise ToolError(
+                prose.unsettled_media_message(
+                    "transcription", transcription_id, state, record.get("error")
+                )
+            )
+        if reused is not None:
+            record["reused"] = reused
+        return {
+            "status": "ok",
+            "task_id": task_id,
+            "transcription_id": transcription_id,
+            "data": record,
+        }
+
+    async def download_media(
+        self,
+        url: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description=(
+                    "A full Douyin, TikTok or Bilibili post URL, or share text containing one. "
+                    "Expand short links with parse_url first."
+                ),
+            ),
+        ] = None,
+        platform: Annotated[
+            str | None,
+            Field(default=None, description="Platform: 'douyin', 'tiktok' or 'bilibili'."),
+        ] = None,
+        content_id: Annotated[
+            str | None,
+            Field(default=None, description="Post id as a string, paired with platform."),
+        ] = None,
+        skip_existing: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Answer from disk when this post's media is already stored.",
+            ),
+        ] = True,
+        part: Annotated[
+            int | None,
+            Field(
+                default=None,
+                description=(
+                    "Bilibili only: which part of a video uploaded in several, from 1. "
+                    "Omit for the part the URL's ?p= names, or the first. Each part is "
+                    "its own download_id."
+                ),
+            ),
+        ] = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Store one post's video and images on this instance.
+
+        Call this before transcribe_video, which takes the download_id it
+        returns. Unlike the read tools it changes this instance: it writes files
+        to the operator's disk, and a post that has not been parsed here yet is
+        fetched through the identity pool first. With skip_existing (the
+        default) a post already on disk is answered without fetching anything.
+        """
+        return await self._guarded(
+            self._download_media(url, platform, content_id, skip_existing, context, part)
+        )
+
+    async def _download_media(
+        self,
+        url: str | None,
+        platform: str | None,
+        content_id: str | None,
+        skip_existing: bool,
+        context: Context | None,
+        part: int | None = None,
+    ) -> dict[str, Any]:
+        caller = self._authorize_scope(Scope.MEDIA_WRITE, context)
+        gateway = self._ctx.downloads
+        if gateway is None:
+            raise NotConfigured("media downloads are not configured on this instance")
+        target_platform = routing.coerce_platform(platform) if platform else None
+        record = await gateway.start(
+            url=url.strip() if url and url.strip() else None,
+            platform=target_platform,
+            content_id=content_id.strip() if content_id and content_id.strip() else None,
+            skip_existing=skip_existing,
+            requested_by=getattr(caller, "api_key_id", None),
+            is_demo=getattr(caller, "role", None) is UserRole.DEMO,
+            part=part,
+        )
+        download_id = str(record["download_id"])
+        task_id = str(record["task_id"]) if record.get("task_id") else None
+        if record.get("reused") == "already_stored" or task_id is None:
+            return await self._download_answer(task_id, download_id)
+        timeout = self._ctx.tool_timeout
+        outcome = await self._ctx.tasks.wait(task_id, timeout)
+        if outcome is None or not outcome.settled:
+            pending = await self._pending(task_id, "media.download", timeout)
+            return {**pending, "download_id": download_id}
+        await self._settle(outcome, "media.download")
+        return await self._download_answer(task_id, download_id)
+
+    async def transcribe_video(
+        self,
+        download_id: Annotated[
+            str,
+            Field(description="The download_id download_media returned for the post."),
+        ],
+        normalize: Annotated[
+            bool,
+            Field(
+                default=True,
+                description="Write Chinese numbers, dates and amounts as digits.",
+            ),
+        ] = True,
+        refresh: Annotated[
+            bool,
+            Field(
+                default=False,
+                description="Transcribe again even when a finished transcript exists.",
+            ),
+        ] = False,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Transcribe the speech in a video this instance has stored.
+
+        Takes the download_id from download_media; a post that is not stored
+        yet has to go through that tool first. The speech model runs on this
+        instance and the transcript is kept, so asking again for the same video
+        returns the stored text unless refresh is true, and asking while one is
+        running joins it rather than starting a second.
+        """
+        return await self._guarded(self._transcribe_video(download_id, normalize, refresh, context))
+
+    async def _transcribe_video(
+        self,
+        download_id: str,
+        normalize: bool,
+        refresh: bool,
+        context: Context | None,
+    ) -> dict[str, Any]:
+        caller = self._authorize_scope(Scope.TRANSCRIPTION_WRITE, context)
+        gateway = self._ctx.transcriptions
+        if gateway is None:
+            raise NotConfigured("transcription is not configured on this instance")
+        record, reused = await gateway.start(
+            routing.require_text(download_id, "download_id"),
+            normalize=normalize,
+            refresh=refresh,
+            requested_by=getattr(caller, "api_key_id", None),
+            is_demo=getattr(caller, "role", None) is UserRole.DEMO,
+        )
+        transcription_id = str(record["transcription_id"])
+        task_id = str(record["task_id"]) if record.get("task_id") else None
+        if record.get("state") not in ("queued", "running"):
+            return await self._transcription_answer(task_id, transcription_id, reused=reused)
+        if task_id is None:
+            # A live transcription is committed together with its task, so this
+            # is a row from before that rule. There is nothing to wait on.
+            raise ToolError(
+                prose.describe(
+                    ErrorCode.INTERNAL,
+                    f"transcription {transcription_id} is live but has no task to wait on; "
+                    "cancel it from the console and call transcribe_video again",
+                )
+            )
+        timeout = self._ctx.tool_timeout
+        outcome = await self._wait_for_transcription(task_id, transcription_id, context)
+        if outcome is None or not outcome.settled:
+            pending = await self._pending(task_id, "media.transcribe", timeout)
+            return {**pending, "transcription_id": transcription_id}
+        await self._settle(outcome, "media.transcribe")
+        answer = await self._transcription_answer(task_id, transcription_id, reused=reused)
+        if _wants_progress(context):
+            assert context is not None
+            await _report_transcription_progress(
+                context, 100.0, _TRANSCRIPTION_STAGE_MESSAGES["done"]
+            )
+        return answer
+
+    async def _wait_for_transcription(
+        self,
+        task_id: str,
+        transcription_id: str,
+        context: Context | None,
+    ) -> TaskOutcome | None:
+        """Wait for completion while forwarding optional MCP progress.
+
+        A client that did not include ``progressToken`` takes the original
+        long-poll path exactly. Supporting clients get best-effort Redis
+        snapshots alongside that same wait; the durable task result remains
+        the only authoritative outcome.
+        """
+        timeout = self._ctx.tool_timeout
+        if not _wants_progress(context):
+            return await self._ctx.tasks.wait(task_id, timeout)
+
+        assert context is not None
+        gateway = self._ctx.transcriptions
+        assert gateway is not None
+        await _report_transcription_progress(context, 0.0, _TRANSCRIPTION_STAGE_MESSAGES["queued"])
+        last_progress = 0.0
+        last_revision = -1
+        last_text = ""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        waiter = asyncio.create_task(self._ctx.tasks.wait(task_id, timeout))
+        try:
+            while not waiter.done():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.wait(
+                    {waiter},
+                    timeout=min(TRANSCRIPTION_PROGRESS_POLL_SECONDS, remaining),
+                )
+                try:
+                    # Bounded like everything else in the wait: a slow Redis
+                    # read must not carry the call past the tool timeout.
+                    snapshot = await asyncio.wait_for(
+                        gateway.progress(transcription_id),
+                        timeout=max(0.1, deadline - loop.time()),
+                    )
+                except Exception as exc:  # progress must never mask the real result
+                    log.warning(
+                        "mcp.transcription_progress_read_failed",
+                        transcription_id=transcription_id,
+                        error=repr(exc),
+                    )
+                    snapshot = None
+                if snapshot is None:
+                    continue
+                revision = int(snapshot.get("revision") or 0)
+                if revision == last_revision:
+                    continue
+                last_revision = revision
+                progress = _transcription_progress(snapshot)
+                partial_text = str(snapshot.get("partial_text") or "")
+                delta = _appended_text(last_text, partial_text)
+                # MCP requires progress to increase for a token. A sidecar
+                # callback can update the text just before its matching media
+                # position; defer that snapshot instead of repeating a value.
+                if progress <= last_progress:
+                    continue
+                await _report_transcription_progress(
+                    context,
+                    progress,
+                    _transcription_progress_message(snapshot, delta),
+                )
+                last_progress = progress
+                last_text = partial_text
+
+            if waiter.done():
+                outcome = await waiter
+            else:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+                return None
+            return outcome
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+
+
+def _caller(context: Context | None) -> Any | None:
+    """The principal the transport authenticated, when there is one.
+
+    Over streamable-http the SDK carries the Starlette request on the call
+    context, and :class:`dtk.mcp.http.ApiKeyGuard` has already put the resolved
+    principal on its state. On stdio there is no request and no principal, and
+    the authorizer treats that as the local process owner.
+    """
+    if context is None:
+        return None
+    try:
+        request = context.request_context.request
+    except (AttributeError, ValueError):  # no request context on this transport
+        return None
+    return getattr(getattr(request, "state", None), "principal", None)
+
+
+def _wants_progress(context: Context | None) -> bool:
+    """Whether this call supplied MCP's opt-in progress token."""
+    if context is None:
+        return False
+    try:
+        request_context = context.request_context
+    except (AttributeError, ValueError):
+        return False
+    meta = getattr(request_context, "meta", None)
+    if isinstance(meta, Mapping):
+        token = meta.get("progress_token", meta.get("progressToken"))
+    else:
+        token = getattr(meta, "progress_token", None)
+    if token is not None:
+        return True
+    params = getattr(request_context, "params", None)
+    if isinstance(params, Mapping):
+        raw_meta = params.get("_meta")
+        if isinstance(raw_meta, Mapping):
+            return raw_meta.get("progressToken", raw_meta.get("progress_token")) is not None
+    return False
+
+
+async def _report_transcription_progress(context: Context, progress: float, message: str) -> None:
+    """Keep the optional UI channel from changing tool-result semantics."""
+    try:
+        await context.report_progress(progress, 100.0, message)
+    except Exception as exc:
+        log.warning(
+            "mcp.transcription_progress_report_failed",
+            progress=progress,
+            error=repr(exc),
+        )
+
+
+def _transcription_progress(snapshot: dict[str, Any]) -> float:
+    stage = str(snapshot.get("stage") or snapshot.get("state") or "queued")
+    if stage == "asr":
+        processed = max(0, int(snapshot.get("processed_ms") or 0))
+        duration = max(0, int(snapshot.get("duration_ms") or 0))
+        if duration:
+            return min(90.0, 5.0 + 85.0 * processed / duration)
+        return 5.0
+    return _TRANSCRIPTION_STAGE_PROGRESS.get(stage, 0.0)
+
+
+def _appended_text(previous: str, current: str) -> str:
+    if not current:
+        return ""
+    if current.startswith(previous):
+        return current[len(previous) :]
+    # A restarted sidecar may rebuild its provisional buffer. Sending the new
+    # snapshot is safer than pretending it is an append to an unrelated prefix.
+    return current
+
+
+def _transcription_progress_message(snapshot: dict[str, Any], delta: str) -> str:
+    stage = str(snapshot.get("stage") or snapshot.get("state") or "queued")
+    message = _TRANSCRIPTION_STAGE_MESSAGES.get(stage, "Transcription is running.")
+    if stage == "asr" and snapshot.get("progress_percent") is not None:
+        message = f"Transcribing audio ({float(snapshot['progress_percent']):.1f}% of media)."
+    if delta:
+        message = f"{message} Provisional text: {delta}"
+    return message
+
+
+def _platform_of(endpoint: str | None) -> Platform | None:
+    """The platform an endpoint name belongs to, if it names one.
+
+    ``douyin.author_posts`` does; the logical ``parse`` endpoint does not,
+    because which platform it touches is only settled once the URL is followed.
+    """
+    if not endpoint or "." not in endpoint:
+        return None
+    try:
+        return Platform(endpoint.split(".", 1)[0])
+    except ValueError:
+        return None
+
+
+def _record_id(data: Any, key: str) -> str:
+    """The record a finished media task names, which the answer is read from."""
+    value = data.get(key) if isinstance(data, dict) else None
+    if not value:
+        raise ToolError(
+            prose.describe(ErrorCode.INTERNAL, f"the finished task did not name its {key}")
+        )
+    return str(value)
+
+
+def _unwrap(payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """Separate the model from the task envelope.
+
+    The worker stores ``{"data": ..., "meta": {...}}``. An agent wants the model;
+    handing it a result nested one level deeper than the schema describes is a
+    reliable way to make it give up. A payload without that shape is passed
+    through unchanged.
+    """
+    if isinstance(payload, dict) and "data" in payload:
+        meta = payload.get("meta")
+        return payload["data"], meta if isinstance(meta, dict) else {}
+    return payload, {}
+
+
+def _parse_since(since: str | None) -> datetime:
+    if since is None or not since.strip():
+        return datetime.now(UTC) - timedelta(days=HISTORY_DEFAULT_DAYS)
+    text = since.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise InvalidParam(
+            "since must be an ISO 8601 date or timestamp, for example '2026-01-15'",
+            details={"field": "since", "value": since},
+        ) from None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+#: Tool name -> the :class:`ToolSet` method implementing it. The registry is
+#: explicit so a method added to the class does not silently become a tool.
+TOOL_METHODS: Final[tuple[str, ...]] = (
+    "parse_url",
+    "get_video",
+    "get_user",
+    "list_user_posts",
+    "list_comments",
+    "get_content_history",
+    "pool_status",
+    "download_media",
+    "transcribe_video",
+    "get_task_result",
+)
+
+
+__all__ = [
+    "HISTORY_DEFAULT_DAYS",
+    "HISTORY_MAX_POINTS",
+    "TOOL_METHODS",
+    "ToolSet",
+]

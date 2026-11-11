@@ -32,3 +32,4 @@ curl_cffi>=0.7.0
 scrapling>=0.4.0
 qrcode>=7.4
 instagrapi>=3.0.0
+structlog>=25.1

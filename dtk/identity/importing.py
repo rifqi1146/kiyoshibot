@@ -1,0 +1,469 @@
+"""Importing a cookie set that the user pasted in.
+
+Users arrive with one of four shapes depending on where they copied from, and
+supporting only one of them generates a steady stream of "format error" reports.
+All four are recognised automatically here; when recognition fails the caller
+shows an example rather than an error code.
+
+The parsed result is reported back before anything is saved so the user can
+confirm what was understood: which cookies were found, which of them are the
+load-bearing ones, the inferred browser, and - for a logged-in cookie set - when
+it expires. See docs/design/07-frontend.md.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
+from types import MappingProxyType
+from urllib.parse import unquote
+
+from dtk.core.logging import get_logger
+from dtk.core.types import BrowserFamily, Platform
+from dtk.transport.base import Fingerprint
+
+log = get_logger(__name__)
+
+
+class CookieFormat(StrEnum):
+    HEADER = "header"  # ttwid=a; odin_tt=b
+    JSON_ARRAY = "json_array"  # EditThisCookie and similar extensions
+    NETSCAPE = "netscape"  # cookies.txt
+    LOOSE = "loose"  # one key=value per line, hand-copied
+
+
+#: Cookies that must be present for a guest identity to be usable.
+REQUIRED: dict[Platform, tuple[str, ...]] = {
+    Platform.DOUYIN: ("ttwid",),
+    Platform.TIKTOK: ("ttwid",),
+    # The visitor id every Bilibili browser carries; without it the signed
+    # endpoints treat the request as coming from no browser at all.
+    Platform.BILIBILI: ("buvid3",),
+}
+
+#: Presence of any of these means the cookie set carries a logged-in session,
+#: which is far more valuable and far more damaging to leak.
+SESSION_MARKERS: frozenset[str] = frozenset(
+    {"sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt", "sid_ucp_v1", "SESSDATA"}
+)
+
+#: Cookies that materially improve a guest identity but are not required.
+USEFUL: frozenset[str] = frozenset(
+    {
+        "odin_tt",
+        "s_v_web_id",
+        "msToken",
+        "passport_csrf_token",
+        "tt_csrf_token",
+        "__ac_nonce",
+        # Bilibili's: the second visitor id, the first-visit stamp and the
+        # browser fingerprint id the site's own page sets.
+        "buvid4",
+        "b_nut",
+        "buvid_fp",
+        "_uuid",
+    }
+)
+
+#: Cookie names only one platform sets, which is how a paste says where it came
+#: from. The console's import dialog opened on Douyin whatever was pasted, so a
+#: Bilibili jar was judged against Douyin's required cookies and refused for
+#: lacking a `ttwid` it was never going to have.
+#:
+#: Distinct names only. Douyin and TikTok are both ByteDance and share most of
+#: their jar - `ttwid`, `odin_tt`, `sessionid`, `sid_guard`, and `msToken` on
+#: both - so those decide nothing on their own. The Douyin set carries every
+#: spelling of the visitor id `dtk.signing.native.websign.UIFID_COOKIE_NAMES`
+#: looks for, and `s_v_web_id`, which is its `verifyFp`.
+PLATFORM_MARKERS: Mapping[Platform, frozenset[str]] = MappingProxyType(
+    {
+        Platform.BILIBILI: frozenset(
+            {"SESSDATA", "bili_jct", "buvid3", "buvid4", "b_nut", "buvid_fp", "DedeUserID"}
+        ),
+        Platform.TIKTOK: frozenset(
+            {
+                "store-idc",
+                "store-country-code",
+                "tt-target-idc",
+                "tt_chain_token",
+                "tiktok_webapp_theme",
+            }
+        ),
+        Platform.DOUYIN: frozenset(
+            {
+                "s_v_web_id",
+                "UIFID",
+                "UIFID_TEMP",
+                "UIFIDTEMP",
+                "uifid",
+                "uifid_temp",
+                "uifidtemp",
+                "IsDouyinActive",
+                "__ac_nonce",
+                "__ac_signature",
+            }
+        ),
+    }
+)
+
+#: Names a ByteDance jar carries on either platform. With no distinct marker
+#: beside them they still say "not Bilibili", and of the two ByteDance sites a
+#: jar with nothing TikTok-specific in it is a Douyin one in practice: a TikTok
+#: page sets its datacentre cookies on the first visit.
+BYTEDANCE_SHARED: frozenset[str] = frozenset({"ttwid", "odin_tt", "msToken"})
+
+#: Catalogue namespace the warning codes below render through.
+WARNING_KEY_PREFIX: str = "identity.import.warning."
+
+
+class WarningCode(StrEnum):
+    """What the preview has to tell the user, as a stable identifier.
+
+    Append only, and never translated: the sentence is rendered at the API
+    boundary, so a console that wants to shout about a live session must be able
+    to recognise one without matching on English (doc 14).
+    """
+
+    NO_COOKIES = "no_cookies"
+    LOGGED_IN_SESSION = "logged_in_session"
+    UNKNOWN_BROWSER = "unknown_browser"
+    NO_USEFUL_COOKIES = "no_useful_cookies"
+
+
+@dataclass(frozen=True, slots=True)
+class CookieWarning:
+    """One warning: a code, plus whatever its sentence interpolates.
+
+    Arguments come from this module's own constants and from nothing else.
+    Nothing read out of the paste - not a value, not a name - may become one: a
+    warning is rendered into a response and, unlike the jar itself, is the sort
+    of string that ends up pasted into a bug report (doc 08).
+    """
+
+    code: WarningCode
+    args: Mapping[str, str | int] = MappingProxyType({})
+
+    @property
+    def key(self) -> str:
+        return f"{WARNING_KEY_PREFIX}{self.code.value}"
+
+
+@dataclass(frozen=True, slots=True)
+class ImportReport:
+    """What was understood from the pasted text, shown before saving."""
+
+    detected_format: CookieFormat
+    cookies: dict[str, str]
+    platform: Platform
+    authenticated: bool
+    fingerprint: Fingerprint
+    expires_at: datetime | None
+    missing_required: tuple[str, ...]
+    warnings: tuple[CookieWarning, ...] = field(default_factory=tuple)
+    #: Which platform the cookie names point at, whatever ``platform`` says.
+    #: None when they do not say; see :func:`detect_platform`.
+    detected_platform: Platform | None = None
+
+    @property
+    def usable(self) -> bool:
+        return not self.missing_required and self.fingerprint.emulatable
+
+    def masked(self) -> dict[str, str]:
+        """Cookie names with masked values, for display. Never the real values."""
+        return {k: mask_value(v) for k, v in self.cookies.items()}
+
+
+def mask_value(value: str) -> str:
+    """A cookie value shown without being disclosed.
+
+    First four and last four, with a fixed run of stars between them. Fixed
+    because a variable one would leak the length, and the ends because they are
+    what lets a person confirm two jars are the same jar - a mask that showed
+    nothing would be indistinguishable from an empty cookie, which is a state
+    that actually happens.
+    """
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * 8}{value[-4:]}"
+
+
+# --- format detection and parsing ---------------------------------------------
+
+
+def detect_format(text: str) -> CookieFormat:
+    stripped = text.strip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        return CookieFormat.JSON_ARRAY
+    if "\t" in stripped and re.search(r"^#?\s*\S+\t", stripped, re.MULTILINE):
+        return CookieFormat.NETSCAPE
+    if ";" in stripped:
+        return CookieFormat.HEADER
+    return CookieFormat.LOOSE
+
+
+def _parse_header(text: str) -> dict[str, str]:
+    text = re.sub(r"^\s*cookie\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
+    out: dict[str, str] = {}
+    for chunk in text.split(";"):
+        name, sep, value = chunk.partition("=")
+        if sep and name.strip():
+            out[name.strip()] = value.strip()
+    return out
+
+
+def _parse_json(text: str) -> dict[str, str]:
+    data = json.loads(text)
+    if isinstance(data, dict):
+        # Some exporters emit {name: value}; others a single cookie object.
+        if "name" in data and "value" in data:
+            return {str(data["name"]): str(data["value"])}
+        return {str(k): str(v) for k, v in data.items()}
+    out: dict[str, str] = {}
+    for item in data:
+        if isinstance(item, dict) and "name" in item:
+            out[str(item["name"])] = str(item.get("value", ""))
+    return out
+
+
+def _parse_netscape(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            out[parts[5].strip()] = parts[6].strip()
+    return out
+
+
+def _parse_loose(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in re.split(r"[\r\n]+", text):
+        name, sep, value = line.strip().partition("=")
+        if sep and name.strip():
+            out[name.strip()] = value.strip().rstrip(";")
+    return out
+
+
+_PARSERS = {
+    CookieFormat.HEADER: _parse_header,
+    CookieFormat.JSON_ARRAY: _parse_json,
+    CookieFormat.NETSCAPE: _parse_netscape,
+    CookieFormat.LOOSE: _parse_loose,
+}
+
+
+def parse_cookies(text: str) -> tuple[CookieFormat, dict[str, str]]:
+    fmt = detect_format(text)
+    try:
+        cookies = _PARSERS[fmt](text)
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+        cookies = {}
+    if not cookies and fmt is not CookieFormat.LOOSE:
+        # Detection is a heuristic; fall back rather than rejecting outright.
+        cookies = _parse_loose(text)
+        if cookies:
+            fmt = CookieFormat.LOOSE
+    return fmt, {k: v for k, v in cookies.items() if k and v}
+
+
+# --- browser inference ---------------------------------------------------------
+
+_UA_PATTERNS: tuple[tuple[re.Pattern[str], BrowserFamily], ...] = (
+    (re.compile(r"(?:Edg|Edge)/(\d+)"), BrowserFamily.CHROME),
+    (re.compile(r"OPR/(\d+)"), BrowserFamily.CHROME),
+    (re.compile(r"Chrome/(\d+)"), BrowserFamily.CHROME),
+    (re.compile(r"Firefox/(\d+)"), BrowserFamily.FIREFOX),
+    (re.compile(r"Version/(\d+)[.\d]*\s+Safari"), BrowserFamily.SAFARI),
+)
+
+
+def infer_browser(user_agent: str | None) -> tuple[BrowserFamily | None, int | None]:
+    """Derive the browser family and major version from a User-Agent.
+
+    Edge and Opera are Chromium underneath and share Chrome's TLS profile, so
+    they map onto CHROME. Order matters: their tokens appear alongside
+    "Chrome/", so they must be tested first.
+    """
+    if not user_agent:
+        return None, None
+    for pattern, family in _UA_PATTERNS:
+        m = pattern.search(user_agent)
+        if m:
+            try:
+                return family, int(m.group(1))
+            except (ValueError, IndexError):
+                return family, None
+    return None, None
+
+
+# --- session expiry ------------------------------------------------------------
+
+#: Douyin encodes the session lifetime inside sid_guard as
+#: "<sessionid>|<issued_unix>|<max_age_seconds>|<http_date>", URL-encoded.
+_SID_GUARD_RE = re.compile(r"^([^|]+)\|(\d+)\|(\d+)\|(.*)$")
+
+#: Bilibili's SESSDATA carries its own expiry: URL-decoded it is
+#: "<token>,<expiry_unix>,<suffix>", the suffix itself holding a `*`. Read
+#: from the value rather than from the cookie's Expires attribute, because
+#: every paste format but cookies.txt drops the attribute and keeps the value.
+_SESSDATA_RE = re.compile(r"^([^,]+),(\d+),(.*)$")
+
+
+def session_expiry(cookies: Mapping[str, str]) -> datetime | None:
+    """Best-effort expiry for a logged-in cookie set.
+
+    Knowing this up front turns a silent mass failure - every request from that
+    identity starting to fail at once - into a warning days ahead of time.
+
+    Douyin and TikTok say it in ``sid_guard``, Bilibili in ``SESSDATA``. Until
+    the second was read here, every Bilibili login showed no expiry at all, and
+    the warning this exists for never fired for one.
+    """
+    guard = cookies.get("sid_guard")
+    if guard:
+        return _sid_guard_expiry(guard)
+    sessdata = cookies.get("SESSDATA")
+    if sessdata:
+        return _sessdata_expiry(sessdata)
+    return None
+
+
+def _sessdata_expiry(value: str) -> datetime | None:
+    m = _SESSDATA_RE.match(unquote(value))
+    if not m:
+        return None
+    try:
+        expires = int(m.group(2))
+    except ValueError:
+        return None
+    if expires <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(expires, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _sid_guard_expiry(guard: str) -> datetime | None:
+    m = _SID_GUARD_RE.match(unquote(guard))
+    if not m:
+        return None
+    try:
+        issued = int(m.group(2))
+        max_age = int(m.group(3))
+    except ValueError:
+        return None
+    if max_age <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(issued + max_age, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+# --- platform detection ----------------------------------------------------------
+
+
+def detect_platform(names: Iterable[str]) -> Platform | None:
+    """The platform a jar's cookie names point at, or None when they do not say.
+
+    Counted rather than first-match, because the sets are distinct but a jar is
+    not always tidy: a browser that visited both ByteDance sites can hand over
+    a Douyin jar with one TikTok cookie in it. A tie is an honest None - the
+    caller keeps the platform the person chose rather than guessing for them.
+    """
+    present = set(names)
+    scores = {platform: len(present & markers) for platform, markers in PLATFORM_MARKERS.items()}
+    best = max(scores.values(), default=0)
+    if best:
+        leaders = [platform for platform, score in scores.items() if score == best]
+        return leaders[0] if len(leaders) == 1 else None
+    if present & BYTEDANCE_SHARED:
+        return Platform.DOUYIN
+    return None
+
+
+# --- top level -----------------------------------------------------------------
+
+
+def build_report(
+    text: str,
+    platform: Platform,
+    *,
+    user_agent: str | None = None,
+    language: str | None = None,
+    timezone: str | None = None,
+) -> ImportReport:
+    fmt, cookies = parse_cookies(text)
+    authenticated = bool(SESSION_MARKERS & cookies.keys())
+    family, major = infer_browser(user_agent)
+
+    warnings: list[CookieWarning] = []
+    if not cookies:
+        warnings.append(CookieWarning(WarningCode.NO_COOKIES))
+    if authenticated:
+        warnings.append(CookieWarning(WarningCode.LOGGED_IN_SESSION))
+    if family is None:
+        # Doc 02 requires refusing rather than defaulting: a mismatched
+        # fingerprint is more dangerous than having no identity at all.
+        warnings.append(CookieWarning(WarningCode.UNKNOWN_BROWSER))
+    if not USEFUL & cookies.keys() and not authenticated:
+        # The list is an argument rather than part of the sentence so that
+        # adding a cookie to USEFUL does not mean editing every locale file.
+        warnings.append(
+            CookieWarning(
+                WarningCode.NO_USEFUL_COOKIES,
+                MappingProxyType({"optional": ", ".join(sorted(USEFUL))}),
+            )
+        )
+
+    missing = tuple(c for c in REQUIRED.get(platform, ()) if c not in cookies)
+
+    return ImportReport(
+        detected_format=fmt,
+        cookies=cookies,
+        platform=platform,
+        authenticated=authenticated,
+        fingerprint=Fingerprint(
+            browser_family=family,
+            browser_major=major,
+            user_agent=user_agent,
+            language=language,
+            timezone=timezone,
+        ),
+        expires_at=session_expiry(cookies) if authenticated else None,
+        missing_required=missing,
+        warnings=tuple(warnings),
+        detected_platform=detect_platform(cookies),
+    )
+
+
+def to_cookie_header(cookies: dict[str, str]) -> str:
+    return "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+
+__all__ = [
+    "BYTEDANCE_SHARED",
+    "PLATFORM_MARKERS",
+    "REQUIRED",
+    "SESSION_MARKERS",
+    "USEFUL",
+    "WARNING_KEY_PREFIX",
+    "CookieFormat",
+    "CookieWarning",
+    "ImportReport",
+    "WarningCode",
+    "build_report",
+    "detect_format",
+    "detect_platform",
+    "infer_browser",
+    "mask_value",
+    "parse_cookies",
+    "session_expiry",
+    "to_cookie_header",
+]

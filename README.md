@@ -314,6 +314,7 @@ kiyoshibot/
 │   ├── moviebox/ anichin/ nekopoi/ punishworld/ simontok/ cosxplay/
 │   ├── retrotubeexplorer/ drakor/ firmware/ asupan/
 │   └── (top-level command modules — see the section below)
+├── dtk/                          Douyin/TikTok data API + request signing (`signing/`, `platforms/tiktok/`)
 ├── rag/                          SQLite FTS5 + BM25 retrieval subsystem
 ├── utils/                        Cross-cutting helpers (rich messages, HTTP, memory, browser, time)
 ├── data/                         Runtime state (gitignored): SQLite DBs, sessions, caches, RAG docs
@@ -551,9 +552,10 @@ Each follows the same file set: `constants.py`, `state.py`, `scraper.py`,
 | Module | Responsibility |
 |:--|:--|
 | `commands.py` | `/asupan`, `/asupann`, `/autodel`, plus the asupan callback. |
-| `fetcher.py` | Pool manager with per-keyword video pools (64 pool cap, 64 lock cap) and the vendored-search path. |
-| `tiktoksource.py` | Async wrapper and pacing gate (`ASUPAN_TIKTOKAPI_INTERVAL`, default 2.0 s) around the vendored client. |
-| `tiktokapi/` | Vendored MIT/Apache client: `signer` (pure-Python `X-Dynosaur`/`X-Gnarly`), `fetch`, `parsers`, `refs`, `search`, `videos`, `shared`, `config`, `cache_config`, `scraper_errors`. **Do not edit** — re-vendor from upstream. |
+| `dtksearch.py` | Native TikTok search: Slardar WAF challenge solver, pure-Python `dtk` signing, ID region/Asia-Jakarta timezone lock. |
+| `tiktoksource.py` | Async wrapper and pacing gate (`ASUPAN_TIKTOKAPI_INTERVAL`, default 1.5 s) around `dtksearch`. |
+| `fetcher.py` | Pool manager with per-keyword video pools (64 pool cap, 64 lock cap) and tikwm URL resolution. |
+| `tiktokapi/` | Legacy vendored client kept as fallback behind `ASUPAN_TIKTOKAPI_VENDOR=1`. |
 | `auth.py`, `cache.py`, `jobs.py`, `keyboards.py`, `state.py`, `constants.py` | Support modules for the above. |
 
 ### `rag/`
@@ -1427,8 +1429,12 @@ mandatory. Everything else degrades gracefully when absent.
 | `DRAKORID_EMAIL` / `DRAKORID_PASSWORD` | — | Removes the Drakor.id guest limit |
 | `IG_SESSION_ENABLED` | 1 | Use the saved Instagram mobile session |
 | `IG_LOGIN_USERNAME` / `IG_LOGIN_PASSWORD` / `IG_LOGIN_2FA` | — | Consumed only by `scripts/ig_login.py` |
-| `ASUPAN_TIKTOKAPI` | 1 | `0` disables the vendored TikTok client (tikwm only) |
-| `ASUPAN_TIKTOKAPI_INTERVAL` | 2.0 | Pacing between signed calls (seconds) |
+| `ASUPAN_TIKTOKAPI` | 1 | `0` disables native search (tikwm only) |
+| `ASUPAN_TIKTOKAPI_INTERVAL` | 1.5 | Pacing between signed calls (seconds) |
+| `ASUPAN_DTK_SEARCH` | 1 | Enable native dtk search engine |
+| `ASUPAN_DTK_PRIORITY_REGION` | ID | Locks search feed prioritization to Indonesia |
+| `ASUPAN_DTK_TIMEZONE` | Asia/Jakarta | Local client timezone for search requests |
+| `ASUPAN_DTK_IMPERSONATE` | chrome131 | TLS profile for curl_cffi |
 
 ### Downloader tuning
 
@@ -1649,8 +1655,7 @@ production group.
 - [Pyrofork](https://github.com/Mayuri-Chan/pyrofork) — Multi-connection uploads
 - [Telethon](https://github.com/LonamiWebs/Telethon) — MTProto uploads and message fetch
 - [instagrapi](https://github.com/subzeroid/instagrapi) — MIT. Android private-API emulation for the optional Instagram mobile session (`scripts/ig_login.py`, `handlers/dl/instagram/mobile_session.py`)
-- [omkarcloud/tiktok-scraper](https://github.com/omkarcloud/tiktok-scraper) — MIT, Copyright (c) 2026 Chetan Jain. Vendored TikTok web-API client under `handlers/asupan/tiktokapi/`
-- [Evil0ctal/Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) — Apache-2.0. The pure-Python `webmssdk` signer (`X-Dynosaur` / `X-Gnarly`) in `handlers/asupan/tiktokapi/signer.py` is ported from here
+- [Evil0ctal/Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) — Apache-2.0. Native Douyin & TikTok data API and signing subsystem (`dtk/`), including pure-Python `webmssdk` signatures (`X-Bogus`, `X-Dynosaur`, `X-Gnarly`), endpoint parameter construction, and Slardar WAF resolution
 
 ---
 

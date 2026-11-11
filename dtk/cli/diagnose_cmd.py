@@ -1,0 +1,177 @@
+"""The one-command self-check.
+
+The diagnosis itself lives in :mod:`dtk.ops.diagnose`, which is also what the
+console calls. This module supplies the two things the shared implementation
+cannot know by itself - the live dependencies to probe, and how to run one link
+through the whole pipeline - and then prints the report.
+
+The output is meant to be pasted into a bug report, so the plain-text rendering
+is the primary one and it is redacted by the ops layer before it is returned.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated, Any
+
+import typer
+
+from dtk.cli import output, runtime
+from dtk.core.db import connection_budget
+from dtk.core.types import Platform
+from dtk.identity import BrowserRpcClient
+from dtk.identity.marks import strictest_min_size
+from dtk.ops import pipeline, probes
+from dtk.ops.diagnose import (
+    DiagnoseContext,
+    DiagnosticReport,
+    SmokeRunner,
+    StepStatus,
+    choose_smoke_platform,
+    run_diagnostics,
+)
+
+_STATUS_STYLE = {
+    StepStatus.PASS: "pass",
+    StepStatus.WARN: "warn",
+    StepStatus.FAIL: "fail",
+    StepStatus.SKIP: "skipped",
+}
+
+
+def diagnose(
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the report as JSON instead of a table")
+    ] = False,
+    report_path: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Also write the text report to a file")
+    ] = None,
+    skip_smoke: Annotated[
+        bool, typer.Option("--skip-smoke", help="Do not make the end-to-end request")
+    ] = False,
+    platform: Annotated[
+        Platform | None,
+        typer.Option(
+            "--platform",
+            help="Platform for the smoke test. Default: the one this instance serves most",
+        ),
+    ] = None,
+    smoke_url: Annotated[
+        str | None, typer.Option("--smoke-url", help="Link to use for the smoke test")
+    ] = None,
+    proxy_probe_url: Annotated[
+        str | None, typer.Option("--probe-url", help="Service that reports a proxy's exit address")
+    ] = None,
+) -> None:
+    """Run the six-step diagnosis and print the report."""
+
+    async def operation(ctx: runtime.Context) -> DiagnosticReport:
+        import httpx
+
+        from dtk.core.db import get_engine
+        from dtk.core.redis import get_redis
+        from dtk.media.client import DownloaderClient
+        from dtk.transcriber import TranscriberClient
+
+        rpc = BrowserRpcClient(ctx.settings.browser_rpc_url)
+        # Built from the same settings the api and the worker read, so the
+        # components step reports the sidecars this deployment configured
+        # rather than calling every one of them "not configured".
+        downloader = DownloaderClient(
+            ctx.settings.downloader_url, token=ctx.settings.downloader_token
+        )
+        transcriber = TranscriberClient(
+            ctx.settings.transcriber_url, token=ctx.settings.transcriber_token
+        )
+        # Chosen as the console chooses it. Always Douyin, an instance that only
+        # keeps Bilibili identities - any instance without the browser - failed
+        # the smoke step about a platform it was never meant to serve.
+        smoke_platform = platform or await choose_smoke_platform(
+            ctx.session, browser=rpc.configured
+        )
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
+            diagnose_ctx = DiagnoseContext(
+                session=ctx.session,
+                engine=get_engine(),
+                redis=get_redis(),
+                rpc=rpc if rpc.configured else None,
+                registry=pipeline.build_registry(ctx.settings.browser_rpc_url, client=http),
+                cipher=ctx.cipher,
+                http=http,
+                smoke=None if skip_smoke else _smoke_runner(ctx),
+                smoke_url=None if skip_smoke else (smoke_url or probes.SMOKE_URLS[smoke_platform]),
+                min_active=strictest_min_size(ctx.config),
+                downloader=downloader,
+                transcriber=transcriber,
+                # This command's own engine is a small one; the budget is what
+                # the api and the worker open, from the settings they share.
+                connection_budget=connection_budget(
+                    ctx.settings.db_pool_size, ctx.settings.db_max_overflow
+                ),
+            )
+            if proxy_probe_url:
+                diagnose_ctx.proxy_probe_url = proxy_probe_url
+            try:
+                return await run_diagnostics(diagnose_ctx)
+            finally:
+                await rpc.aclose()
+                await downloader.aclose()
+                await transcriber.aclose()
+
+    report = runtime.with_context(operation, redis=True, config=True)
+
+    if as_json:
+        output.print_json(report.as_dict())
+    else:
+        table = output.new_table("#", "step", "status", "reason")
+        for step in report.steps:
+            table.add_row(
+                str(step.number),
+                step.step,
+                output.styled_state(_STATUS_STYLE[step.status]),
+                step.reason,
+            )
+        output.print_table(table)
+        for step in report.steps:
+            if step.action:
+                output.info(f"{step.step}: {step.action}")
+
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(report.render_text(), encoding="utf-8")
+        output.info(f"text report written to {report_path}")
+
+    if report.failures:
+        output.fail(f"{len(report.failures)} step(s) failed")
+    if report.warnings:
+        # Exit 0. A warning is something to look at, not a broken instance, and
+        # failing the command over one turns every scripted health check into a
+        # false alarm the operator learns to ignore.
+        output.warn(f"{len(report.warnings)} step(s) raised a warning")
+        return
+    output.ok("all steps passed")
+
+
+def _smoke_runner(ctx: runtime.Context) -> SmokeRunner:
+    """The end-to-end step, on a signing stack opened for the call.
+
+    The run itself is :func:`dtk.ops.pipeline.smoke`, shared with the worker.
+    What the CLI adds is the stack: it holds no long-lived transport, so one is
+    built and closed around the single request.
+    """
+
+    async def run(url: str) -> dict[str, Any]:
+        async with pipeline.signing_stack(ctx.settings.browser_rpc_url) as (transport, signers):
+            return await pipeline.smoke(
+                url,
+                session=ctx.session,
+                cipher=ctx.cipher,
+                config=ctx.config,
+                transport=transport,
+                signers=signers,
+            )
+
+    return run
+
+
+__all__ = ["diagnose"]

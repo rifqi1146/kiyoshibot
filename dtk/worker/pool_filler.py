@@ -1,0 +1,585 @@
+"""Keeps the identity pool above its low-water mark.
+
+Minting is the one background job whose *pace* is part of its correctness. Doc
+02 is explicit: top the pool up one identity at a time, because a burst of
+simultaneous mints is itself the anomaly - five fresh visitors appearing from
+one deployment inside a second is a stronger signal than the requests those
+identities would go on to make.
+
+So this module mints exactly one identity per tick, holds a cross-process lock
+while doing it (``docker compose up --scale worker=N`` must not turn one mint
+into N), and backs off exponentially when minting keeps failing. Refilling from
+the low-water mark to the target therefore takes minutes, which is the intended
+speed: minting is off the request path and nothing waits on it.
+
+When ``DTK_BROWSER_RPC_URL`` is unset the whole job is skipped. That deployment
+has no browser container at all and lives on manually imported cookies; a
+filler that logged an error every minute would be pure noise.
+
+See docs/design/02-identity-pool.md.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Final
+
+from dtk.core.config import Config
+from dtk.core.crypto import Cipher
+from dtk.core.db import session_scope
+from dtk.core.logging import get_logger
+from dtk.core.redis import run_script
+from dtk.core.types import IdentitySource, IdentityState, Platform
+from dtk.identity import mint_log
+from dtk.identity.marks import pool_marks
+from dtk.identity.minting import (
+    BrowserRpcClient,
+    BrowserRpcUnavailable,
+    NativeMinter,
+    NativeMintFailed,
+)
+from dtk.identity.pool import IdentityPool
+from dtk.worker.alerts import Alerter, NotifyEvent, raise_alert
+
+log = get_logger(__name__)
+
+#: One mint at a time across every worker replica.
+MINT_LOCK_KEY = "worker:mint:lock"
+
+#: Beat for polling the cross-process mint lock when a caller can wait.
+REMOTE_LOCK_POLL_SECONDS: float = 0.5
+
+#: Compare-and-delete, so a lock that already expired and was taken by another
+#: replica is not released by the previous holder.
+_UNLOCK_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+SessionFactory = Callable[[], Any]
+
+
+#: The two ways an identity is minted; see :meth:`PoolFiller._route`.
+_BROWSER: Final = "browser"
+_NATIVE: Final = "native"
+
+#: Reasons a sweep passes a platform over without an attempt. Recorded apart
+#: from the attempts (:func:`mint_log.skipped`); the other reasons
+#: :meth:`PoolFiller._pick_proxy` gives are a mint that could not go ahead.
+_SKIPS: Final = frozenset({"no_free_proxy"})
+
+#: How many sweeps a skip record outlives the last skip by. More than one,
+#: because the survey picks the neediest platform and may pass this one by for
+#: a tick or two while it is still stuck.
+_SKIP_SWEEPS: Final = 3
+
+
+@dataclass(frozen=True, slots=True)
+class FillerConfig:
+    #: How often the pool level is checked. The mint itself takes far longer.
+    interval_seconds: float = 60.0
+    backoff_initial_seconds: float = 60.0
+    backoff_max_seconds: float = 3600.0
+    #: Lock lifetime; must exceed the slowest mint or two replicas could mint
+    #: at once, which is the one thing this job may not do.
+    lock_ttl_seconds: int = 300
+    platforms: tuple[Platform, ...] = tuple(Platform)
+
+
+@dataclass(frozen=True, slots=True)
+class FillResult:
+    """What one tick did, so the caller and the tests can assert on it."""
+
+    platform: Platform | None = None
+    identity_id: uuid.UUID | None = None
+    minted: bool = False
+    reason: str = "idle"
+    #: The egress the identity was bound to for life; None is the direct one.
+    proxy_id: uuid.UUID | None = None
+
+
+class PoolFiller:
+    def __init__(
+        self,
+        *,
+        pool: IdentityPool,
+        rpc: BrowserRpcClient | None,
+        config: Callable[[], Config] | Config,
+        cipher: Cipher | None = None,
+        options: FillerConfig | None = None,
+        session_factory: SessionFactory = session_scope,
+        clock: Callable[[], float] = time.monotonic,
+        distributed_lock: bool = True,
+        alerter: Alerter | None = None,
+        native: NativeMinter | None = None,
+    ) -> None:
+        self._pool = pool
+        self._rpc = rpc
+        self._native = native
+        self._cipher = cipher
+        self._alerter = alerter
+        self._config: Callable[[], Config] = config if callable(config) else (lambda: config)
+        self._options = options or FillerConfig()
+        self._session_factory = session_factory
+        self._now = clock
+        self._distributed_lock = distributed_lock
+        self._local_lock = asyncio.Lock()
+        # Per route - the browser, or plain HTTP - because the two fail for
+        # unrelated reasons. One counter for both meant a browser container
+        # that was down stopped the Bilibili pool from refilling, though
+        # nothing about minting a Bilibili guest touches the browser.
+        self._failures: dict[str, int] = {}
+        self._blocked_until: dict[str, float] = {}
+        #: Platforms currently being refilled. Entered below ``min_size`` and
+        #: left at ``target_size``, so the pool is not re-triggered every tick
+        #: while it sits one identity under the mark.
+        self._filling: set[Platform] = set()
+
+    # -- state -------------------------------------------------------------
+
+    @property
+    def enabled(self) -> bool:
+        """Whether any platform can be minted here at all.
+
+        Not the same as "browser-rpc is configured" any more: Bilibili guests
+        are minted over plain HTTP (:mod:`dtk.identity.minting.native`), so an
+        install with no browser container still refills that pool.
+        """
+        return self._rpc_configured or self._native is not None
+
+    @property
+    def _rpc_configured(self) -> bool:
+        return self._rpc is not None and self._rpc.configured
+
+    def can_mint(self, platform: Platform) -> bool:
+        """Whether this filler can mint ``platform``: natively, or by browser."""
+        if self._native is not None and self._native.supports(platform):
+            return True
+        return self._rpc_configured
+
+    def _route(self, platform: Platform) -> str:
+        """How ``platform`` is minted here, which is what a failure says
+        something about."""
+        if self._native is not None and self._native.supports(platform):
+            return _NATIVE
+        return _BROWSER
+
+    @property
+    def failures(self) -> int:
+        """Consecutive failures, summed over both routes."""
+        return sum(self._failures.values())
+
+    @property
+    def backing_off(self) -> bool:
+        """Whether either route is resting after failures."""
+        now = self._now()
+        return any(now < until for until in self._blocked_until.values())
+
+    def _route_backing_off(self, platform: Platform) -> bool:
+        return self._now() < self._blocked_until.get(self._route(platform), 0.0)
+
+    def _route_platforms(self, route: str) -> tuple[Platform, ...]:
+        """Every platform minted by ``route``: what one of its failures rests."""
+        return tuple(platform for platform in Platform if self._route(platform) == route)
+
+    @property
+    def _skip_ttl(self) -> int:
+        return max(1, int(self._options.interval_seconds * _SKIP_SWEEPS))
+
+    # -- one tick ----------------------------------------------------------
+
+    async def tick(self) -> FillResult:
+        """Survey the pool, alert on it, and mint at most one identity.
+
+        The survey runs even with minting disabled: a deployment living on
+        imported cookies still needs to hear that its pool has run dry.
+        """
+        target = await self.survey()
+        if not self.enabled:
+            return FillResult(platform=target, reason="disabled")
+        if target is None:
+            # Nothing it could mint now. Either every pool is at its mark, or
+            # the ones that are not are minted by a route that is resting.
+            return FillResult(reason="backoff" if self.backing_off else "satisfied")
+        return await self.top_up_once(target)
+
+    async def survey(self) -> Platform | None:
+        """Check every platform's level and return the neediest one.
+
+        Alerts fire off the ACTIVE count, which is what a caller can actually
+        use right now. The refill decision uses ACTIVE plus COOLING, because a
+        cooling identity comes back on its own and minting a replacement for it
+        during a platform-wide risk-control event is the worst possible timing.
+
+        The alerts are collected here and delivered once the session has closed:
+        a notifier POSTs to a webhook, and waiting for someone else's HTTP
+        endpoint with a database transaction open would pin a pooled connection
+        for as long as that endpoint feels like taking.
+        """
+        config = self._config()
+        max_fail_streak = max(1, int(config.get("pool.max_fail_streak")))
+
+        worst: tuple[int, Platform] | None = None
+        pending: list[tuple[NotifyEvent, dict[str, Any]]] = []
+        async with self._session_factory() as session:
+            for platform in self._options.platforms:
+                marks = pool_marks(config, platform)
+                if not marks.auto:
+                    # Turned off for this platform: no mint, and no alert about
+                    # a level the operator has said they do not want. Before
+                    # the marks were per platform, a deployment with no route
+                    # to TikTok minted and failed here every minute (#763).
+                    self._filling.discard(platform)
+                    continue
+                min_size, target_size = marks.min_size, marks.target_size
+                counts = await self._pool.counts(session, platform)
+                active = int(counts.get(IdentityState.ACTIVE.value, 0))
+                live = _live(counts)
+                usable = await self._pool.usable_count(
+                    session, platform, max_fail_streak=max_fail_streak
+                )
+                if usable == 0 and live > 0:
+                    # Every identity that exists is failing. That is a
+                    # platform-wide event, not a pool shortage: minting into it
+                    # adds fresh identities to be burned by whatever is burning
+                    # the others, and five new visitors appearing during an
+                    # incident is the loudest signal this deployment can send.
+                    # Hold the level and let POOL_EMPTY / POOL_BELOW_MIN talk.
+                    usable = live
+
+                if active == 0:
+                    pending.append((NotifyEvent.POOL_EMPTY, {"platform": platform.value}))
+                elif active < min_size:
+                    pending.append(
+                        (
+                            NotifyEvent.POOL_BELOW_MIN,
+                            {"platform": platform.value, "active": active, "minimum": min_size},
+                        )
+                    )
+
+                if usable < min_size:
+                    self._filling.add(platform)
+                elif usable >= target_size:
+                    self._filling.discard(platform)
+                if platform not in self._filling:
+                    continue
+                # Below the mark and still alerted on above, but not chosen:
+                # with no browser, a Douyin pool cannot be refilled here, and
+                # choosing it every tick would starve the one that can be.
+                if not self.can_mint(platform) or self._route_backing_off(platform):
+                    continue
+                if worst is None or usable < worst[0]:
+                    worst = (usable, platform)
+
+        for event, args in pending:
+            await raise_alert(self._alerter, event, **args)
+        return worst[1] if worst else None
+
+    async def top_up_once(
+        self,
+        platform: Platform,
+        *,
+        proxy_id: uuid.UUID | None = None,
+        wait_seconds: float = 0.0,
+        shared_backoff: bool = True,
+    ) -> FillResult:
+        """Mint exactly one identity for ``platform``.
+
+        Serialized twice: an in-process lock for this worker's own loops and a
+        Redis lock for the other replicas.
+
+        ``proxy_id`` pins the egress rather than letting the survey pick one.
+        Only the console's Mint button passes it; the periodic sweep has no
+        opinion about which proxy an identity ends up behind.
+
+        The two callers want opposite things when the lock is taken, which is
+        what ``wait_seconds`` selects. The sweep runs every minute, so failing
+        fast costs it nothing and holding a slot would cost it something. A
+        person who pressed Mint is waiting on a task, and the console submits
+        one task per identity requested - so failing fast turned a request for
+        five identities into one mint and four "too many requests" toasts.
+
+        ``shared_backoff`` is the same split on the way out. A failure during
+        the sweep should slow the sweep down; ten button presses against a
+        browser that is down should not silence automatic refill for an hour,
+        which is where the shared counter takes it.
+        """
+        if not self.can_mint(platform):
+            return FillResult(platform=platform, reason="disabled")
+        if not await self._take_local_lock(wait_seconds):
+            return FillResult(platform=platform, reason="busy")
+
+        try:
+            token = uuid.uuid4().hex
+            if not await self._acquire_remote(token, wait_seconds=wait_seconds):
+                return FillResult(platform=platform, reason="locked")
+            try:
+                return await self._mint(platform, proxy_id=proxy_id, shared_backoff=shared_backoff)
+            finally:
+                await self._release_remote(token)
+        finally:
+            self._local_lock.release()
+
+    async def _take_local_lock(self, wait_seconds: float) -> bool:
+        """Acquire this process's mint lock, waiting at most ``wait_seconds``."""
+        if wait_seconds <= 0:
+            if self._local_lock.locked():
+                return False
+            await self._local_lock.acquire()
+            return True
+        try:
+            await asyncio.wait_for(self._local_lock.acquire(), timeout=wait_seconds)
+        except TimeoutError:
+            return False
+        return True
+
+    async def _mint(
+        self,
+        platform: Platform,
+        *,
+        proxy_id: uuid.UUID | None = None,
+        shared_backoff: bool = True,
+    ) -> FillResult:
+        native = (
+            self._native if self._native is not None and self._native.supports(platform) else None
+        )
+        minter: BrowserRpcClient | NativeMinter | None = native or self._rpc
+        assert minter is not None  # guarded by `can_mint`
+        async with self._session_factory() as session:
+            proxy, reason = await self._pick_proxy(session, platform, proxy_id=proxy_id)
+            if reason is not None:
+                log.info("worker.mint.skipped", platform=platform.value, reason=reason)
+                # A skip is an outcome an operator has to be able to see. A
+                # pool that will not refill because every proxy is taken looks
+                # exactly like one nobody asked to refill, otherwise. But it is
+                # not a failed attempt, and recorded as one it read as a pool
+                # failing twenty times in a row (#807).
+                if reason in _SKIPS:
+                    await mint_log.skipped(platform, reason=reason, ttl=self._skip_ttl)
+                else:
+                    await mint_log.finished(platform, ok=False, reason=reason)
+                return FillResult(platform=platform, reason=reason)
+
+            proxy_url = None
+            geo_hint: dict[str, Any] = {}
+            if proxy is not None:
+                proxy_url = self._decrypt(proxy)
+                if proxy_url is None:
+                    # Minting on the direct egress instead would bind the
+                    # identity to an exit it will never use again.
+                    await mint_log.finished(platform, ok=False, reason="proxy_undecryptable")
+                    return FillResult(platform=platform, reason="proxy_undecryptable")
+                geo_hint = {
+                    k: v for k, v in (("country", proxy.country), ("timezone", proxy.timezone)) if v
+                }
+
+            log.info(
+                "worker.mint.started",
+                platform=platform.value,
+                proxy_id=str(proxy.id) if proxy is not None else None,
+            )
+            # Given the lock's lifetime, so a worker killed mid-mint leaves a
+            # stale "minting..." for seconds rather than until someone notices.
+            await mint_log.started(platform, ttl=self._options.lock_ttl_seconds)
+            try:
+                result = await minter.mint(platform, proxy_url=proxy_url, geo_hint=geo_hint)
+                identity_id = await self._pool.add(
+                    session,
+                    platform=platform,
+                    cookies=result.cookies,
+                    fingerprint=result.fingerprint,
+                    source=IdentitySource.MINTED,
+                    proxy_id=proxy.id if proxy is not None else None,
+                )
+            except BrowserRpcUnavailable as exc:
+                return await self._failed(
+                    platform, "rpc_unavailable", exc, shared_backoff=shared_backoff
+                )
+            except NativeMintFailed as exc:
+                return await self._failed(
+                    platform, "mint_refused", exc, shared_backoff=shared_backoff
+                )
+            except ValueError as exc:
+                # A fingerprint with no inferable browser. Doc 02: refuse it
+                # rather than pair a default UA with an unknown TLS profile.
+                return await self._failed(
+                    platform, "unusable_fingerprint", exc, shared_backoff=shared_backoff
+                )
+
+        route = self._route(platform)
+        self._failures.pop(route, None)
+        self._blocked_until.pop(route, None)
+        log.info(
+            "worker.mint.succeeded",
+            platform=platform.value,
+            identity_id=str(identity_id),
+            proxy_id=str(proxy.id) if proxy is not None else None,
+        )
+        await mint_log.finished(platform, ok=True, reason="minted", identity_id=identity_id)
+        await mint_log.recovered(self._route_platforms(route))
+        return FillResult(
+            platform=platform,
+            identity_id=identity_id,
+            minted=True,
+            reason="minted",
+            proxy_id=proxy.id if proxy is not None else None,
+        )
+
+    async def _failed(
+        self, platform: Platform, reason: str, exc: Exception, *, shared_backoff: bool = True
+    ) -> FillResult:
+        # Async because every exit from here leaves a breadcrumb the console
+        # reads. A failed mint is the case the status panel exists for: a
+        # success leaves an identity row behind and shows up in the pool count,
+        # while a failure used to leave nothing but a log line - so a pool that
+        # stubbornly would not refill looked exactly like one nobody had asked
+        # to refill.
+        if not shared_backoff:
+            # A hand-triggered mint that failed says nothing new about the
+            # sweep's health, and letting it drive the shared counter means a
+            # burst of console presses against a down browser escalates the
+            # automatic backoff to its ceiling and stops refill for an hour.
+            log.warning(
+                "worker.mint.failed",
+                platform=platform.value,
+                reason=reason,
+                manual=True,
+                error=str(exc)[:200],
+            )
+            await mint_log.finished(platform, ok=False, reason=reason, error=str(exc))
+            return FillResult(platform=platform, reason=reason)
+
+        route = self._route(platform)
+        failures = self._failures.get(route, 0) + 1
+        self._failures[route] = failures
+        delay = min(
+            self._options.backoff_initial_seconds * (2 ** (failures - 1)),
+            self._options.backoff_max_seconds,
+        )
+        self._blocked_until[route] = self._now() + delay
+        log.warning(
+            "worker.mint.failed",
+            platform=platform.value,
+            reason=reason,
+            route=route,
+            consecutive_failures=failures,
+            backoff_seconds=int(delay),
+            error=str(exc)[:200],
+        )
+        await mint_log.finished(platform, ok=False, reason=reason, error=str(exc))
+        await mint_log.backing_off(
+            self._route_platforms(route), route=route, failures=failures, seconds=delay
+        )
+        return FillResult(platform=platform, reason=reason)
+
+    # -- proxies -----------------------------------------------------------
+
+    async def _pick_proxy(
+        self, session: Any, platform: Platform, *, proxy_id: uuid.UUID | None = None
+    ) -> tuple[Any, str | None]:
+        """Choose an egress no live identity of this platform already uses.
+
+        Two identities behind one exit address is the recombination doc 02
+        forbids, so when every exit is taken this job waits rather than
+        doubling up. A deployment with no proxies at all mints on the direct
+        egress, which is what a user without proxies asked for.
+
+        With proxies, the direct egress is one more exit, tried after them and
+        held to one identity like each of them (``pool.<platform>.direct_egress``).
+        It used to drop out the moment a proxy was added, which made adding
+        one proxy shrink the pool to a single identity per platform (#807).
+        None for the proxy with no reason is how "mint on the direct egress"
+        is spelled.
+
+        A named ``proxy_id`` overrides that search rather than being checked
+        against it: the operator chose this exit deliberately, and a one-proxy
+        install could otherwise never mint its second identity.
+        """
+        from dtk.db.repositories import ProxyRepository
+
+        proxies = ProxyRepository(session)
+        if proxy_id is not None:
+            named = await proxies.get(proxy_id)
+            return (named, None) if named is not None else (None, "proxy_not_found")
+        free = await proxies.list_unbound(platform)
+        if free:
+            return free[0], None
+        if not await proxies.list_all():
+            return None, None
+        if self._direct_counts(platform) and await proxies.direct_unbound(platform):
+            return None, None
+        return None, "no_free_proxy"
+
+    def _direct_counts(self, platform: Platform) -> bool:
+        """Whether the direct egress is an exit for ``platform`` beside the proxies."""
+        return bool(self._config().get(f"pool.{platform.value}.direct_egress"))
+
+    def _decrypt(self, proxy: Any) -> str | None:
+        if self._cipher is None:
+            # Without the key the URL cannot be used, and minting on the direct
+            # egress instead would put the identity behind the wrong exit.
+            log.warning("worker.mint.no_cipher", proxy_id=str(proxy.id))
+            return None
+        return self._cipher.decrypt(proxy.url_encrypted, aad=str(proxy.id))
+
+    # -- cross-process lock ------------------------------------------------
+
+    async def _acquire_remote(self, token: str, *, wait_seconds: float = 0.0) -> bool:
+        if not self._distributed_lock:
+            return True
+        from dtk.core.redis import get_redis
+
+        deadline = self._now() + max(wait_seconds, 0.0)
+        try:
+            while True:
+                taken = bool(
+                    await get_redis().set(
+                        MINT_LOCK_KEY, token, ex=self._options.lock_ttl_seconds, nx=True
+                    )
+                )
+                if taken or self._now() >= deadline:
+                    return taken
+                # Polling rather than a blocking lock: SET NX is the only
+                # primitive every Redis deployment here agrees on, and a mint
+                # takes seconds, so a half-second beat is far below the wait.
+                await asyncio.sleep(min(REMOTE_LOCK_POLL_SECONDS, max(deadline - self._now(), 0.0)))
+        except Exception as exc:
+            # Without the lock this cannot promise one mint at a time, so it
+            # declines to mint rather than risking a burst.
+            log.warning("worker.mint.lock_failed", error=f"{type(exc).__name__}: {exc}")
+            return False
+
+    async def _release_remote(self, token: str) -> None:
+        if not self._distributed_lock:
+            return
+        try:
+            await run_script("worker_mint_unlock", _UNLOCK_LUA, [MINT_LOCK_KEY], [token])
+        except Exception as exc:  # pragma: no cover - the TTL still frees it
+            log.warning("worker.mint.unlock_failed", error=f"{type(exc).__name__}: {exc}")
+
+
+def _live(counts: dict[str, int]) -> int:
+    """Identities that exist and are not a last resort.
+
+    No longer the pool level - :meth:`IdentityPool.usable_count` is, because an
+    identity that fails every request still exists and counting it kept the
+    filler idle in front of a pool that served nothing. What this is still for
+    is the platform-event guard above: when the usable count is zero but this
+    is not, everything is failing at once, and minting into that is the worst
+    available move.
+
+    Cooling identities are included, because they come back on their own when
+    the backoff elapses. DEGRADED is excluded - it is a last-resort tier.
+    """
+    return int(counts.get(IdentityState.ACTIVE.value, 0)) + int(
+        counts.get(IdentityState.COOLING.value, 0)
+    )
+
+
+__all__ = ["MINT_LOCK_KEY", "FillResult", "FillerConfig", "PoolFiller"]

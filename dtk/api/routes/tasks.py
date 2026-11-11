@@ -1,0 +1,390 @@
+"""Task inspection: polling and the SSE stream.
+
+Polling is the baseline every client can implement. The stream exists because
+the console would otherwise poll a hundred rows at a time, and a server-sent
+event costs far less than that (doc 06).
+
+The stream deliberately opens its own database session. The request-scoped
+session belongs to :class:`dtk.api.middleware.DatabaseSessionMiddleware`, which
+closes it when the handler returns - and a streaming handler returns before its
+body has been produced.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from collections.abc import AsyncIterator, Callable, Mapping
+from time import monotonic
+from types import MappingProxyType
+from typing import Any, Final
+
+from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi.responses import StreamingResponse
+
+from dtk.api.deps import Principal
+from dtk.api.routes import operations
+from dtk.api.routes.openapi import I18N_KEY
+from dtk.api.routes.operations import unwrap
+from dtk.api.routes.support import (
+    POOL_ROLE,
+    POOL_SCOPES,
+    ROLE_RANK,
+    demo_read,
+    handles_credentials,
+    iso,
+    language,
+    ok,
+)
+from dtk.core.db import session_scope
+from dtk.core.errors import ErrorCode, ForbiddenScope, TaskNotFound
+from dtk.core.logging import get_logger
+from dtk.core.redis import get_redis
+from dtk.core.types import Language, TaskState, UserRole
+from dtk.i18n.messages import render
+from dtk.services import tasks as task_service
+
+log = get_logger(__name__)
+
+router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
+
+#: Upper bound on one event stream. A console tab left open for a day should
+#: reconnect rather than pin a worker forever; EventSource reconnects on its own.
+SSE_MAX_SECONDS = 300
+#: Silence longer than this and a proxy in the middle starts dropping the
+#: connection, so a comment frame goes out instead.
+SSE_HEARTBEAT_SECONDS = 15
+#: How long one wait on the completion signal blocks before looping.
+SSE_TICK_SECONDS = 5
+
+TERMINAL = (TaskState.DONE, TaskState.FAILED)
+
+
+def _authorize_task(principal: Principal, view: task_service.TaskView) -> None:
+    """Whether this caller may read or cancel the task, the result included.
+
+    Scope and role, both, because a console session passes every scope check:
+    with the scope alone, a viewer read the output of an operator's pinned
+    request - another account's private lists - by an id from the request log.
+    """
+    principal.require(*operations.scopes_for_task(view.endpoint))
+    floor = operations.role_for_task(view.endpoint)
+    if ROLE_RANK[principal.role] < ROLE_RANK[floor]:
+        raise ForbiddenScope(
+            "reading this task requires a higher role",
+            details=principal.denial(roles=[floor]),
+        )
+    if view.pinned and not handles_credentials(principal):
+        # The same words as the floor above: a refusal says what it takes, and
+        # not which identity, or that one was named at all.
+        raise ForbiddenScope(
+            "reading this task requires a higher role",
+            details=principal.denial(scopes=POOL_SCOPES, roles=[POOL_ROLE]),
+        )
+    if principal.role is UserRole.DEMO and not view.is_demo:
+        raise ForbiddenScope(
+            "the demo account can only read its own tasks",
+            details=principal.denial(roles=[UserRole.VIEWER]),
+        )
+
+
+def _localized_error(error: dict[str, Any] | None, language: Language) -> dict[str, Any] | None:
+    """Re-render a stored task error in the caller's language.
+
+    :func:`dtk.worker.main.serialize_error` writes an English sentence for the
+    worker log and the CLI; what actually travels is the code beside it and the
+    arguments it was raised with. Rendering here rather than at write time is
+    what lets one failed task answer a Chinese console and an English agent,
+    and the arguments are assembled exactly as :func:`dtk.api.envelope.failure`
+    assembles them - ``retry_after`` folded in among the details, because that
+    number is the entire content of "retry in {retry_after} seconds".
+    """
+    if not error:
+        return None
+    try:
+        code = ErrorCode(str(error.get("code")))
+    except ValueError:
+        # A code from a worker newer than this process is still a failure, just
+        # not one this contract can describe; INTERNAL at least renders.
+        code = ErrorCode.INTERNAL
+    details = error.get("details")
+    args: dict[str, Any] = dict(details) if isinstance(details, dict) else {}
+    retry_after = error.get("retry_after")
+    if retry_after is not None:
+        args["retry_after"] = retry_after
+    return {**error, "code": code.value, "message": render(code, language, **args)}
+
+
+def _localized_data(endpoint: str, data: Any, language: Language) -> Any:
+    """Re-render a stored result's prose in the reader's language.
+
+    The worker produces a result long before anyone's language is known - the
+    console polls for it afterwards - so a job whose output is prose stores
+    codes and arguments and the sentence is built here. Only the self check
+    needs it today; the other maintenance jobs return codes and numbers.
+    """
+    if endpoint != "diagnose" or not isinstance(data, dict):
+        return data
+    from dtk.ops.diagnose import localize_report
+
+    return localize_report(data, language)
+
+
+#: Metadata that costs more to read than the task itself did.
+#:
+#: Reading a result normally costs exactly the scope that created it, which is
+#: the rule that stops a low-scope key becoming a way around every other scope.
+#: `explain` breaks that symmetry on purpose: it describes the request as it
+#: went out, jar included, so it is a credential sitting inside an answer a
+#: `douyin:read` key is entitled to. Stripped unless the reader could have
+#: revealed that jar directly.
+#:
+#: Each entry is the full test, not a scope. It used to be `identity:manage`
+#: alone, which every console session passes whatever its role, so a viewer
+#: was handed the jar an operator's explained request had stored - while
+#: asking for that explanation had required the operator role all along.
+_PRIVILEGED_META: Final[Mapping[str, Callable[[Principal], bool]]] = MappingProxyType(
+    {"explain": handles_credentials}
+)
+
+
+def _visible_meta(meta: Mapping[str, Any], principal: Principal | None) -> dict[str, Any]:
+    """The result metadata this reader is allowed to see."""
+    out = dict(meta)
+    for key, may_read in _PRIVILEGED_META.items():
+        if key in out and (principal is None or not may_read(principal)):
+            del out[key]
+    return out
+
+
+def _view_payload(
+    view: task_service.TaskView,
+    language: Language,
+    *,
+    include_result: bool = True,
+    principal: Principal | None = None,
+) -> dict[str, Any]:
+    """The wire shape of a task.
+
+    ``data`` rather than ``result`` because that is what doc 06 documents, and
+    it stays absent until the task is finished so a caller cannot mistake a
+    queued task for an empty answer.
+
+    ``principal`` gates the metadata that is worth more than the task - see
+    :data:`_PRIVILEGED_META`. Passing None strips all of it, which is the right
+    default for any caller that has not thought about the question.
+    """
+    payload: dict[str, Any] = {
+        "task_id": str(view.id),
+        "state": view.state.value,
+        "endpoint": view.endpoint,
+        "created_at": iso(view.created_at),
+        "finished_at": iso(view.finished_at),
+    }
+    if include_result and view.state is TaskState.DONE:
+        data, meta = unwrap(view.result)
+        payload["data"] = _localized_data(view.endpoint, data, language)
+        meta = _visible_meta(meta, principal) if meta else meta
+        if meta:
+            payload["result_meta"] = meta
+    if view.state is TaskState.FAILED:
+        payload["error"] = _localized_error(view.error, language)
+        # A failed task has no data and may still carry metadata - the worker
+        # stores the `explain` block on both outcomes, because "the request was
+        # refused, show me what we sent" is the case it exists for. Through the
+        # same gate: this is the one path where the scope check could have been
+        # quietly skipped, since nothing else about a failure is privileged.
+        if include_result:
+            _, meta = unwrap(view.result)
+            meta = _visible_meta(meta, principal) if meta else meta
+            if meta:
+                payload["result_meta"] = meta
+    return payload
+
+
+TASK_ID_PATH = Path(description="The task id returned when the work was submitted.")
+
+
+@router.get("/{task_id}", summary="Fetch a task", openapi_extra={I18N_KEY: "task_get"})
+async def get_task(
+    request: Request,
+    task_id: uuid.UUID = TASK_ID_PATH,
+    principal: Principal = Depends(demo_read),
+) -> Any:
+    """The state of one task, and its result once it has finished.
+
+    Safe to poll, and safe to call twice: the answer does not change until the
+    task does.
+
+    **Parameters**
+
+    - `task_id` - the id returned when the work was submitted.
+
+    **Returns**
+
+    The task's state, timestamps and endpoint. A finished task also carries its
+    result. Results are kept for a limited time; once one has expired the
+    lookup answers `TASK_NOT_FOUND`, which means submit the work again rather
+    than keep polling.
+    """
+    view = await task_service.get(request.state.db, task_id)
+    # The scope creating this task needed. Reading a result back has to cost
+    # the same as asking for it, or a low-scope key becomes a way around every
+    # other scope in the system.
+    _authorize_task(principal, view)
+    if view.state is TaskState.DONE and view.result is None:
+        # The row outlives its payload by design; say so rather than handing
+        # back a success with nothing in it.
+        raise TaskNotFound("this task finished but its result has expired")
+    return ok(request, _view_payload(view, language(request), principal=principal))
+
+
+@router.delete("/{task_id}", summary="Cancel a task", openapi_extra={I18N_KEY: "task_cancel"})
+async def cancel_task(
+    request: Request,
+    task_id: uuid.UUID = TASK_ID_PATH,
+    principal: Principal = Depends(demo_read),
+) -> Any:
+    """Give up on a task that has not started.
+
+    Only a queued task is stopped. One that is already running is left alone
+    and reported as running: the request is in flight against a platform and
+    the identity's quota is already spent, so recording a failure the worker
+    never had would make the endpoint's risk rate lie - and the circuit breaker
+    reads that rate.
+
+    Nothing is deleted. The row stays, with its state, the way every other
+    finished task does.
+
+    **Returns**
+
+    The task's state after the request: `failed` if it was cancelled, or
+    whatever it already was.
+    """
+    session = request.state.db
+    _authorize_task(principal, await task_service.get(session, task_id))
+    state = await task_service.cancel(session, task_id)
+    await session.commit()
+    await task_service.wake_waiters(task_id)
+    return ok(request, {"task_id": str(task_id), "state": state})
+
+
+@router.get(
+    "/{task_id}/events", summary="Stream a task's progress", openapi_extra={I18N_KEY: "task_events"}
+)
+async def task_events(
+    request: Request,
+    task_id: uuid.UUID = TASK_ID_PATH,
+    timeout: float = Query(
+        default=SSE_MAX_SECONDS,
+        ge=1,
+        le=SSE_MAX_SECONDS,
+        description="Seconds to hold the stream open before closing it.",
+    ),
+    principal: Principal = Depends(demo_read),
+) -> StreamingResponse:
+    """Server-sent events until the task settles or the deadline passes.
+
+    Authorization happens before the response starts; once the stream is open
+    there is nothing left to authorize.
+    """
+    # Fail fast on an unknown id so the caller gets a 404 envelope instead of
+    # an event stream that says nothing - and authorize the same way the
+    # polling route does, since this returns the same payload.
+    _authorize_task(principal, await task_service.get(request.state.db, task_id))
+
+    # Bound before the stream opens, like the session below: the negotiated
+    # language belongs to the request, and the request is over by the time the
+    # body is produced.
+    caller_language = language(request)
+
+    async def stream() -> AsyncIterator[bytes]:
+        redis = get_redis()
+        signal_key = task_service.SIGNAL_KEY.format(task_id=task_id)
+        last_state: str | None = None
+        # A wall-clock deadline, not a running total of nominal ticks. `blpop`
+        # returns the moment the completion signal arrives, and the old code
+        # booked the whole tick anyway - so for any timeout of five seconds or
+        # less the very first early wake pushed `elapsed` past the deadline,
+        # the loop exited without re-reading the task, and the caller was sent
+        # `timeout` for a task that had already finished. The sibling long poll
+        # in `dtk.services.tasks.wait_for` has always used a deadline; this is
+        # the same idea, and the same reason.
+        deadline = monotonic() + timeout
+        silent = 0.0
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                async with session_scope() as session:
+                    try:
+                        view = await task_service.get(session, task_id)
+                    except TaskNotFound:
+                        yield _event(
+                            "error",
+                            {
+                                "code": ErrorCode.TASK_NOT_FOUND.value,
+                                "message": render(ErrorCode.TASK_NOT_FOUND, caller_language),
+                            },
+                        )
+                        return
+                if view.state.value != last_state:
+                    last_state = view.state.value
+                    silent = 0.0
+                    yield _event(
+                        "state", _view_payload(view, caller_language, include_result=False)
+                    )
+                if view.state in TERMINAL:
+                    # principal deliberately omitted: the stream is long-lived and the
+                    # privileged metadata is fetched once, over the ordinary
+                    # GET, where the scope check is right beside the read.
+                    yield _event("result", _view_payload(view, caller_language))
+                    yield _event("end", {"task_id": str(task_id)})
+                    return
+                if silent >= SSE_HEARTBEAT_SECONDS:
+                    silent = 0.0
+                    yield b": keep-alive\n\n"
+
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                waited = min(SSE_TICK_SECONDS, max(1.0, remaining))
+                # Blocks on the same signal the task queue pushes on
+                # completion, so a finished task wakes the stream at once.
+                started = monotonic()
+                await redis.blpop([signal_key], timeout=int(waited))
+                # What actually elapsed. An early wake means the task settled,
+                # and the loop goes back to the top to read it rather than
+                # counting time that was never spent.
+                silent += monotonic() - started
+            yield _event("timeout", {"task_id": str(task_id), "state": last_state})
+        except asyncio.CancelledError:  # client went away mid-stream
+            raise
+        finally:
+            log.debug("task.stream_closed", task_id=str(task_id))
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Nginx buffers proxied responses by default, which would hold
+            # every event back until the stream ends.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _event(name: str, payload: dict[str, Any]) -> bytes:
+    body = json.dumps(payload, ensure_ascii=False, default=str)
+    return f"event: {name}\ndata: {body}\n\n".encode()
+
+
+__all__ = [
+    "SSE_HEARTBEAT_SECONDS",
+    "SSE_MAX_SECONDS",
+    "SSE_TICK_SECONDS",
+    "router",
+]

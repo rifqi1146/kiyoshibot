@@ -1,0 +1,339 @@
+"""The public account a demo deployment publishes.
+
+An instance put on a public server so strangers can try it needs two things
+nobody should have to hand out individually: a console login that shows the
+machine working, and an API key that calls the platform endpoints. This module
+mints both, keeps them to one each, and can take them away again.
+
+Three properties are the whole design, and each one is here rather than left to
+the operator to remember:
+
+**The credentials are inert unless the switch is on.** ``demo.enabled`` is
+checked at authentication, not only at provisioning, so the account and the key
+stop working the moment it is turned off - and start working again if it is
+turned back on, with the same key. Nothing is deleted, because a demo that has
+to be rebuilt is a demo that stays off.
+
+**There is exactly one of each.** Turning the switch on twice does not make a
+second account, and a rotate replaces the key rather than adding one. An
+instance whose public key set grows every time somebody clicks a toggle has no
+way to answer "which of these is published".
+
+**The password is generated, never chosen.** It is shown once, when the switch
+is turned on, and the operator copies it into their README. It is not stored in
+readable form here or anywhere else, so a lost one is rotated rather than
+recovered - which is the same thing every other credential in this project
+does, and the demo account is not the place to make an exception.
+
+What the two credentials may reach is decided elsewhere and deliberately not
+duplicated here: the role ranks below viewer
+(:data:`dtk.api.routes.support.ROLE_RANK`) and the key holds the two platform
+read scopes, so the console gate and the scope gate each answer for one of
+them.
+"""
+
+from __future__ import annotations
+
+import secrets
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Final
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from dtk.core.crypto import Cipher, new_api_key
+from dtk.core.logging import get_logger
+from dtk.core.redis import get_redis
+from dtk.core.types import PLATFORM_READ_SCOPES, Scope, UserRole
+from dtk.db.models import ApiKey, User
+
+log = get_logger(__name__)
+
+#: The runtime switch. Read by the provisioner and, more importantly, by both
+#: authentication paths - see :func:`dtk.api.deps.demo_mode_on`.
+SETTING_KEY: Final = "demo.enabled"
+
+#: How long a demo task's row lives before the maintenance sweep removes it.
+RETENTION_SETTING: Final = "demo.task_retention_minutes"
+
+#: The account name. Fixed, because it goes in a README and a fixed name is one
+#: less thing for a visitor to get wrong.
+DEMO_USERNAME: Final = "demo"
+
+#: The key's display name, so it is recognisable in the API keys list next to
+#: an operator's own keys.
+DEMO_KEY_NAME: Final = "demo (public)"
+
+#: What the published key may do: read the two platforms, and nothing else.
+#:
+#: The same pair the anonymous principal gets on an opened endpoint, and for the
+#: same reason - it is the smallest set that makes the scraping endpoints work.
+#: Notably absent: `archive:read` and `archive:export`, so the published key
+#: cannot walk what this instance has already collected, and `media:write`, so
+#: it cannot spend the operator's disk.
+DEMO_KEY_SCOPES: Final[tuple[Scope, ...]] = PLATFORM_READ_SCOPES
+
+#: Words the generated password is built from. Readable on purpose: this string
+#: is going to be copied off a web page into a README and typed back in by
+#: strangers, and a demo password that looks like a hash gets mistyped, reported
+#: as broken, and answered by the maintainer.
+_WORDS: Final[tuple[str, ...]] = (
+    "amber",
+    "basalt",
+    "cobalt",
+    "cedar",
+    "delta",
+    "ember",
+    "fjord",
+    "garnet",
+    "harbor",
+    "indigo",
+    "jasper",
+    "kelp",
+    "lumen",
+    "marble",
+    "nimbus",
+    "onyx",
+    "pumice",
+    "quartz",
+    "ripple",
+    "slate",
+    "thicket",
+    "umber",
+    "vellum",
+    "willow",
+)
+
+
+def generate_password() -> str:
+    """A password a stranger can retype: three words and four digits."""
+    words = "-".join(secrets.choice(_WORDS) for _ in range(3))
+    return f"{words}-{secrets.randbelow(9000) + 1000}"
+
+
+@dataclass(frozen=True, slots=True)
+class DemoCredentials:
+    """What provisioning produced, returned to the caller exactly once."""
+
+    username: str
+    #: Present only on the call that generated it. A later read returns None,
+    #: because nothing stores it.
+    password: str | None
+    #: Likewise: the full key exists in this process and in the operator's
+    #: clipboard, nowhere else.
+    api_key: str | None
+    api_key_prefix: str
+    scopes: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "username": self.username,
+            "password": self.password,
+            "api_key": self.api_key,
+            "api_key_prefix": self.api_key_prefix,
+            "scopes": list(self.scopes),
+        }
+
+
+async def find_user(session: AsyncSession) -> User | None:
+    """The demo account, if this instance has ever had one."""
+    stmt = select(User).where(User.role == UserRole.DEMO.value)
+    return (await session.scalars(stmt)).first()
+
+
+async def find_key(session: AsyncSession, user_id: uuid.UUID) -> ApiKey | None:
+    """The demo account's live key, if it has one."""
+    stmt = select(ApiKey).where(ApiKey.user_id == user_id, ApiKey.revoked_at.is_(None))
+    return (await session.scalars(stmt)).first()
+
+
+async def provision(
+    session: AsyncSession, *, hash_password: Callable[[str], str], cipher: Cipher
+) -> DemoCredentials:
+    """Create or reset the demo account and its key, returning both in the clear.
+
+    Idempotent in the sense that matters: called twice it still leaves one
+    account and one live key. It is not idempotent in what it returns, because
+    it generates a new password and a new key each time - which is what makes
+    it also the "rotate" operation, and why the console calls it when the
+    switch goes on rather than every time the page loads.
+
+    ``hash_password`` is injected rather than imported: it lives in
+    :mod:`dtk.cli.users` next to the argon2 parameters, and importing the CLI
+    from a service would drag Typer into the API process.
+
+    Both secrets are stored twice and the two copies do different jobs. The
+    argon2 digest and the sha256 digest are what *authenticate*, unchanged from
+    any other account or key. The encrypted copies are what let the login page
+    and the API keys page *display* what this instance has published - which is
+    the whole feature, and is why the demo pair is the one place in this schema
+    where a credential is recoverable.
+    """
+    now = datetime.now(UTC)
+    password = generate_password()
+
+    user = await find_user(session)
+    if user is None:
+        user = User(
+            username=DEMO_USERNAME,
+            password_hash=hash_password(password),
+            role=UserRole.DEMO.value,
+        )
+        session.add(user)
+        # Flushed before encrypting: the row id is the AAD, so it has to exist.
+        await session.flush()
+        log.info("demo.user_created", user_id=str(user.id))
+    else:
+        user.password_hash = hash_password(password)
+        log.info("demo.user_password_rotated", user_id=str(user.id))
+    user.demo_password_encrypted = cipher.encrypt(password, aad=str(user.id))
+
+    # Revoke rather than delete: the key id is referenced by task and
+    # request_log rows, and a demo instance that cannot answer "which key made
+    # this call" has lost the one audit trail it still keeps.
+    existing = await find_key(session, user.id)
+    if existing is not None:
+        existing.revoked_at = now
+
+    full, prefix, digest = new_api_key()
+    key = ApiKey(
+        user_id=user.id,
+        name=DEMO_KEY_NAME,
+        prefix=prefix,
+        key_hash=digest,
+        scopes=[s.value for s in DEMO_KEY_SCOPES],
+    )
+    session.add(key)
+    await session.flush()
+    key.demo_secret_encrypted = cipher.encrypt(full, aad=str(key.id))
+    await session.flush()
+    log.info("demo.key_minted", user_id=str(user.id), prefix=prefix)
+
+    return DemoCredentials(
+        username=user.username,
+        password=password,
+        api_key=full,
+        api_key_prefix=prefix,
+        scopes=tuple(s.value for s in DEMO_KEY_SCOPES),
+    )
+
+
+async def describe(session: AsyncSession) -> DemoCredentials | None:
+    """What is provisioned, without the secrets. None if nothing ever was."""
+    user = await find_user(session)
+    if user is None:
+        return None
+    key = await find_key(session, user.id)
+    return DemoCredentials(
+        username=user.username,
+        password=None,
+        api_key=None,
+        api_key_prefix=key.prefix if key else "",
+        scopes=tuple(key.scopes or ()) if key else (),
+    )
+
+
+async def reveal(session: AsyncSession, cipher: Cipher) -> DemoCredentials | None:
+    """The published pair, decrypted, or None if there is nothing to publish.
+
+    This is what the login page prefills from and what the API keys page shows.
+    It is deliberately not gated on who is asking, because the answer is already
+    public - it is printed on a page an unauthenticated visitor is looking at -
+    and a check here would only create the impression that it is not.
+
+    What it IS gated on is the switch, at every call site: with the demo off
+    there is nothing to publish, and the routes below return nothing rather than
+    handing out a credential for an account that cannot log in.
+
+    A ciphertext that will not decrypt is treated as absent rather than raised.
+    That happens when the instance key has been rotated since the demo was
+    provisioned, and the honest recovery is to reissue the pair, not to fail the
+    login page for everyone.
+    """
+    user = await find_user(session)
+    if user is None:
+        return None
+    key = await find_key(session, user.id)
+
+    password: str | None = None
+    if user.demo_password_encrypted:
+        try:
+            password = cipher.decrypt(user.demo_password_encrypted, aad=str(user.id))
+        except Exception:
+            log.warning("demo.password_undecryptable", user_id=str(user.id))
+
+    api_key: str | None = None
+    if key is not None and key.demo_secret_encrypted:
+        try:
+            api_key = cipher.decrypt(key.demo_secret_encrypted, aad=str(key.id))
+        except Exception:
+            log.warning("demo.key_undecryptable", key_id=str(key.id))
+
+    return DemoCredentials(
+        username=user.username,
+        password=password,
+        api_key=api_key,
+        api_key_prefix=key.prefix if key else "",
+        scopes=tuple(key.scopes or ()) if key else (),
+    )
+
+
+#: The session store's key layout, owned by :mod:`dtk.api.routes.sessions`.
+#: Spelled out here because a service does not import the API layer;
+#: tests/unit/test_demo.py holds the two to each other.
+_SESSION_KEY: Final = "session:{token}"
+_SESSION_META_KEY: Final = "session:meta:{token}"
+_SESSION_INDEX_KEY: Final = "sessions:user:{user_id}"
+
+
+async def end_sessions(session: AsyncSession) -> int:
+    """Drop every console session belonging to the demo account.
+
+    Turning the switch off has to log people out, not merely stop new logins:
+    a session cookie is good for its whole lifetime, and "the demo is off" that
+    still leaves a stranger inside the console is not off.
+
+    Read from the per-account index the session store keeps. This used to scan
+    ``session:*``, which takes in every session's ``session:meta:{token}`` hash
+    as well as its token, and GET on a hash raises WRONGTYPE - so on any
+    instance where anybody had logged in, rotating the demo answered 500 and
+    rolled back, and turning the switch off left the demo's sessions alive
+    behind a logged error.
+    """
+    user = await find_user(session)
+    if user is None:
+        return 0
+
+    redis = get_redis()
+    wanted = str(user.id)
+    index = _SESSION_INDEX_KEY.format(user_id=wanted)
+    dropped = 0
+    for token in await redis.zrange(index, 0, -1):
+        # Counted only when it was still live: the index outlives a session
+        # that expired on its own.
+        dropped += await redis.delete(_SESSION_KEY.format(token=token))
+        await redis.delete(_SESSION_META_KEY.format(token=token))
+    await redis.delete(index)
+    if dropped:
+        log.info("demo.sessions_ended", user_id=wanted, count=dropped)
+    return dropped
+
+
+__all__ = [
+    "DEMO_KEY_NAME",
+    "DEMO_KEY_SCOPES",
+    "DEMO_USERNAME",
+    "RETENTION_SETTING",
+    "SETTING_KEY",
+    "DemoCredentials",
+    "describe",
+    "end_sessions",
+    "find_key",
+    "find_user",
+    "generate_password",
+    "provision",
+    "reveal",
+]
