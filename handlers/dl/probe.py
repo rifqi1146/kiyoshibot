@@ -60,6 +60,12 @@ def supports_moviebox_resolution(url: str) -> bool:
         host = host[4:]
     return host in ("officialmoviebox.com", "moviebox.ph", "moviebox.co")
 
+def supports_spankbang_resolution(url: str) -> bool:
+    host = _host(url)
+    if not host:
+        return False
+    return _host_match(host, "spankbang.com") or _host_match(host, "spankbang.party")
+
 def supports_resolution_picker(url: str) -> bool:
     return (
         supports_ytdlp_resolution(url)
@@ -69,6 +75,7 @@ def supports_resolution_picker(url: str) -> bool:
         or supports_drakorid_resolution(url)
         or supports_anichin_resolution(url)
         or supports_moviebox_resolution(url)
+        or supports_spankbang_resolution(url)
     )
 
 def supports_both_resolution_engines(url: str) -> bool:
@@ -350,6 +357,15 @@ async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple
             return (probe.get("res_list") or []), None
         except Exception as e:
             log.warning("MovieBox probe failed | url=%s err=%r", url, e)
+            return [], str(e)
+
+    if chosen == "spankbang" or (not chosen and supports_spankbang_resolution(url)):
+        try:
+            from .spankbang.main import probe_spankbang
+            probe = await asyncio.to_thread(probe_spankbang, url)
+            return (probe.get("res_list") or []), None
+        except Exception as e:
+            log.warning("SpankBang probe failed | url=%s err=%r", url, e)
             return [], str(e)
 
     if chosen and chosen != "ytdlp":

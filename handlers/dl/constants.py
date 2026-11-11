@@ -72,6 +72,8 @@ PREMIUM_ONLY_DOMAINS = {
     "bdsmlust.com",
     "heavy-r.com",
     "cosplaytele.com",
+    "spankbang.com",
+    "spankbang.party",
 }
 
 PREMIUM_NO_NSFW_DOMAINS = {
@@ -165,6 +167,8 @@ AUTO_DOWNLOAD_DOMAINS = {
     "bdsmlust.com",
     "heavy-r.com",
     "cosplaytele.com",
+    "spankbang.com",
+    "spankbang.party",
     "drakorid.co",
     "anichin.moe",
     "officialmoviebox.com",

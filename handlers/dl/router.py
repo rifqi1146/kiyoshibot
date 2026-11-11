@@ -19,7 +19,7 @@ from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls,AdultContentNotAllowed
 from .adult_gate import ADULT_BLOCK_NOT_PREMIUM,ADULT_BLOCK_NOT_NSFW
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
-from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution,supports_anichin_resolution,supports_moviebox_resolution
+from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution,supports_anichin_resolution,supports_moviebox_resolution,supports_spankbang_resolution
 from .nekopoi.main import is_nekopoi_url
 from .cosxplay.main import is_cosxplay_url
 from .tiktok.main import is_tiktok,tiktok_download
@@ -214,6 +214,7 @@ def _platform_label(url:str)->str:
         (("cosplaytele.com",),"Cosplaytele"),
         (("drakorid.co",),"Drakor.id"),
         (("officialmoviebox.com","moviebox.ph","moviebox.co"),"MovieBox"),
+        (("spankbang.com","spankbang.party"),"SpankBang"),
         ((
             "bokepcrot.*",
             "lendirqu.*",
@@ -473,6 +474,11 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
                 await message.edit_text(_metadata_status(url),parse_mode="HTML")
                 status_ready=True
             return await _show_resolution_picker(context,message,dl_id,data,engine="moviebox",status_ready=status_ready)
+        if supports_spankbang_resolution(url):
+            if not status_ready and message:
+                await message.edit_text(_metadata_status(url),parse_mode="HTML")
+                status_ready=True
+            return await _show_resolution_picker(context,message,dl_id,data,engine="spankbang",status_ready=status_ready)
     DL_CACHE.pop(dl_id,None)
     return await _start_dl_task(context=context,message=message,data=data,fmt_key=choice,format_id=None,has_audio=False,status_ready=status_ready)
 
