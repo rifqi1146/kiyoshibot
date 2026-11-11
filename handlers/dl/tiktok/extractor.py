@@ -14,7 +14,9 @@ from .constants import (
     SHORT_TIKTOK_RE,
     USE_GOVD_FAST,
     USE_SCRAPLING,
+    USE_NATIVE,
 )
+from . import native as _native
 from .utils import (
     _ttdbg,
     _dump_tiktok_debug,
@@ -169,6 +171,7 @@ def _parse_direct_media(item:dict)->dict:
             "duration":duration,
             "width":width,
             "height":height,
+            "size":_int_meta(video.get("size"),video.get("Size")),
         }
     if item.get("isAd") or item.get("is_ad"):
         raise RuntimeError("TikTok ad/sponsored video: direct media URL omitted by TikTok (triggering fallback)")
@@ -435,20 +438,54 @@ async def _fetch_tiktok_direct(url:str,bot=None)->dict:
     return media
 
 
+async def _resolve_aweme_id(url:str)->str:
+    aweme_id=_extract_aweme_id(url)
+    if aweme_id and not _is_short_tiktok_url(url):
+        return aweme_id
+    resolved,_=await _resolve_tiktok_url(url)
+    return _extract_aweme_id(resolved)
+
+
+async def _fetch_tiktok_native(url:str)->dict:
+    if not (USE_NATIVE and _native.enabled()):
+        raise RuntimeError("TikTok native path disabled")
+    aweme_id=await _resolve_aweme_id(url)
+    if not aweme_id:
+        raise RuntimeError("TikTok aweme id not found")
+    media=await _native.fetch_detail(aweme_id,_parse_direct_media)
+    media["resolved_url"]=url
+    media["target_url"]=f"https://www.tiktok.com/@_/video/{aweme_id}"
+    media["final_url"]=media["target_url"]
+    media["cookies"]=[]
+    return media
+
+
 async def _fetch_tiktok_metadata(url:str,bot=None,chat_id=None,status_msg_id=None,metadata_ready:bool=False)->dict:
-    fast_err=None
+    errors=[]
+    if USE_NATIVE and _native.enabled():
+        try:
+            started=time.monotonic()
+            media=await _fetch_tiktok_native(url)
+            log.info("TikTok metadata success | source=native url=%s kind=%s elapsed=%.3fs aweme=%s",url,media.get("kind"),time.monotonic()-started,media.get("aweme_id"))
+            return media
+        except _native.ItemNotFound as e:
+            log.info("TikTok post unavailable, skipping scraper chain | url=%s code=%s",url,e.code)
+            raise
+        except Exception as e:
+            errors.append(f"native={e}")
+            log.info("TikTok native metadata missed, fallback fast scraper | url=%s err=%r",url,e)
     if USE_GOVD_FAST:
         try:
             started=time.monotonic()
             media=await _fetch_tiktok_govd_fast(url)
-            log.info("TikTok metadata success | source=fast url=%s kind=%s elapsed=%.2fs target=%s",url,media.get("kind"),time.monotonic()-started,media.get("target_url"))
+            log.info("TikTok metadata success | source=fast url=%s kind=%s elapsed=%.3fs target=%s",url,media.get("kind"),time.monotonic()-started,media.get("target_url"))
             return media
         except Exception as e:
-            fast_err=e
-            log.warning("TikTok fast metadata failed, fallback full scraper | url=%s err=%r",url,e)
+            errors.append(f"fast={e}")
+            log.info("TikTok fast metadata missed, fallback full scraper | url=%s err=%r",url,e)
     if not metadata_ready and bot is not None and chat_id is not None and status_msg_id is not None:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping TikTok metadata...</b>")
     started=time.monotonic()
     media=await _fetch_tiktok_direct(url,bot=bot)
-    log.info("TikTok metadata success | source=full-scraping url=%s kind=%s elapsed=%.2fs target=%s fast_err=%r",url,media.get("kind"),time.monotonic()-started,media.get("target_url"),fast_err)
+    log.info("TikTok metadata success | source=full-scraping url=%s kind=%s elapsed=%.3fs target=%s errors=%s",url,media.get("kind"),time.monotonic()-started,media.get("target_url"),"; ".join(errors) or "-")
     return media

@@ -69,6 +69,11 @@ async def _pre_reload_cleanup(app):
         await tiktoksource.close()
     except Exception as e:
         log.warning("Reload cleanup tiktok search failed | err=%r",e)
+    try:
+        from handlers.dl.tiktok import close_tiktok_native
+        await close_tiktok_native()
+    except Exception as e:
+        log.warning("Reload cleanup tiktok native failed | err=%r",e)
 
 def _reload_modules():
     importlib.invalidate_caches()

@@ -237,6 +237,11 @@ async def post_shutdown(app):
         await tiktoksource.close()
     except Exception:
         log.exception("Failed to close tiktok search session")
+    try:
+        from handlers.dl.tiktok import close_tiktok_native
+        await close_tiktok_native()
+    except Exception:
+        log.exception("Failed to close tiktok native session")
     await close_http_session()
     log.info("HTTP session closed")
 

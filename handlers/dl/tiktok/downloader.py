@@ -20,6 +20,7 @@ from .constants import (
     TIKTOK_PROGRESS,
     TIKTOK_PROGRESS_INTERVAL,
     TIKTOK_DOWNLOAD_ENGINE,
+    TIKTOK_SMALL_FILE_BYTES,
     TIKTOK_AIOHTTP_CHUNK_SIZE,
     TIKTOK_ALBUM_CHUNK_SIZE,
     ARIA2C_TIMEOUT,
@@ -71,11 +72,13 @@ async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
         log.debug("TikTok Range size probe failed | err=%r",e)
     return 0
 
-async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+async def aria2c_download(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None,known_size:int=0):
     aria2=resolve_aria2()
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
-    total=await _probe_total_bytes(session,media_url,headers=headers) if (TIKTOK_PROGRESS and status_msg_id) else 0
+    total=int(known_size or 0)
+    if not total and TIKTOK_PROGRESS and status_msg_id:
+        total=await _probe_total_bytes(session,media_url,headers=headers)
     if total:
         check_media_size_limit(total, "TikTok media")
     out_dir=os.path.dirname(out_path) or "."
@@ -152,12 +155,12 @@ async def aiohttp_download(session,media_url:str,out_path:str,bot,chat_id,status
                 await stats.emit(bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,title=title_text,kind="TikTok download",label=os.path.basename(out_path),log_interval=2.5,edit_interval=TIKTOK_PROGRESS_INTERVAL)
         stats.log_done("TikTok download",label=os.path.basename(out_path))
 
-async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None,known_size:int=0):
     aria2_path=shutil.which("aria2c")
     if aria2_path:
         try:
             log.info("TikTok download engine | engine=aria2c path=%s progress=%s",aria2_path,TIKTOK_PROGRESS)
-            await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+            await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers,known_size=known_size)
             return
         except FileSizeLimitExceeded:
             _safe_remove_file(out_path,"too large")
@@ -170,7 +173,7 @@ async def _download_with_aria2_first(session,media_url:str,out_path:str,bot,chat
     log.info("TikTok download engine | engine=aiohttp progress=%s",TIKTOK_PROGRESS)
     await aiohttp_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
 
-async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None,known_size:int=0):
     try:
         log.info("TikTok download engine | engine=aiohttp progress=%s chunk=%s",TIKTOK_PROGRESS,TIKTOK_AIOHTTP_CHUNK_SIZE)
         await aiohttp_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
@@ -185,12 +188,19 @@ async def _download_with_aiohttp_first(session,media_url:str,out_path:str,bot,ch
     if not aria2_path:
         raise RuntimeError("aiohttp failed and aria2c not found")
     log.info("TikTok download engine | engine=aria2c path=%s progress=%s",aria2_path,TIKTOK_PROGRESS)
-    await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+    await aria2c_download(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers,known_size=known_size)
 
-async def _download_with_best_engine(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
-    if TIKTOK_DOWNLOAD_ENGINE in ("aria2","aria2-first","aria2c","aria2c-first"):
-        return await _download_with_aria2_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
-    return await _download_with_aiohttp_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+async def _download_with_best_engine(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None,known_size:int=0):
+    engine=TIKTOK_DOWNLOAD_ENGINE
+    if engine in ("aria2","aria2-first","aria2c","aria2c-first"):
+        return await _download_with_aria2_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers,known_size=known_size)
+    if engine=="aiohttp":
+        return await _download_with_aiohttp_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers,known_size=known_size)
+    if known_size and known_size>=TIKTOK_SMALL_FILE_BYTES:
+        log.info("TikTok download engine | engine=auto->aria2c known_size=%s threshold=%s",known_size,TIKTOK_SMALL_FILE_BYTES)
+        return await _download_with_aria2_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers,known_size=known_size)
+    log.info("TikTok download engine | engine=auto->aiohttp known_size=%s threshold=%s",known_size,TIKTOK_SMALL_FILE_BYTES)
+    return await _download_with_aiohttp_first(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers,known_size=known_size)
 
 async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
     os.makedirs(TMP_DIR,exist_ok=True)
@@ -212,11 +222,12 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
         "Connection":"keep-alive",
     }
     last_err=None
+    known_size=int(media.get("size") or 0)
     for idx,video_url in enumerate(video_urls,start=1):
         out_path=f"{TMP_DIR}/{uuid.uuid4().hex}_{sanitize_filename(title)}.mp4"
         try:
             _ttdbg("direct video download try | index=%s total=%s url=%s",idx,len(video_urls),video_url[:180])
-            await _download_with_best_engine(session,video_url,out_path,bot,chat_id,status_msg_id,"Downloading TikTok video...",headers=base_headers)
+            await _download_with_best_engine(session,video_url,out_path,bot,chat_id,status_msg_id,"Downloading TikTok video...",headers=base_headers,known_size=known_size)
             if await asyncio.to_thread(is_invalid_video,out_path):
                 _safe_remove_file(out_path,"invalid TikTok video")
                 raise RuntimeError("Invalid video file from TikTok scraping")
@@ -230,6 +241,7 @@ async def _download_direct_video(media:dict,bot,chat_id,status_msg_id)->dict:
                 "duration":media.get("duration") or 0,
                 "width":media.get("width") or 0,
                 "height":media.get("height") or 0,
+                "validated":True,
             }
         except FileSizeLimitExceeded:
             _safe_remove_file(out_path,"too large")

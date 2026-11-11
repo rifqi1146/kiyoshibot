@@ -456,7 +456,7 @@ connection timeout. Connections without `busy_timeout` raise
 | `retrotube/` | `constants`, `extractor`, `download`, `main`, `packer` | VOE.sx DDoS-Guard resolution with a narrow browser fallback, Dean-Edwards unpacker, `_MIRROR_GROUPS` TLD fallback. |
 | `simontok/` | `constants`, `extractor`, `main` | AES-256-GCM player decrypt (`window.__PX` + `/api/pk` one-time nonce), HLS segments, plus a codec guard that refuses to ship an audio-only remux. |
 | `threads/` | `main` | Threads media. |
-| `tiktok/` | `constants`, `utils`, `extractor`, `downloader`, `fallback`, `main` | Split from a 1396-line original. PoW challenge solver, cookie helpers, three itemStruct parser shapes (universal/sigi/next), slideshow renderer, aria2c/aiohttp engine selection, tikwm fallback. |
+| `tiktok/` | `constants`, `native`, `utils`, `extractor`, `downloader`, `fallback`, `main` | Split from a 1396-line original. **Native signed detail first** (`dtk` `POST_DETAIL`, ~0.2 s, 30-min cache), then SSR fast scrape, then full scraper, then tikwm. PoW challenge solver, cookie helpers, itemStruct parsers, slideshow renderer, size-aware aiohttp/aria2c engine choice. |
 | `twitter/` | `main` | X/Twitter media with `possibly_sensitive` adult gate. |
 | `youtube/` | `main`, `community` | YouTube video, Shorts, and community posts via yt-dlp. |
 
@@ -1450,6 +1450,10 @@ mandatory. Everything else degrades gracefully when absent.
 | `YTDLP_TIMEOUT` / `YTDLP_PROBE_TIMEOUT` / `GALLERYDL_TIMEOUT` | — | External tool timeouts |
 | `FFMPEG_REMUX_TIMEOUT` / `FFMPEG_THUMB_TIMEOUT` / `FFPROBE_TIMEOUT` | — | ffmpeg/ffprobe budgets |
 | `FFMPEG_HLS_TIMEOUT` | 900 | Serial HLS download budget (long videos need the headroom) |
+| `TIKTOK_NATIVE` | 1 | `0` disables the signed native detail path (SSR scrape only) |
+| `TIKTOK_NATIVE_CACHE_TTL` / `TIKTOK_NATIVE_CACHE_MAX` | 1800 / 500 | Detail cache lifetime (seconds) and entry cap |
+| `TIKTOK_DOWNLOAD_ENGINE` | `auto` | `auto` picks aiohttp under 32 MB, aria2c above; force with `aiohttp` / `aria2c` |
+| `TIKTOK_ARIA2_THRESHOLD` | 33554432 | Byte threshold for the `auto` engine switch |
 | `ARIA2_CONNS` | 16 | aria2c socket count |
 | `UPLOAD_ENGINE` | — | `mtproto` or `pyrofork` |
 | `MTPROTO_UPLOAD`, `MTPROTO_FAST_UPLOAD`, `MTPROTO_PART_SIZE_KB`, `MTPROTO_PROGRESS_*` | — | MTProto uploader tuning |

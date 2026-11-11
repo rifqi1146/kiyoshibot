@@ -799,7 +799,7 @@ async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_i
         
                 actual_path=path.get("path") if isinstance(path,dict) else path
                 result_kind=str((path or {}).get("kind") or "").lower() if isinstance(path,dict) else ""
-                should_validate_video=fmt_key!="mp3" and result_kind!="audio"
+                should_validate_video=fmt_key!="mp3" and result_kind!="audio" and not (isinstance(path,dict) and path.get("validated"))
         
                 if should_validate_video and actual_path and await asyncio.to_thread(is_invalid_video,actual_path):
                     await _remove_file(actual_path,"invalid TikTok")

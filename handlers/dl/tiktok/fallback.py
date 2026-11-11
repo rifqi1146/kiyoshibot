@@ -17,12 +17,12 @@ async def _tikwm_result(url, bot, chat_id, status_msg_id, fmt_key="mp4"):
         try:
             async with session.post("https://www.tikwm.com/api/", data={"url": url}, timeout=aiohttp.ClientTimeout(total=20)) as r:
                 last_data = await r.json()
-            if isinstance(last_data, dict) and last_data.get("code") == 0 and last_data.get("data"):
-                break
         except Exception as e:
             log.warning("Tikwm request failed | attempt=%s url=%s err=%r", attempt + 1, url, e)
             last_data = None
-        await asyncio.sleep(0.6 * (attempt + 1))
+            await asyncio.sleep(0.6 * (attempt + 1))
+            continue
+        break
 
     data = last_data or {}
     info = data.get("data") or {}

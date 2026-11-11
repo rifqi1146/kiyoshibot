@@ -2,10 +2,11 @@ import logging
 
 from handlers.dl.utils import FileSizeLimitExceeded
 
-from .constants import USER_AGENT, USE_GOVD_FAST, TIKTOK_DOWNLOAD_ENGINE, TIKTOK_PROGRESS
+from .constants import USER_AGENT, USE_GOVD_FAST, USE_NATIVE, TIKTOK_DOWNLOAD_ENGINE, TIKTOK_PROGRESS
 from .utils import _write_debug_file, _send_debug_file, _safe_edit_status
 from . import extractor as _ext
 from . import downloader as _dl
+from . import native as _native
 from .fallback import _tikwm_result
 
 log = logging.getLogger(__name__)
@@ -20,9 +21,19 @@ __all__ = [
     "tiktok_download",
     "tiktok_scrape_download",
     "douyin_download",
+    "close_tiktok_native",
+    "tiktok_cache_stats",
     "_download_with_best_engine",
     "_download_album_images",
 ]
+
+
+async def close_tiktok_native():
+    await _native.close()
+
+
+def tiktok_cache_stats()->dict:
+    return _native.stats()
 
 
 async def tiktok_scrape_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
@@ -38,7 +49,7 @@ async def douyin_download(url,bot,chat_id,status_msg_id):
 
 async def tiktok_download(url,bot,chat_id,status_msg_id,fmt_key="mp4",metadata_ready:bool=False):
     try:
-        log.info("TikTok primary start | source=scraping url=%s fmt=%s metadata_ready=%s fast=%s engine=%s progress=%s",url,fmt_key,metadata_ready,USE_GOVD_FAST,TIKTOK_DOWNLOAD_ENGINE,TIKTOK_PROGRESS)
+        log.info("TikTok primary start | source=scraping url=%s fmt=%s metadata_ready=%s native=%s fast=%s engine=%s progress=%s",url,fmt_key,metadata_ready,USE_NATIVE,USE_GOVD_FAST,TIKTOK_DOWNLOAD_ENGINE,TIKTOK_PROGRESS)
         result=await tiktok_scrape_download(url=url,bot=bot,chat_id=chat_id,status_msg_id=status_msg_id,fmt_key=fmt_key,metadata_ready=metadata_ready)
         if isinstance(result,dict):
             if result.get("path"):
