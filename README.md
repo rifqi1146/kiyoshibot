@@ -443,7 +443,7 @@ connection timeout. Connections without `busy_timeout` raise
 | `cosxplay/` | `constants`, `extractor`, `main` | JSON-LD `VideoObject` plus `<video>` source parsing, high/low variants, MP3 extraction. |
 | `darknessporn/` | `constants`, `extractor`, `main` | Same CDN family as CosXplay, `<source title="high"/"low">` variants. |
 | `drakorid/` | `constants`, `extractor`, `main` | Korean/Asian drama. Download page scrape plus authenticated API fallback that bypasses the guest one-per-day limit; probes `files/` (720p), `720p/`, `480p/`, `360p/`. |
-| `facebook/` | `main` | Facebook video via yt-dlp/direct parse. |
+| `facebook/` | `main` | Share-link redirect resolved from the `Location` header only, photo posts short-circuited before the GraphQL fallback, early-exit page streaming once both video URLs are complete, `og:image` cover thumbnail, cover-crop stripped so photos keep full resolution, and a size-aware aiohttp/aria2c engine switch. |
 | `femdomvc/` | `constants`, `extractor`, `main` | 16-connection aria2c over a per-connection-throttled CDN. |
 | `heavyr/` | `constants`, `extractor`, `main` | Direct MP4 or single-file HLS (`EXT-X-MAP` `.m4s`), with an embed-page fallback that validates the requested video id. |
 | `instagram/` | `main`, `mobile_session` | Cookie-less Polaris GraphQL (dynamic LSD/CSRF, warmup at boot), 30-minute metadata LRU, optional Android mobile session for age-gated posts, then NeoXR API. CDN thumbnail fetched in parallel with the video and shipped as-is; Instagram MP4s are already faststart, so the ffmpeg remux is probed away. Carousel downloads run 6-way parallel. |
@@ -1458,6 +1458,14 @@ mandatory. Everything else degrades gracefully when absent.
 | `INSTAGRAM_PROGRESS_MIN_BYTES` | 8388608 | Files smaller than this skip Telegram edit calls during download |
 | `INSTAGRAM_AIOHTTP_CHUNK_SIZE` | 524288 | Stream chunk size (bytes) |
 | `INSTAGRAM_THUMB_WIDTH` | 320 | Target width for CDN cover thumbnail resize |
+| `FACEBOOK_DOWNLOAD_ENGINE` | `auto` | `auto` picks aiohttp under 32 MB, aria2c above; force with `aiohttp` / `aria2c` |
+| `FACEBOOK_ARIA2_THRESHOLD` | 33554432 | Byte threshold for the `auto` engine switch |
+| `FACEBOOK_ARIA2_POLL` | 0.2 | aria2c progress poll interval (seconds) |
+| `FACEBOOK_CHUNK_SIZE` | 524288 | Stream chunk size (bytes) |
+| `FACEBOOK_PROGRESS_MIN_BYTES` | 8388608 | Files smaller than this skip Telegram edit calls during download |
+| `FACEBOOK_PHOTO_CONCURRENCY` | 6 | Parallel photo downloads for albums and carousels |
+| `FACEBOOK_THUMB_WIDTH` | 320 | Target width for the `og:image` cover thumbnail |
+| `FACEBOOK_DEBUG` | 0 | `1` restores the verbose `FBDBG` trace lines |
 | `ARIA2_CONNS` | 16 | aria2c socket count |
 | `UPLOAD_ENGINE` | — | `mtproto` or `pyrofork` |
 | `MTPROTO_UPLOAD`, `MTPROTO_FAST_UPLOAD`, `MTPROTO_PART_SIZE_KB`, `MTPROTO_PROGRESS_*` | — | MTProto uploader tuning |

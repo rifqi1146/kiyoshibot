@@ -1,16 +1,13 @@
 import os
 import re
 import json
-import time
 import uuid
-import shutil
 import asyncio
 import aiohttp
 import aiofiles
 import logging
 from html import unescape as _html_unescape
-from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlunparse, unquote
-from telegram.error import RetryAfter
+from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, unquote, urljoin, urlsplit, urlunsplit
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
 from handlers.dl.utils import check_media_size_limit, FileSizeLimitExceeded
@@ -24,8 +21,17 @@ from handlers.dl.proc import spawn_process, DEVNULL, PIPE, resolve_aria2
 log = logging.getLogger(__name__)
 
 COOKIES_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "data", "cookies.txt"))
-DEBUG_FACEBOOK = True
+DEBUG_FACEBOOK = os.getenv("FACEBOOK_DEBUG", "0").strip().lower() in ("1", "true", "on", "yes")
+FACEBOOK_ARIA2_THRESHOLD = int(os.getenv("FACEBOOK_ARIA2_THRESHOLD", str(32 * 1024 * 1024)))
+FACEBOOK_DOWNLOAD_ENGINE = os.getenv("FACEBOOK_DOWNLOAD_ENGINE", "auto").strip().lower()
+FACEBOOK_ARIA2_POLL = float(os.getenv("FACEBOOK_ARIA2_POLL", "0.2"))
+FACEBOOK_CHUNK_SIZE = int(os.getenv("FACEBOOK_CHUNK_SIZE", str(512 * 1024)))
+FACEBOOK_PROGRESS_MIN_BYTES = int(os.getenv("FACEBOOK_PROGRESS_MIN_BYTES", str(8 * 1024 * 1024)))
+FACEBOOK_PHOTO_CONCURRENCY = max(1, int(os.getenv("FACEBOOK_PHOTO_CONCURRENCY", "6")))
+FACEBOOK_THUMB_WIDTH = int(os.getenv("FACEBOOK_THUMB_WIDTH", "320"))
+_EARLY_EXIT_MIN_BYTES = 128 * 1024
 _COOKIE_HEADER_CACHE = None
+_COOKIE_CACHE_MTIME = None
 
 WEB_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -117,15 +123,18 @@ def _cookie_domain_ok(domain: str) -> bool:
     return any(d == x or d.endswith(x) for x in FACEBOOK_COOKIE_DOMAINS)
 
 def _load_cookie_header(path: str) -> str:
-    global _COOKIE_HEADER_CACHE
-    if _COOKIE_HEADER_CACHE is not None:
-        return _COOKIE_HEADER_CACHE
-
+    global _COOKIE_HEADER_CACHE, _COOKIE_CACHE_MTIME
     if not path or not os.path.exists(path):
         _dbg("cookie file not found | path=%s", path)
         _COOKIE_HEADER_CACHE = ""
+        _COOKIE_CACHE_MTIME = None
         return _COOKIE_HEADER_CACHE
-
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = None
+    if _COOKIE_HEADER_CACHE is not None and _COOKIE_CACHE_MTIME == mtime:
+        return _COOKIE_HEADER_CACHE
     jar = {}
 
     try:
@@ -191,11 +200,13 @@ def _load_cookie_header(path: str) -> str:
         )
 
         _COOKIE_HEADER_CACHE = header
+        _COOKIE_CACHE_MTIME = mtime
         return _COOKIE_HEADER_CACHE
 
     except Exception as e:
         _dbg("failed to load cookie file | path=%s err=%r", path, e)
         _COOKIE_HEADER_CACHE = ""
+        _COOKIE_CACHE_MTIME = None
         return _COOKIE_HEADER_CACHE
 
 def _build_headers(referer: str | None = None, use_cookies: bool = True) -> dict:
@@ -263,13 +274,28 @@ async def _follow_share_redirect(url: str) -> str:
     session = await get_http_session()
     headers = _build_headers(use_cookies=False)
     _dbg("follow share redirect start | url=%s cookie=%s", url, bool(headers.get("Cookie")))
-    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
-        final_url = str(resp.url)
-        _dbg("follow share redirect done | status=%s final=%s", resp.status, final_url)
-        canonical = _resolve_canonical_fb_url(final_url)
-        if canonical != final_url:
-            _dbg("canonical resolved from redirect | redirect=%s canonical=%s", final_url, canonical)
-        return canonical
+    current = url
+    for _hop in range(4):
+        try:
+            async with session.get(current, headers=headers, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=False) as resp:
+                status = resp.status
+                location = resp.headers.get("Location") or ""
+                await resp.read()
+                if not location:
+                    canonical = _resolve_canonical_fb_url(str(resp.url))
+                    _dbg("share redirect settled | status=%s final=%s", status, str(resp.url))
+                    return canonical
+        except Exception as e:
+            _dbg("share redirect hop failed | url=%s err=%r", current, e)
+            return _resolve_canonical_fb_url(current)
+        current = urljoin(current, location)
+        low = current.lower()
+        if not SHARE_RE.search(current) and "fb.watch" not in low and "/l.php" not in low and "/login" not in low:
+            canonical = _resolve_canonical_fb_url(current)
+            _dbg("share redirect resolved on hop | status=%s canonical=%s", status, canonical)
+            return canonical
+        _dbg("share redirect hop | status=%s next=%s", status, _clip(current, 200))
+    return _resolve_canonical_fb_url(current)
 
 def _unescape_unicode(text: str) -> str:
     if not text:
@@ -459,6 +485,8 @@ def _extract_attachment_photos(text: str) -> list[dict]:
 
 def _extract_mixed_media(text: str) -> dict:
     text = text or ""
+    if '"all_subattachments"' not in text:
+        return {"videos": [], "photos": []}
     videos = []
     photos = []
     
@@ -528,14 +556,51 @@ def _extract_mixed_media(text: str) -> dict:
     
     return {"videos": [], "photos": []}
 
-def _collect_photo_urls(text: str) -> list[str]:
-    photos = [p["url"] for p in _extract_attachment_photos(text)]
+def _upgrade_image_url(url: str) -> str:
+    text = (url or "").strip()
+    if not text:
+        return text
+    parts = urlsplit(text)
+    if not parts.query:
+        return text
+    pairs = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "ctp"]
+    if len(pairs) == len(parse_qsl(parts.query, keep_blank_values=True)):
+        return text
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(pairs), parts.fragment))
+
+
+
+def _strip_cover_crop(url: str) -> str:
+    text = (url or "").strip()
+    if not text or "ctp=" not in text:
+        return text
+    parts = urlsplit(text)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    kept = [(k, v) for k, v in pairs if k != "ctp"]
+    if len(kept) == len(pairs):
+        return text
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), parts.fragment))
+
+
+def _ctp_area(url: str) -> int:
+    m = re.search(r"[?&]ctp=[ps](\d+)x(\d+)", url or "")
+    return int(m.group(1)) * int(m.group(2)) if m else 0
+
+
+def _collect_photo_urls(text: str, attachment_photos: list[dict] | None = None) -> list[str]:
+    raw = [p["url"] for p in (attachment_photos if attachment_photos is not None else _extract_attachment_photos(text)) if p.get("url")]
     og_image = _extract_og_image(text)
     if og_image:
         og_key = _normalize_image_url(og_image)
-        if not any(_normalize_image_url(u) == og_key for u in photos):
-            photos.insert(0, og_image)
-    return photos
+        matched_idx = next((i for i, u in enumerate(raw) if _normalize_image_url(u) == og_key), None)
+        if matched_idx is None:
+            raw.insert(0, og_image)
+        elif len(raw) == 1:
+            og_area = _ctp_area(og_image)
+            cur_area = _ctp_area(raw[0])
+            if (og_area == 0 and cur_area > 0) or (og_area > cur_area):
+                raw[0] = og_image
+    return raw
 
 def _sniff_image_ext(path: str) -> str:
     try:
@@ -673,11 +738,11 @@ async def _probe_total_bytes(session, url: str, headers: dict | None = None) -> 
         pass
     return 0
 
-async def _aria2c_download_with_progress(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
+async def _aria2c_download_with_progress(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None, known_total: int = 0):
     aria2 = resolve_aria2()
     if not aria2:
         raise RuntimeError("aria2c not found in PATH")
-    total = await _probe_total_bytes(session, media_url, headers=headers)
+    total = known_total or await _probe_total_bytes(session, media_url, headers=headers)
     if total:
         check_media_size_limit(total, "Facebook video")
     out_dir, out_name = os.path.dirname(out_path) or ".", os.path.basename(out_path)
@@ -689,8 +754,9 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
     _dbg("aria2c start | out=%s url=%s", out_path, _clip(media_url, 200))
     proc = await spawn_process(*cmd, stdout=DEVNULL, stderr=PIPE)
     stats = TransferStats(total)
+    progress_bot = None if (total and total < FACEBOOK_PROGRESS_MIN_BYTES) else bot
     while proc.returncode is None:
-        await asyncio.sleep(0.7)
+        await asyncio.sleep(FACEBOOK_ARIA2_POLL)
         if not os.path.exists(out_path):
             continue
         try:
@@ -705,7 +771,7 @@ async def _aria2c_download_with_progress(session, media_url: str, out_path: str,
             except Exception:
                 pass
             raise FileSizeLimitExceeded("Facebook video exceeds 2GB limit. Download canceled.")
-        await stats.update(downloaded, bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=3.0)
+        await stats.update(downloaded, progress_bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=5.0)
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = stderr.decode(errors="ignore").strip() if stderr else ""
@@ -725,21 +791,44 @@ async def _aiohttp_download_with_progress(session, media_url: str, out_path: str
             check_media_size_limit(total, "Facebook video")
         downloaded = 0
         stats = TransferStats(total)
+        progress_bot = None if (total and total < FACEBOOK_PROGRESS_MIN_BYTES) else bot
         async with aiofiles.open(out_path, "wb") as f:
-            async for chunk in r.content.iter_chunked(512 * 1024):
+            async for chunk in r.content.iter_chunked(FACEBOOK_CHUNK_SIZE):
                 if not chunk:
                     continue
                 await f.write(chunk)
                 downloaded += len(chunk)
                 if downloaded > MAX_TG_SIZE:
                     raise FileSizeLimitExceeded("Facebook video exceeds 2GB limit. Download canceled.")
-                await stats.update(downloaded, bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=3.0)
+                await stats.update(downloaded, progress_bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=5.0)
     stats.log_done("Facebook download", label=os.path.basename(out_path), size=downloaded)
     _dbg("aiohttp download success | out=%s", out_path)
 
 async def _download_with_best_engine(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str, headers: dict | None = None):
+    engine = FACEBOOK_DOWNLOAD_ENGINE
+    total = 0 if engine in ("aria2c", "aiohttp") else await _probe_total_bytes(session, media_url, headers=headers)
+    prefer_http = engine == "aiohttp" or (engine == "auto" and total and total <= FACEBOOK_ARIA2_THRESHOLD)
+    if prefer_http:
+        try:
+            _dbg("engine aiohttp | size=%s threshold=%s mode=%s", total, FACEBOOK_ARIA2_THRESHOLD, engine)
+            await _aiohttp_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
+            return
+        except FileSizeLimitExceeded:
+            if os.path.exists(out_path):
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
+            raise
+        except Exception as e:
+            log.warning("Facebook aiohttp failed, fallback aria2c | err=%r", e)
+            if os.path.exists(out_path):
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
     try:
-        await _aria2c_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
+        await _aria2c_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers, known_total=total)
     except FileSizeLimitExceeded:
         if os.path.exists(out_path):
             try:
@@ -755,46 +844,183 @@ async def _download_with_best_engine(session, media_url: str, out_path: str, bot
             except Exception:
                 pass
         await _aiohttp_download_with_progress(session, media_url, out_path, bot, chat_id, status_msg_id, title_text, headers=headers)
+def _video_urls_complete(buf: bytearray, content_id: str) -> bool:
+    if len(buf) < _EARLY_EXIT_MIN_BYTES:
+        return False
+    hd = buf.rfind(b'"browser_native_hd_url"')
+    sd = buf.rfind(b'"browser_native_sd_url"')
+    if hd < 0 or sd < 0:
+        return False
+    if len(buf) - max(hd, sd) < 4096:
+        return False
+    if content_id and content_id.encode() not in buf:
+        return False
+    if b'"all_subattachments"' in buf:
+        return False
+    return True
 
-async def _fetch_page_html(content_url: str, content_id: str, use_cookies: bool = False) -> tuple[int, str, bytes]:
+
+async def _fetch_page_html(content_url: str, content_id: str, use_cookies: bool = False, early_exit_video: bool = False) -> tuple[int, str, bytes]:
     content_url = _normalize_content_url(content_url, content_id)
     session = await get_http_session()
     headers = _build_headers(content_url, use_cookies=use_cookies)
-    _dbg("fetch page start | url=%s content_id=%s cookie=%s", content_url, content_id, bool(headers.get("Cookie")))
+    _dbg("fetch page start | url=%s content_id=%s cookie=%s early=%s", content_url, content_id, bool(headers.get("Cookie")), early_exit_video)
     async with session.get(content_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
         final_url = str(resp.url)
         status = resp.status
-        body = await resp.read()
-        _dbg("fetch page response | status=%s final=%s body_len=%s", status, final_url, len(body))
-        return status, final_url, body
+        if not early_exit_video:
+            body = await resp.read()
+            _dbg("fetch page response | status=%s final=%s body_len=%s", status, final_url, len(body))
+            return status, final_url, body
+        cid = content_id or _extract_content_id(final_url)
+        buf = bytearray()
+        async for chunk in resp.content.iter_chunked(64 * 1024):
+            if not chunk:
+                continue
+            buf.extend(chunk)
+            if not _video_urls_complete(buf, cid):
+                continue
+            try:
+                probe = _parse_video_from_body(bytes(buf), cid)
+            except Exception:
+                continue
+            if probe.get("hd_url") or probe.get("sd_url"):
+                _dbg("fetch page early exit | status=%s final=%s body_len=%s", status, final_url, len(buf))
+                return status, final_url, bytes(buf)
+        _dbg("fetch page response | status=%s final=%s body_len=%s", status, final_url, len(buf))
+        return status, final_url, bytes(buf)
+
+def _shrink_thumb_sync(path: str, max_side: int, max_bytes: int) -> str | None:
+    try:
+        from PIL import Image
+    except Exception:
+        return path if os.path.exists(path) and os.path.getsize(path) <= max_bytes else None
+    try:
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            if max(im.size) > max_side:
+                im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            out = os.path.splitext(path)[0] + "_s.jpg"
+            im.save(out, format="JPEG", quality=85, optimize=True)
+        if os.path.getsize(out) <= max_bytes:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return out
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+    except Exception as e:
+        _dbg("facebook thumbnail resize failed | path=%s err=%r", path, e)
+    return path if os.path.exists(path) and os.path.getsize(path) <= max_bytes else None
+
+
+async def _fetch_fb_thumb(url: str) -> str | None:
+    if not url:
+        return None
+    os.makedirs(TMP_DIR, exist_ok=True)
+    out_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_thumb.jpg")
+    try:
+        session = await get_http_session()
+        async with session.get(url, headers={"User-Agent": WEB_HEADERS["User-Agent"]}, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+            if resp.status >= 400:
+                return None
+            raw = await resp.read()
+        if not raw or len(raw) < 512:
+            return None
+        async with aiofiles.open(out_path, "wb") as fh:
+            await fh.write(raw)
+        shrunk = await asyncio.to_thread(_shrink_thumb_sync, out_path, FACEBOOK_THUMB_WIDTH, 200 * 1024)
+        if not shrunk and os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+        return shrunk
+    except Exception as e:
+        _dbg("facebook thumb fetch failed | err=%r", e)
+        if os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+        return None
+
 
 async def _download_fb_photo(session, media_url: str, out_path: str, bot, chat_id, status_msg_id, title_text: str) -> str:
     _dbg("photo download start | out=%s url=%s", out_path, _clip(media_url, 200))
     headers = dict(WEB_HEADERS)
-    async with session.get(media_url, headers=headers, timeout=aiohttp.ClientTimeout(total=600), allow_redirects=True) as r:
-        _dbg("photo download response | status=%s final=%s", r.status, str(r.url))
-        if r.status >= 400:
-            raise RuntimeError(f"Facebook photo download failed: HTTP {r.status}")
-        total = int(r.headers.get("Content-Length", 0) or 0)
-        if total:
-            check_media_size_limit(total, "Facebook photo")
-        downloaded = 0
-        stats = TransferStats(total)
-        async with aiofiles.open(out_path, "wb") as f:
-            async for chunk in r.content.iter_chunked(512 * 1024):
-                if not chunk:
-                    continue
-                await f.write(chunk)
-                downloaded += len(chunk)
-                if downloaded > MAX_TG_SIZE:
-                    raise FileSizeLimitExceeded("Facebook photo exceeds 2GB limit. Download canceled.")
-                await stats.update(downloaded, bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=3.0)
-    if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-        raise RuntimeError("Facebook photo download output empty")
-    stats.log_done("Facebook download", label=os.path.basename(out_path), size=downloaded)
-    final_path = _fix_image_ext(out_path)
-    _dbg("photo download success | out=%s", final_path)
-    return final_path
+    upgraded = _strip_cover_crop(media_url)
+    candidates = [upgraded, media_url] if upgraded and upgraded != media_url else [media_url]
+    last_error = None
+    for attempt, cand in enumerate(candidates):
+        try:
+            async with session.get(cand, headers=headers, timeout=aiohttp.ClientTimeout(total=600), allow_redirects=True) as r:
+                _dbg("photo download response | status=%s final=%s", r.status, str(r.url))
+                if r.status >= 400:
+                    raise RuntimeError(f"Facebook photo download failed: HTTP {r.status}")
+                total = int(r.headers.get("Content-Length", 0) or 0)
+                if total:
+                    check_media_size_limit(total, "Facebook photo")
+                downloaded = 0
+                stats = TransferStats(total)
+                progress_bot = None if (total and total < FACEBOOK_PROGRESS_MIN_BYTES) else bot
+                async with aiofiles.open(out_path, "wb") as f:
+                    async for chunk in r.content.iter_chunked(FACEBOOK_CHUNK_SIZE):
+                        if not chunk:
+                            continue
+                        await f.write(chunk)
+                        downloaded += len(chunk)
+                        if downloaded > MAX_TG_SIZE:
+                            raise FileSizeLimitExceeded("Facebook photo exceeds 2GB limit. Download canceled.")
+                        await stats.update(downloaded, progress_bot, chat_id, status_msg_id, title_text, kind="Facebook download", label=os.path.basename(out_path), log_interval=2.5, edit_interval=5.0)
+            if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
+                raise RuntimeError("Facebook photo download output empty")
+            stats.log_done("Facebook download", label=os.path.basename(out_path), size=downloaded)
+            final_path = _fix_image_ext(out_path)
+            _dbg("photo download success | out=%s", final_path)
+            return final_path
+        except FileSizeLimitExceeded:
+            raise
+        except Exception as e:
+            last_error = e
+            _dbg("photo download attempt failed | attempt=%s err=%r", attempt, e)
+            if os.path.exists(out_path):
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
+            if attempt + 1 >= len(candidates):
+                break
+    raise last_error or RuntimeError("Facebook photo download failed")
+
+
+async def _download_fb_photos_parallel(session, urls: list[str], bot, chat_id, status_msg_id) -> list[str]:
+    total = len(urls)
+    if status_msg_id and total > 1:
+        await _safe_edit_status(bot, chat_id, status_msg_id, "<b>Downloading Facebook photos...</b>")
+    sem = asyncio.Semaphore(FACEBOOK_PHOTO_CONCURRENCY)
+
+    async def _one(idx: int, url: str) -> str:
+        async with sem:
+            title_text = f"Downloading Facebook photo {idx}/{total}..." if total > 1 else "Downloading Facebook photo..."
+            out_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.jpg")
+            return await _download_fb_photo(session, url, out_path, bot, chat_id, status_msg_id, title_text)
+
+    results = await asyncio.gather(*(_one(idx, url) for idx, url in enumerate(urls, 1)), return_exceptions=True)
+    err = next((r for r in results if isinstance(r, Exception)), None)
+    downloaded = [r for r in results if isinstance(r, str) and r]
+    if err is not None:
+        for p in downloaded:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        raise err
+    return downloaded
 
 async def _get_video_data(content_url: str, content_id: str) -> dict:
     content_url = _normalize_content_url(content_url, content_id)
@@ -884,20 +1110,23 @@ def _graphql_extract_video(text: str) -> dict:
             break
     return out
 
-async def _graphql_video_data(video_id: str) -> dict:
+async def _graphql_video_data(video_id: str, page_text: str = "") -> dict:
     if not video_id:
         return {"hd_url": "", "sd_url": "", "title": ""}
     session = await get_http_session()
     watch_url = f"https://www.facebook.com/watch/?v={video_id}"
     headers = _build_headers(watch_url, use_cookies=True)
-    try:
-        async with session.get(watch_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
-            page = await resp.text()
-    except Exception as e:
-        _dbg("graphql bootstrap failed | video_id=%s err=%r", video_id, e)
-        return {"hd_url": "", "sd_url": "", "title": ""}
-    lsd_match = LSD_RE.search(page)
-    jz_match = JAZOEST_RE.search(page)
+    lsd_match = LSD_RE.search(page_text) if page_text else None
+    jz_match = JAZOEST_RE.search(page_text) if page_text else None
+    if not lsd_match:
+        try:
+            async with session.get(watch_url, headers=headers, timeout=aiohttp.ClientTimeout(total=25), allow_redirects=True) as resp:
+                page = await resp.text()
+        except Exception as e:
+            _dbg("graphql bootstrap failed | video_id=%s err=%r", video_id, e)
+            return {"hd_url": "", "sd_url": "", "title": ""}
+        lsd_match = LSD_RE.search(page)
+        jz_match = JAZOEST_RE.search(page)
     if not lsd_match:
         _dbg("graphql bootstrap missing lsd | video_id=%s", video_id)
         return {"hd_url": "", "sd_url": "", "title": ""}
@@ -956,10 +1185,11 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     if not content_id:
         _dbg("no content_id extracted from url, proceeding to fetch page directly | url=%s", content_url)
     _dbg("before _fetch_page_html (cookieless) | content_url=%s content_id=%s",content_url,content_id)
-    status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=False)
+    video_only_page=bool(re.search(r"/(?:reel|watch|videos?)/", content_url)) or "?v=" in content_url
+    status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=False,early_exit_video=video_only_page)
     if status!=200 or not body or "/login" in str(final_url):
         _dbg("cookieless fetch failed | status=%s body_len=%s login=%s, retry with cookies",status,len(body or b""),"/login" in str(final_url))
-        status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=True)
+        status,final_url,body=await _fetch_page_html(content_url,content_id,use_cookies=True,early_exit_video=video_only_page)
     if status!=200 or not body:
         _write_debug_file("facebook_http_error", body or b"")
         raise RuntimeError(f"failed to get page: HTTP {status}")
@@ -976,7 +1206,11 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
                 content_url, body, body_text = alt_url, alt_body, alt_text
                 break
     if not VIDEO_SIGNAL_RE.search(body_text):
-        graph = await _graphql_video_data(content_id)
+        attachments = _extract_attachment_photos(body_text)
+        if attachments and not video_only_page and '"__typename":"Video"' not in body_text:
+            _dbg("photo attachments found, skipping graphql fallback | count=%s", len(attachments))
+            return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id,attachment_photos=attachments)
+        graph = await _graphql_video_data(content_id, page_text=body_text)
         if graph.get("hd_url") or graph.get("sd_url"):
             video_data = {
                 "hd_url": graph.get("hd_url") or "",
@@ -985,7 +1219,7 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
             }
             _dbg("video from graphql fallback | hd=%s sd=%s", bool(video_data["hd_url"]), bool(video_data["sd_url"]))
         else:
-            return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id)
+            return await _scrape_photo_post(body,body_text,bot,chat_id,status_msg_id,attachment_photos=attachments)
     else:
         _dbg("video signal found, parse video from fetched body")
         video_data=None
@@ -998,7 +1232,7 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
             video_data=await _get_video_data(content_url,content_id)
         if not video_data or not (video_data.get("hd_url") or video_data.get("sd_url")):
             _dbg("no video urls after cookie retry, trying graphql")
-            graph = await _graphql_video_data(content_id)
+            graph = await _graphql_video_data(content_id, page_text=body_text)
             if graph.get("hd_url") or graph.get("sd_url"):
                 video_data = {
                     "hd_url": graph.get("hd_url") or "",
@@ -1034,49 +1268,44 @@ async def facebook_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_ms
     session=await get_http_session()
     headers=_build_headers(_normalize_content_url(content_url,content_id))
     _dbg("download chosen url | url=%s out=%s",_clip(video_url,200),out_path)
+    thumb_task=asyncio.create_task(_fetch_fb_thumb(_extract_og_image(body_text)))
     await _download_with_best_engine(session,video_url,out_path,bot,chat_id,status_msg_id,"Downloading Facebook video...",headers=headers)
     if not os.path.exists(out_path) or os.path.getsize(out_path)<=0:
+        thumb_task.cancel()
         raise RuntimeError("Facebook download output empty")
     _dbg("facebook scrape download video done | out=%s",out_path)
-    
+    try:
+        thumb_path=await thumb_task
+    except Exception as e:
+        _dbg("facebook cover thumb failed | err=%r",e)
+        thumb_path=None
+
     if has_photos:
         _dbg("mixed content: downloading photos | count=%s", len(mixed_media["photos"]))
-        photo_paths = []
+        photo_urls=[p["url"] for p in mixed_media["photos"] if p.get("url")]
         try:
-            for idx, photo in enumerate(mixed_media["photos"], 1):
-                photo_url = photo.get("url", "")
-                if not photo_url:
-                    continue
-                title_text = f"Downloading Facebook photo {idx}/{len(mixed_media['photos'])}..."
-                if status_msg_id:
-                    await _safe_edit_status(bot, chat_id, status_msg_id, f"<b>{title_text}</b>")
-                photo_out = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.jpg")
-                photo_final = await _download_fb_photo(session, photo_url, photo_out, bot, chat_id, status_msg_id, title_text)
-                photo_paths.append(photo_final)
+            photo_paths=await _download_fb_photos_parallel(session,photo_urls,bot,chat_id,status_msg_id)
         except Exception as e:
             _dbg("mixed content photo download failed | err=%r", e)
-            for p in photo_paths:
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
             try:
                 if os.path.exists(out_path):
                     os.remove(out_path)
             except Exception:
                 pass
             raise
-        
         _dbg("mixed content download done | video=%s photos=%s", out_path, len(photo_paths))
-        items = [{"path": out_path, "type": "video"}]
+        items = [{"path": out_path, "type": "video", "thumb": thumb_path}]
         items.extend([{"path": p, "type": "photo"} for p in photo_paths])
         return {"items": items, "title": title, "source": "Facebook"}
-    
-    return {"path":out_path,"title":title,"source":"Facebook"}
 
-async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id):
-    photo_urls=_collect_photo_urls(body_text)
+    result={"path":out_path,"title":title,"source":"Facebook"}
+    if thumb_path:
+        result["thumb"]=thumb_path
+    return result
+
+async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id,attachment_photos:list[dict]|None=None):
+    attachment_photos=attachment_photos if attachment_photos is not None else _extract_attachment_photos(body_text)
+    photo_urls=_collect_photo_urls(body_text,attachment_photos)
     caption=_extract_post_caption(body_text)
     fallback_title=_extract_title_from_html(body,"Facebook Photo")
     if not caption:
@@ -1111,24 +1340,7 @@ async def _scrape_photo_post(body:bytes,body_text:str,bot,chat_id,status_msg_id)
         raise RuntimeError("This Facebook post is private, deleted, or requires login. No media could be extracted.")
     os.makedirs(TMP_DIR,exist_ok=True)
     session=await get_http_session()
-    downloaded=[]
-    try:
-        total=len(photo_urls)
-        for idx,url in enumerate(photo_urls,1):
-            title_text=f"Downloading Facebook photo {idx}/{total}..." if total>1 else "Downloading Facebook photo..."
-            if status_msg_id:
-                await _safe_edit_status(bot,chat_id,status_msg_id,f"<b>{title_text}</b>")
-            out_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}.jpg")
-            final_path=await _download_fb_photo(session,url,out_path,bot,chat_id,status_msg_id,title_text)
-            downloaded.append(final_path)
-    except Exception:
-        for p in downloaded:
-            try:
-                if p and os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
-        raise
+    downloaded=await _download_fb_photos_parallel(session,photo_urls,bot,chat_id,status_msg_id)
     _dbg("photo post download done | ok=%s/%s",len(downloaded),len(photo_urls))
     if len(downloaded)==1:
         return {"path":downloaded[0],"title":caption or "Facebook Photo","source":"Facebook"}
