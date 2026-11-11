@@ -38,6 +38,8 @@ BOT_INTENT_KEYWORDS = {
     "downloader", "download", "unduh", "premium", "buypremium", "qris", "bayar",
     "harga", "vip", "benefit", "premiumbenefit", "iklan", "ads", "sponsor",
     "grup", "admin", "moderasi", "moderation", "ban", "unban", "kick", "mute", "unmute",
+    "bisu", "bisukan", "bungkam", "tendang", "keluarkan", "usir", "depak", "blokir",
+    "tool", "tools", "moderator",
     "wlc", "welcome", "verifikasi", "verify", "captcha", "promote",
     "demote", "untag", "unverified",
     "nsfw", "spoiler", "autodl", "autodel", "asupann", "cacaa", "silent",

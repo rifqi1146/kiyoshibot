@@ -35,6 +35,14 @@ Perintah pengaturan grup dan moderasi. Hanya dapat digunakan oleh Admin grup ata
 - `/untag`: Hapus pesan tag massal terakhir.
 - Catatan: semua aksi moderasi bisa menargetkan user lewat reply pesan (tidak perlu ketik ID/username), dan alasan bersifat opsional.
 
+## Moderasi Lewat AI (/caca dan /ask)
+Di grup, Caca dan /ask bisa menjalankan aksi moderasi langsung tanpa command slash. Kalau admin menulis permintaan seperti "mute @user 2 jam", "buka mute dia", "tendang si spammer", atau "jadikan admin @user", Caca memanggil tool moderasinya sendiri dan langsung mengeksekusi.
+- Tool yang tersedia untuk AI: `mute_user`, `unmute_user`, `ban_user`, `unban_user`, `kick_user`, `promote_user`, `demote_user`, `tag_user`.
+- Syarat: moderasi grup aktif (`/moderation enable`), pemanggil adalah admin grup atau owner/sudo bot, dan bot punya hak admin yang sesuai.
+- Target bisa berupa `@username`, user_id numerik, atau reply ke pesan anggota. Kalau tidak disebut, sistem memakai anggota yang di-reply atau target terakhir di grup itu.
+- Caca tidak akan menyuruh user mengetik `/mute` atau `/unmute` manual saat tool-nya aktif — permintaan langsung dieksekusi lalu dikonfirmasi dengan gaya Caca sendiri.
+- Semua aksi dicatat ke log chat owner (`LOG_CHAT_ID`) berisi pelaku, target, durasi, alasan, dan status berhasil/gagal.
+- User yang dilindungi: admin grup, sudo, owner bot, dan bot itu sendiri tidak bisa di-mute/ban/kick.
 ## Moderasi Otomatis (/moderation)
 - `/moderation enable|disable|status`: Aktifkan/matikan moderasi otomatis di grup — bot menindak spam, link, dan pelanggaran lain secara otomatis.
 - Hanya admin grup atau owner bot yang dapat mengubahnya.

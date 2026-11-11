@@ -17,6 +17,15 @@ KiyoshiBot dilengkapi beberapa model AI canggih yang bisa diajak ngobrol, tanya 
 - Cara lanjut ngobrol: reply pesan terakhir Caca, tidak perlu ketik `/caca` lagi.
 - Di grup, Caca hanya aktif jika admin sudah mengaktifkannya dengan `/cacaa enable`.
 - Caca menggunakan sistem Credit berbasis token pemakaian AI. Top-up credit melalui `/cacatopup` atau `/buycaca`, dan cek saldo melalui `/cacasaldo`.
+
+## Caca & AI Moderation di Grup
+- Caca punya tool moderasi nyata di grup: mute, unmute, ban, unban, kick, promote, demote, dan tag anggota.
+- Cara pakai: tinggal minta langsung ke Caca, misalnya `/caca mute @user 2 jam`, `/caca buka mute dia`, atau `/caca tendang si spammer`. Tidak perlu ngetik `/mute` atau `/unmute` manual.
+- `/ask` juga bisa menjalankan aksi moderasi yang sama di grup saat diminta admin.
+- Syarat: `/moderation enable` sudah aktif di grup, pemintanya admin grup atau owner/sudo bot, dan bot punya hak admin yang dibutuhkan.
+- Target bisa `@username`, user_id, atau reply pesan anggota. Kalau tidak menyebut siapa, sistem pakai anggota yang di-reply atau target terakhir di grup itu.
+- Kalau tool aktif, Caca TIDAK menyuruh user mengetik command slash sendiri — permintaan langsung dieksekusi lalu dikonfirmasi dengan gaya Caca.
+- Admin grup, sudo, owner bot, dan bot sendiri tidak bisa di-mute/ban/kick.
 - Pembayaran via QRIS otomatis. Setiap top-up memiliki masa berlaku (7-30 hari) per transaksi (multi-lot FEFO).
 
 ## Ganti Persona Caca (/mode)

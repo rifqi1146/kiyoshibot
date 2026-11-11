@@ -172,6 +172,60 @@ MOD_TOOLS = [
     },
 ]
 
+MOD_INSTRUCTION = (
+    "\n\n[Telegram Moderation Tools Active]\n"
+    "You currently hold real admin power in this group. These tools are callable right now: "
+    "mute_user, unmute_user, ban_user, unban_user, kick_user, promote_user, demote_user, tag_user.\n"
+    "Rules:\n"
+    "- When the user asks you to mute, unmute, ban, unban, kick, promote, demote, or tag someone, "
+    "CALL the matching tool immediately.\n"
+    "- NEVER refuse. NEVER say you can only chat and cannot execute moderation. "
+    "NEVER tell the user to type /mute, /unmute, /ban, /kick, or any slash command themselves.\n"
+    "- After the tool result comes back, confirm the outcome in character using that exact result.\n"
+    "- If the target truly cannot be identified, ask who they mean instead of guessing.\n"
+)
+
+
+_NEGATION_RE = re.compile(
+    r"\b(jangan|jgn|gak\s+usah|ga\s+usah|nggak\s+usah|tidak\s+perlu|engga|enggak|"
+    r"do\s+not|don\'t|dont|never)\b",
+    re.I,
+)
+_QUESTION_RE = re.compile(
+    r"\b(gimana|bagaimana|cara|kenapa|mengapa|apa\s+itu|apaan|bisa\s+nggak|bisa\s+gak|"
+    r"how\s+to|how\s+do|why|what\s+is)\b|\?",
+    re.I,
+)
+
+_ACTION_PATTERNS = (
+    ("unmute_user", r"\bunmute\b|\bun-mute\b|\bunmuted\b|\bbuka\s+mute\b|\blepas\s+mute\b|"
+                    r"\bbuka\s+bisu\b|\blepas\s+bisu\b|\bunbisu\b|\bsuaranya\s+lagi\b"),
+    ("unban_user", r"\bunban\b|\bun-ban\b|\bbuka\s+ban\b|\blepas\s+ban\b|\bunblokir\b|\bbuka\s+blokir\b"),
+    ("demote_user", r"\bdemote\b|\bturunkan\s+admin\b|\bturun\s+admin\b|\bcabut\s+admin\b|\blepas\s+admin\b"),
+    ("kick_user", r"\bkick\b|\btendang\b|\bkeluarin\b|\bkeluarkan\b|\busir\b|\bdepak\b"),
+    ("promote_user", r"\bpromote\b|\bjadikan\s+admin\b|\bnaikkan\s+admin\b|\bangkat\s+admin\b"),
+    ("mute_user", r"\bmute\b|\bbisukan\b|\bmembisukan\b|\bbisu\b|\bbungkam\b|\bdiamin\b"),
+    ("ban_user", r"\bban\b|\bbanned\b|\bblokir\b"),
+    ("tag_user", r"\badmin\s+title\b|\bcustom\s+title\b|\bganti\s+tag\b|\bset\s+tag\b"),
+)
+
+
+def infer_moderation_action(text: str) -> str | None:
+    low = (text or "").lower()
+    if not low or _NEGATION_RE.search(low):
+        return None
+    for action, pattern in _ACTION_PATTERNS:
+        if re.search(pattern, low):
+            return action
+    return None
+
+
+def is_explicit_moderation_request(text: str) -> bool:
+    low = (text or "").lower()
+    if not low or _NEGATION_RE.search(low) or _QUESTION_RE.search(low):
+        return False
+    return infer_moderation_action(low) is not None
+
 FULL_ADMIN_RIGHTS = {
     "can_manage_chat": True,
     "can_delete_messages": True,
@@ -524,16 +578,7 @@ async def can_use_moderation(update, context) -> bool:
 
 
 def looks_like_moderation_intent(text: str) -> bool:
-    low = (text or "").lower()
-    triggers = (
-        "mute", "unmute", "bisu", "bungkam", "silent",
-        "ban", "unban", "banned", "blokir",
-        "kick", "tendang", "keluarin", "usir", "depak", "keluarkan",
-        "promote", "jadikan admin", "naikkan admin",
-        "demote", "turunkan admin", "cabut admin",
-        "tag", "title", "admin title",
-    )
-    return any(t in low for t in triggers)
+    return infer_moderation_action(text) is not None
 
 
 def parse_text_tool_calls(text: str) -> tuple[list[dict], str]:
@@ -609,6 +654,7 @@ async def run_moderation_loop(
     temperature: float,
     max_tokens: int,
     timeout_sec: int,
+    prompt: str = "",
     usage_collector: dict | None = None,
 ) -> str:
     import json
@@ -639,12 +685,32 @@ async def run_moderation_loop(
             f"If the user named no other target, use target=\"{reply_user_id}\".]"
         )
 
-    if hint and contextual_messages and contextual_messages[-1].get("role") == "user":
-        last_content = contextual_messages[-1]["content"]
+    notes = hint
+    inferred = infer_moderation_action(prompt)
+    notes += MOD_INSTRUCTION
+    if inferred:
+        notes += f"[Detected action: {inferred}]\n"
+
+    if notes and contextual_messages and contextual_messages[-1].get("role") == "user":
         if isinstance(last_content, str):
             contextual_messages[-1] = {
                 **contextual_messages[-1],
-                "content": f"{last_content}\n\n{hint}",
+                "content": f"{last_content}\n{notes}",
+            }
+        elif isinstance(last_content, list):
+            new_parts = []
+            appended = False
+            for part in last_content:
+                if isinstance(part, dict) and part.get("type") == "text" and not appended:
+                    new_parts.append({**part, "text": f"{part.get('text', '')}\n{notes}"})
+                    appended = True
+                else:
+                    new_parts.append(part)
+            if not appended:
+                new_parts.append({"type": "text", "text": notes})
+            contextual_messages[-1] = {
+                **contextual_messages[-1],
+                "content": new_parts,
             }
 
     payload = {
@@ -665,10 +731,27 @@ async def run_moderation_loop(
             if usage.get(k):
                 usage_collector[k] = usage_collector.get(k, 0) + int(usage[k])
 
+    if not tool_calls and inferred and is_explicit_moderation_request(prompt):
+        forced_payload = {
+            **payload,
+            "tool_choice": {"type": "function", "function": {"name": inferred}},
+        }
+        retry_content, retry_calls, retry_usage = await call_shiteru_with_tools(
+            endpoint, headers, forced_payload, timeout_sec,
+        )
+        if usage_collector is not None and isinstance(retry_usage, dict):
+            for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                if retry_usage.get(k):
+                    usage_collector[k] = usage_collector.get(k, 0) + int(retry_usage[k])
+        if retry_calls:
+            content, tool_calls = retry_content, retry_calls
+        else:
+            log.warning("Forced moderation tool returned no call | action=%s", inferred)
+
     if not tool_calls:
         return content
 
-    step_messages = list(messages)
+    step_messages = list(contextual_messages)
     step_messages.append({
         "role": "assistant",
         "content": content or None,

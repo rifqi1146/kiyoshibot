@@ -830,8 +830,8 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     em = _emo()
 
-    caption = (msg.caption or "").strip()
-    text = (msg.text or "").strip()
+    caption = (msg.caption or "").replace("\xa0", " ").strip()
+    text = (msg.text or "").replace("\xa0", " ").strip()
     _is_caca_call = (
         text.startswith("/caca")
         or caption.startswith("/caca")
@@ -933,7 +933,8 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error("Caca auto-search failed | prompt=%r err=%r", prompt, e, exc_info=True)
 
-        bot_info = await _bot_context(prompt)
+        from handlers.moderation.ai_tools import looks_like_moderation_intent
+        bot_info = "" if looks_like_moderation_intent(prompt) else await _bot_context(prompt)
 
         history = [] if fresh_session else await caca_memory.get_history(user_id)
         mode = caca_db.get_mode(user_id)
@@ -985,6 +986,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 temperature=0.9,
                 max_tokens=CACA_MAX_TOKENS,
                 timeout_sec=CACA_TIMEOUT,
+                prompt=prompt,
                 usage_collector=billing["usage"],
             )
             billing["usage"].setdefault("prompt_tokens", 0)

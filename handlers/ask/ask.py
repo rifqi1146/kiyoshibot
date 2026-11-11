@@ -250,12 +250,14 @@ def _reference_block(contexts: list[str]) -> str:
 
 async def _build_messages(history: list, prompt: str) -> list[dict]:
     sys_text = _system_instruction()
-    try:
-        contexts = await retrieve_context(prompt, LOCAL_CONTEXTS, top_k=2)
-    except Exception as e:
-        log.warning("RAG retrieve failed | err=%r", e)
-        contexts = []
-
+    from handlers.moderation.ai_tools import looks_like_moderation_intent
+    contexts = []
+    if not looks_like_moderation_intent(prompt):
+        try:
+            contexts = await retrieve_context(prompt, LOCAL_CONTEXTS, top_k=2)
+        except Exception as e:
+            log.warning("RAG retrieve failed | err=%r", e)
+            contexts = []
     blocks = ""
     if contexts:
         blocks += _reference_block(contexts)
@@ -410,7 +412,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Who are you?\nI have not talked to you yet.\nUse /ask first.",
                 parse_mode="HTML",
             )
-        prompt = (msg.text or "").strip()
+        prompt = (msg.text or "").replace("\xa0", " ").strip()
 
     if not prompt:
         return
@@ -451,6 +453,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 temperature=llm.ASK_TEMPERATURE,
                 max_tokens=llm.ASK_MAX_TOKENS,
                 timeout_sec=llm.ASK_TIMEOUT,
+                prompt=prompt,
             )
         if not raw:
             raw = await llm.chat(messages)
