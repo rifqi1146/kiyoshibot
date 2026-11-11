@@ -55,6 +55,11 @@ async def _pre_reload_cleanup(app):
     except Exception as e:
         log.warning("Reload cleanup instagram failed | err=%r",e)
     try:
+        from handlers.dl.reddit.main import close_reddit_session
+        await close_reddit_session()
+    except Exception as e:
+        log.warning("Reload cleanup reddit failed | err=%r",e)
+    try:
         from handlers.dl.mtproto_uploader import shutdown_mtproto_uploader
         await shutdown_mtproto_uploader(app)
     except Exception as e:

@@ -227,6 +227,11 @@ async def post_shutdown(app):
         await close_instagram_session()
     except Exception:
         log.exception("Failed to close Instagram session")
+    try:
+        from handlers.dl.reddit.main import close_reddit_session
+        await close_reddit_session()
+    except Exception:
+        log.exception("Failed to close Reddit session")
     await close_http_session()
     log.info("HTTP session closed")
 

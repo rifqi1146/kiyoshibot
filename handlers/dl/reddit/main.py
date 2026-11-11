@@ -1,6 +1,7 @@
-import os,re,time,uuid,html,shutil,asyncio,aiohttp,aiofiles,logging
+import os,re,time,uuid,html,json,shutil,asyncio,aiohttp,aiofiles,logging
+from curl_cffi.requests import AsyncSession
 from urllib.parse import urlparse,urlunparse
-from utils.http import get_http_session
+
 from handlers.dl.constants import TMP_DIR,MAX_TG_SIZE
 try:
     from handlers.dl.constants import BASE_DIR
@@ -71,14 +72,18 @@ def _load_reddit_cookie_header(path:str)->str:
         with open(path,"r",encoding="utf-8",errors="ignore") as f:
             for raw in f:
                 line=raw.strip()
-                if not line or line.startswith("#"):
+                if not line:
+                    continue
+                if line.startswith("#HttpOnly_"):
+                    line=line[len("#HttpOnly_"):]
+                elif line.startswith("#"):
                     continue
                 parts=line.split("\t")
                 if len(parts)>=7:
                     domain=(parts[0] or "").strip().lower()
                     name=(parts[5] or "").strip()
                     value=(parts[6] or "").strip()
-                    if not name:
+                    if not name or not value:
                         continue
                     if "reddit.com" not in domain:
                         continue
@@ -91,6 +96,30 @@ def _load_reddit_cookie_header(path:str)->str:
         _dbg("reddit cookie load failed | path=%s err=%r",path,e)
         _REDDIT_COOKIE_HEADER_CACHE=""
         return _REDDIT_COOKIE_HEADER_CACHE
+
+_REDDIT_HTTP:AsyncSession|None=None
+
+async def _reddit_session()->AsyncSession:
+    global _REDDIT_HTTP
+    if _REDDIT_HTTP is None:
+        _REDDIT_HTTP=AsyncSession(impersonate="chrome")
+    return _REDDIT_HTTP
+
+async def _reddit_reset_http():
+    global _REDDIT_HTTP
+    old=_REDDIT_HTTP
+    _REDDIT_HTTP=None
+    if old is not None:
+        try:
+            await old.close()
+        except Exception as e:
+            log.debug("Reddit session close failed | err=%r",e)
+
+close_reddit_session=_reddit_reset_http
+
+async def _reddit_get(url:str,headers:dict,timeout:int=30,allow_redirects:bool=True):
+    session=await _reddit_session()
+    return await session.get(url,headers=headers,timeout=timeout,allow_redirects=allow_redirects)
 
 def _build_reddit_headers(referer:str|None=None)->dict:
     headers=dict(REDDIT_HEADERS)
@@ -117,13 +146,11 @@ def _extract_post_id(url:str)->str:
     return ""
 
 async def _resolve_short_url(url:str)->str:
-    session=await get_http_session()
     headers=_build_reddit_headers("https://www.reddit.com/")
     _dbg("short resolve start | url=%s cookie=%s",url,bool(headers.get("Cookie")))
-    async with session.get(url,headers=headers,timeout=aiohttp.ClientTimeout(total=20),allow_redirects=True) as resp:
-        final=str(resp.url)
-        _dbg("short resolve done | status=%s final=%s",resp.status,final)
-        return final
+    resp=await _reddit_get(url,headers,timeout=25,allow_redirects=True)
+    _dbg("short resolve done | status=%s final=%s",resp.status_code,resp.url)
+    return str(resp.url)
 
 def _normalize_comments_url(url:str)->str:
     p=urlparse((url or "").strip())
@@ -134,27 +161,26 @@ def _normalize_comments_url(url:str)->str:
         return ""
     if not path.endswith(".json"):
         path=path+"/.json"
-    normalized=urlunparse((scheme,netloc,path,"","",""))
+    normalized=urlunparse((scheme,netloc,path,"","raw_json=1",""))
     _dbg("normalize comments url | before=%s after=%s",url,normalized)
     return normalized
 
 async def _fetch_json_from_candidates(urls:list[str])->dict:
-    session=await get_http_session()
     headers=_build_reddit_headers("https://www.reddit.com/")
     last_err=None
     for url in urls:
         try:
             _dbg("json fetch start | url=%s cookie=%s",url,bool(headers.get("Cookie")))
-            async with session.get(url,headers=headers,timeout=aiohttp.ClientTimeout(total=30),allow_redirects=True) as resp:
-                text=await resp.text()
-                _dbg("json fetch done | status=%s url=%s body_len=%s",resp.status,url,len(text))
-                if resp.status!=200:
-                    last_err=RuntimeError(f"reddit http {resp.status}")
-                    continue
-                data=await resp.json(content_type=None)
-                if isinstance(data,list) and data:
-                    return data
-                last_err=RuntimeError("invalid reddit json payload")
+            resp=await _reddit_get(url,headers,timeout=30,allow_redirects=True)
+            text=resp.text
+            _dbg("json fetch done | status=%s url=%s body_len=%s",resp.status_code,url,len(text))
+            if resp.status_code!=200:
+                last_err=RuntimeError(f"reddit http {resp.status_code}")
+                continue
+            data=json.loads(text)
+            if isinstance(data,list) and data:
+                return data
+            last_err=RuntimeError("invalid reddit json payload")
         except Exception as e:
             _dbg("json fetch failed | url=%s err=%r",url,e)
             last_err=e
@@ -190,7 +216,7 @@ def _inspect_downloaded_file(path:str):
         _dbg("file inspect read failed | path=%s err=%r",path,e)
         
 def _safe_title(post:dict,items:list)->str:
-    title=(post.get("title") or "").strip()
+    title=html.unescape((post.get("title") or "").strip())
     if title: return title
     if len(items)==1 and str(items[0].get("type") or "").strip().lower()=="video": return "Reddit Video"
     return "Reddit Media"
@@ -291,27 +317,27 @@ def _parse_reddit_post(post:dict)->dict:
     _dbg("reddit parsed | title=%s count=%s types=%s sensitive=%s",_clip(title,120),len(items),[x.get("type") for x in items],sensitive)
     return {"items":items,"title":title,"sensitive":sensitive}
 
-async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
+async def _probe_total_bytes(url:str,headers:dict|None=None)->int:
     total=0
     try:
-        async with session.head(url,headers=headers,timeout=aiohttp.ClientTimeout(total=20),allow_redirects=True) as resp:
-            total=int(resp.headers.get("Content-Length",0) or 0)
+        resp=await _reddit_get(url,headers or {},timeout=25,allow_redirects=True)
+        total=int(resp.headers.get("Content-Length",0) or 0)
     except Exception:
         total=0
     if total>0: return total
     try:
         h=dict(headers or {}); h["Range"]="bytes=0-0"
-        async with session.get(url,headers=h,timeout=aiohttp.ClientTimeout(total=20),allow_redirects=True) as resp:
-            m=re.search(r"/(\d+)$",resp.headers.get("Content-Range",""))
-            if m: return int(m.group(1))
+        resp=await _reddit_get(url,h,timeout=25,allow_redirects=True)
+        m=re.search(r"/(\d+)$",resp.headers.get("Content-Range",""))
+        if m: return int(m.group(1))
     except Exception:
         pass
     return 0
 
-async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+async def _aria2c_download_with_progress(media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
     aria2=resolve_aria2()
     if not aria2: raise RuntimeError("aria2c not found in PATH")
-    total=await _probe_total_bytes(session,media_url,headers=headers)
+    total=await _probe_total_bytes(media_url,headers=headers)
     if total: check_media_size_limit(total,"Reddit media")
     out_dir=os.path.dirname(out_path) or "."
     out_name=os.path.basename(out_path)
@@ -341,18 +367,23 @@ async def _aria2c_download_with_progress(session,media_url:str,out_path:str,bot,
     stats.log_done("Reddit download",label=os.path.basename(out_path),size=os.path.getsize(out_path))
     log.info("Reddit aria2c success | out=%s",out_path)
 
-async def _aiohttp_download_with_progress(session,media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
-    async with session.get(media_url,headers=headers,timeout=aiohttp.ClientTimeout(total=600),allow_redirects=True) as r:
-        if r.status>=400: raise RuntimeError(f"Download failed: HTTP {r.status}")
-        total=int(r.headers.get("Content-Length",0) or 0); downloaded=0; stats=TransferStats(total)
+async def _stream_download_with_progress(media_url:str,out_path:str,bot,chat_id,status_msg_id,title_text:str,headers:dict|None=None):
+    session=await _reddit_session()
+    resp=await session.get(media_url,headers=headers or {},timeout=600,allow_redirects=True,stream=True)
+    try:
+        if resp.status_code>=400: raise RuntimeError(f"Download failed: HTTP {resp.status_code}")
+        total=int(resp.headers.get("Content-Length",0) or 0); downloaded=0; stats=TransferStats(total)
         if total: check_media_size_limit(total,"Reddit media")
         async with aiofiles.open(out_path,"wb") as f:
-            async for chunk in r.content.iter_chunked(512*1024):
+            async for chunk in resp.aiter_content(chunk_size=512*1024):
                 if not chunk: continue
                 await f.write(chunk); downloaded+=len(chunk)
                 if downloaded>MAX_TG_SIZE: raise FileSizeLimitExceeded("Reddit media exceeds 2GB limit. Download canceled.")
                 await stats.update(downloaded,bot,chat_id,status_msg_id,title_text,kind="Reddit download",label=os.path.basename(out_path),log_interval=2.5,edit_interval=3.0)
         stats.log_done("Reddit download",label=os.path.basename(out_path),size=downloaded)
+    finally:
+        try: await resp.aclose()
+        except Exception: pass
 
 def _guess_ext(media_type:str,url:str)->str:
     low=(url or "").lower()
@@ -414,7 +445,7 @@ def _fix_photo_for_telegram(path:str)->str:
             raise RuntimeError("failed to convert reddit image for telegram")
         return fixed_path
 
-async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:int,total:int)->dict:
+async def _download_one_media(item:dict,bot,chat_id,status_msg_id,idx:int,total:int)->dict:
     media_type=str(item.get("type") or "").strip().lower()
     media_url=str(item.get("url") or "").strip()
     if not media_url: raise RuntimeError("media url kosong")
@@ -438,18 +469,18 @@ async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:in
             raise RuntimeError(f"FFmpeg HLS fallback failed: {stderr.decode(errors='ignore')}")
     else:
         try:
-            await _aria2c_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+            await _aria2c_download_with_progress(media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
         except FileSizeLimitExceeded:
             if os.path.exists(out_path):
                 try: os.remove(out_path)
                 except Exception: pass
             raise
         except Exception as e:
-            log.warning("Reddit aria2c failed, fallback aiohttp | idx=%s url=%s err=%r",idx,media_url,e)
+            log.warning("Reddit aria2c failed, falling back to stream | idx=%s url=%s err=%r",idx,media_url,e)
             if os.path.exists(out_path):
                 try: os.remove(out_path)
                 except Exception: pass
-            await _aiohttp_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+            await _stream_download_with_progress(media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
     if media_type=="photo":
         _inspect_downloaded_file(out_path)
         _inspect_image_dims(out_path)
@@ -457,13 +488,13 @@ async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:in
             out_path=await asyncio.to_thread(_fix_photo_for_telegram,out_path)
             _inspect_image_dims(out_path)
         except Exception as e:
-            log.warning("Reddit image normalize failed, redownload with aiohttp | path=%s err=%r",out_path,e)
+            log.warning("Reddit image normalize failed, re-downloading | path=%s err=%r",out_path,e)
             try:
                 if os.path.exists(out_path):
                     os.remove(out_path)
             except Exception:
                 pass
-            await _aiohttp_download_with_progress(session,media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
+            await _stream_download_with_progress(media_url,out_path,bot,chat_id,status_msg_id,title_text,headers=headers)
             _inspect_downloaded_file(out_path)
             _inspect_image_dims(out_path)
             out_path=await asyncio.to_thread(_fix_photo_for_telegram,out_path)
@@ -473,10 +504,9 @@ async def _download_one_media(session,item:dict,bot,chat_id,status_msg_id,idx:in
 async def _download_reddit_items(parsed:dict,bot,chat_id,status_msg_id)->dict:
     items=parsed.get("items") or []
     title=(parsed.get("title") or "").strip() or ("Reddit Video" if len(items)==1 and str(items[0].get("type") or "").strip().lower()=="video" else "Reddit Media")
-    session=await get_http_session()
     downloaded_items=[]; total=len(items)
     for idx,item in enumerate(items,start=1):
-        downloaded=await _download_one_media(session,item,bot,chat_id,status_msg_id,idx,total)
+        downloaded=await _download_one_media(item,bot,chat_id,status_msg_id,idx,total)
         downloaded_items.append(downloaded)
     if len(downloaded_items)==1:
         return {"path":downloaded_items[0]["path"],"title":title}
