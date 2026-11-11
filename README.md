@@ -446,7 +446,7 @@ connection timeout. Connections without `busy_timeout` raise
 | `facebook/` | `main` | Facebook video via yt-dlp/direct parse. |
 | `femdomvc/` | `constants`, `extractor`, `main` | 16-connection aria2c over a per-connection-throttled CDN. |
 | `heavyr/` | `constants`, `extractor`, `main` | Direct MP4 or single-file HLS (`EXT-X-MAP` `.m4s`), with an embed-page fallback that validates the requested video id. |
-| `instagram/` | `main`, `mobile_session` | Cookie-less Polaris GraphQL (dynamic LSD/CSRF), optional Android mobile session for age-gated posts, then NeoXR API. Carousel downloads run 6-way parallel. |
+| `instagram/` | `main`, `mobile_session` | Cookie-less Polaris GraphQL (dynamic LSD/CSRF, warmup at boot), 30-minute metadata LRU, optional Android mobile session for age-gated posts, then NeoXR API. CDN thumbnail fetched in parallel with the video and shipped as-is; Instagram MP4s are already faststart, so the ffmpeg remux is probed away. Carousel downloads run 6-way parallel. |
 | `moviebox/` | `constants`, `extractor`, `main` | Self-contained resolver so `handlers/dl` never imports the UI package. Signed CDN URLs re-resolved per download. |
 | `nekopoi/` | `constants`, `extractor`, `main` | Streampoi Dean-Edwards packer → HLS; IPv4-pinned session; `ouo.io` stealth bypass; DoodStream HTTP + Turnstile fallback; Pixeldrain and Mp4Upload prioritized by resolution. |
 | `pawchive/` | `extractor`, `main` | Kemono-style Patreon archive. HTML parse with API JSON fallback, album dispatch. |
@@ -1454,6 +1454,10 @@ mandatory. Everything else degrades gracefully when absent.
 | `TIKTOK_NATIVE_CACHE_TTL` / `TIKTOK_NATIVE_CACHE_MAX` | 1800 / 500 | Detail cache lifetime (seconds) and entry cap |
 | `TIKTOK_DOWNLOAD_ENGINE` | `auto` | `auto` picks aiohttp under 32 MB, aria2c above; force with `aiohttp` / `aria2c` |
 | `TIKTOK_ARIA2_THRESHOLD` | 33554432 | Byte threshold for the `auto` engine switch |
+| `INSTAGRAM_META_CACHE_TTL` / `INSTAGRAM_META_CACHE_MAX` | 1800 / 500 | Metadata LRU cache lifetime (seconds) and entry cap |
+| `INSTAGRAM_PROGRESS_MIN_BYTES` | 8388608 | Files smaller than this skip Telegram edit calls during download |
+| `INSTAGRAM_AIOHTTP_CHUNK_SIZE` | 524288 | Stream chunk size (bytes) |
+| `INSTAGRAM_THUMB_WIDTH` | 320 | Target width for CDN cover thumbnail resize |
 | `ARIA2_CONNS` | 16 | aria2c socket count |
 | `UPLOAD_ENGINE` | — | `mtproto` or `pyrofork` |
 | `MTPROTO_UPLOAD`, `MTPROTO_FAST_UPLOAD`, `MTPROTO_PART_SIZE_KB`, `MTPROTO_PROGRESS_*` | — | MTProto uploader tuning |

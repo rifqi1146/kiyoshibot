@@ -130,6 +130,11 @@ async def startup_tasks(app):
         ok = await tiktoksource.warmup()
         log.info("✓ tiktok search source %s", "ready" if ok else "NOT ready")
     _create_background_task(app,_warmup_tiktokapi(),"tiktokapi warmup")
+    async def _warmup_instagram():
+        from handlers.dl.instagram import warmup_instagram_session
+        ok = await warmup_instagram_session()
+        log.info("✓ Instagram session %s", "ready" if ok else "NOT ready")
+    _create_background_task(app,_warmup_instagram(),"Instagram warmup")
     try:
         from database import vps_db
         vps_db.init_db()

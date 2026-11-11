@@ -3,13 +3,13 @@ import re
 import json
 import html
 import uuid
-import hashlib
 import time
 import logging
 import asyncio
 import aiohttp
 import aiofiles
 from urllib.parse import urlparse
+from collections import OrderedDict
 from telegram.error import RetryAfter
 from utils.http import get_http_session
 from handlers.dl.constants import TMP_DIR, MAX_TG_SIZE
@@ -23,8 +23,13 @@ _LAST_IG_STATUS_TEXT={}
 
 IG_PROGRESS=os.getenv("INSTAGRAM_PROGRESS","1").lower() in ("1","true","on","yes")
 IG_PROGRESS_INTERVAL=float(os.getenv("INSTAGRAM_PROGRESS_INTERVAL","1.5"))
-IG_AIOHTTP_CHUNK_SIZE=int(os.getenv("INSTAGRAM_AIOHTTP_CHUNK_SIZE",str(256*1024)))
+IG_AIOHTTP_CHUNK_SIZE=int(os.getenv("INSTAGRAM_AIOHTTP_CHUNK_SIZE",str(512*1024)))
 IG_CAROUSEL_CONCURRENCY=int(os.getenv("INSTAGRAM_CAROUSEL_CONCURRENCY","6"))
+IG_PROGRESS_MIN_BYTES=int(os.getenv("INSTAGRAM_PROGRESS_MIN_BYTES",str(8*1024*1024)))
+IG_META_CACHE_TTL=float(os.getenv("INSTAGRAM_META_CACHE_TTL","1800"))
+IG_META_CACHE_MAX=int(os.getenv("INSTAGRAM_META_CACHE_MAX","500"))
+IG_THUMB_WIDTH=int(os.getenv("INSTAGRAM_THUMB_WIDTH","320"))
+IG_META_CACHE: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
 
 IG_HOME_URL="https://www.instagram.com/"
 GRAPHQL_ENDPOINT="https://www.instagram.com/api/graphql"
@@ -251,6 +256,8 @@ async def _ig_reset_http():
     global _IG_HTTP
     old=_IG_HTTP
     _IG_HTTP=None
+    _IG_TOKEN_CACHE.update(lsd="",csrf="",ts=0.0)
+    IG_META_CACHE.clear()
     if old is not None:
         try:
             await old.close()
@@ -261,6 +268,7 @@ async def _ig_reset_http():
         reset_session()
     except Exception:
         pass
+
 
 close_instagram_session=_ig_reset_http
 
@@ -281,6 +289,19 @@ async def _ig_tokens(force:bool=False)->tuple[str,str]:
         if lsd:
             _IG_TOKEN_CACHE.update(lsd=lsd,csrf=csrf,ts=now)
         return _IG_TOKEN_CACHE["lsd"],_IG_TOKEN_CACHE["csrf"]
+
+
+async def warmup_instagram_session()->bool:
+    lsd,csrf=await _ig_tokens()
+    if lsd:
+        log.info("Instagram session warmed | lsd=%s csrf=%s",bool(lsd),bool(csrf))
+        return True
+    log.warning("Instagram session warmup failed | lsd empty")
+    return False
+
+
+def clear_instagram_meta_cache():
+    IG_META_CACHE.clear()
 
 def _shortcode_to_pk(shortcode:str)->str:
     sc=(shortcode or "").strip()
@@ -309,6 +330,42 @@ def _pick_largest(candidates:list[dict]|None)->tuple[str,int,int]:
             best=(area,url,w,h)
     return (best[1],best[2],best[3]) if best else ("",0,0)
 
+
+def _pick_thumb(candidates:list[dict]|None,orig_w:int,orig_h:int,target:int)->str:
+    if not candidates:
+        return ""
+    valid=[]
+    for c in candidates:
+        if not isinstance(c,dict):
+            continue
+        url=str(c.get("url") or "").strip()
+        w=int(c.get("width") or 0)
+        h=int(c.get("height") or 0)
+        if url and w>0 and h>0:
+            valid.append((w,h,url))
+    if not valid:
+        return ""
+    want_ratio=(orig_w/orig_h) if (orig_w and orig_h) else 0.0
+    matching=[v for v in valid if want_ratio and abs((v[0]/v[1])-want_ratio)<0.08]
+    pool=matching or valid
+    big_enough=[v for v in pool if v[0]>=target]
+    if big_enough:
+        return min(big_enough,key=lambda v:v[0])[2]
+    return max(pool,key=lambda v:v[0])[2]
+
+
+def _node_duration(node:dict)->int:
+    for key in ("video_duration","duration"):
+        raw=node.get(key)
+        try:
+            value=float(raw)
+        except (TypeError,ValueError):
+            continue
+        if value>0:
+            return max(int(round(value)),0)
+    return 0
+
+
 def _polaris_node_item(node:dict|None)->dict|None:
     if not isinstance(node,dict):
         return None
@@ -317,6 +374,7 @@ def _polaris_node_item(node:dict|None)->dict|None:
     dims=node.get("dimensions") or {}
     w=int(node.get("original_width") or dims.get("width") or 0)
     h=int(node.get("original_height") or dims.get("height") or 0)
+    candidates=(node.get("image_versions2") or {}).get("candidates")
     is_video=mt==2 or bool(vv) or bool(node.get("is_video")) or bool(node.get("video_url"))
 
     if is_video:
@@ -329,12 +387,18 @@ def _polaris_node_item(node:dict|None)->dict|None:
             url=str(node.get("display_url") or "").strip()
         if not url:
             return None
-        candidates=(node.get("image_versions2") or {}).get("candidates")
-        thumb_url,_,_=_pick_largest(candidates)
-        thumb=thumb_url or str(node.get("display_url") or node.get("display_uri") or "").strip()
-        return {"type":"video","url":url,"thumbnail":thumb,"width":w,"height":h}
+        thumb=_pick_thumb(candidates,w,h,IG_THUMB_WIDTH)
+        if not thumb:
+            thumb=str(node.get("display_url") or node.get("display_uri") or "").strip()
+        return {
+            "type":"video",
+            "url":url,
+            "thumbnail":thumb,
+            "width":w,
+            "height":h,
+            "duration":_node_duration(node),
+        }
 
-    candidates=(node.get("image_versions2") or {}).get("candidates")
     url,cand_w,cand_h=_pick_largest(candidates)
     if not url:
         url=str(node.get("display_url") or node.get("display_uri") or "").strip()
@@ -344,7 +408,7 @@ def _polaris_node_item(node:dict|None)->dict|None:
         w=cand_w
     if not h:
         h=cand_h
-    return {"type":"photo","url":url,"thumbnail":"","width":w,"height":h}
+    return {"type":"photo","url":url,"thumbnail":"","width":w,"height":h,"duration":0}
 
 def _parse_gql_media(media:dict)->dict:
     if not isinstance(media,dict):
@@ -528,6 +592,44 @@ async def _fetch_embed_metadata(raw_url:str)->dict:
         parsed["nickname"]=parsed.get("nickname") or fallback.get("nickname") or ""
     return parsed
     
+def _meta_cache_get(key:str)->dict|None:
+    if not key:
+        return None
+    hit=IG_META_CACHE.get(key)
+    if not hit:
+        return None
+    ts,value=hit
+    if (time.monotonic()-ts)>=IG_META_CACHE_TTL:
+        IG_META_CACHE.pop(key,None)
+        return None
+    IG_META_CACHE.move_to_end(key)
+    return value
+
+
+def _meta_cache_put(key:str,value:dict):
+    if not key or not value:
+        return
+    IG_META_CACHE[key]=(
+        time.monotonic(),
+        {
+            "caption":value.get("caption") or "",
+            "username":value.get("username") or "",
+            "nickname":value.get("nickname") or "",
+            "items":list(value.get("items") or []),
+        },
+    )
+    IG_META_CACHE.move_to_end(key)
+    while len(IG_META_CACHE)>max(1,IG_META_CACHE_MAX):
+        IG_META_CACHE.popitem(last=False)
+
+
+def _meta_cache_prune():
+    now=time.monotonic()
+    stale=[k for k,(ts,_) in IG_META_CACHE.items() if (now-ts)>=IG_META_CACHE_TTL]
+    for key in stale:
+        IG_META_CACHE.pop(key,None)
+
+
 async def _fetch_instagram_metadata(raw_url:str)->dict:
     errors=[]
     try:
@@ -806,11 +908,58 @@ async def _safe_edit_progress(bot,chat_id,status_msg_id,title:str,downloaded:int
     text=render_progress_text(title,downloaded=downloaded,total=total,speed_bps=speed_bps,eta_seconds=eta_seconds)
     await edit_status(bot,chat_id,status_msg_id,text,min_interval=2.0,label="Instagram")
 
-                        
-async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,status_msg_id=None,label:str="Downloading Instagram media")->dict:
+
+def _shrink_thumb_sync(path:str,max_side:int,max_bytes:int)->str|None:
+    try:
+        from PIL import Image
+    except Exception:
+        return path if os.path.getsize(path)<=max_bytes else None
+    try:
+        with Image.open(path) as im:
+            im=im.convert("RGB")
+            if max(im.size)>max_side:
+                im.thumbnail((max_side,max_side),Image.Resampling.LANCZOS)
+            out=os.path.splitext(path)[0]+"_s.jpg"
+            im.save(out,format="JPEG",quality=85,optimize=True)
+        if os.path.getsize(out)<=max_bytes:
+            _safe_remove_file(path,"thumb_replace")
+            return out
+        _safe_remove_file(out,"thumb_too_big")
+    except Exception as e:
+        log.debug("Instagram thumbnail resize failed | path=%s err=%r",path,e)
+    return path if os.path.getsize(path)<=max_bytes else None
+
+
+async def _fetch_thumb_file(url:str)->str|None:
+    if not url:
+        return None
+    _ensure_tmp_dir()
+    out_path=os.path.join(TMP_DIR,f"{uuid.uuid4().hex}_thumb.jpg")
+    try:
+        session=await get_http_session()
+        async with session.get(url,headers={"User-Agent":USER_AGENT},timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status>=400:
+                return None
+            raw=await resp.read()
+        if not raw or len(raw)<512:
+            return None
+        with open(out_path,"wb") as fh:
+            fh.write(raw)
+        shrunk=await asyncio.to_thread(_shrink_thumb_sync,out_path,IG_THUMB_WIDTH,200*1024)
+        if not shrunk and os.path.exists(out_path):
+            _safe_remove_file(out_path,"thumb_unusable")
+        return shrunk
+    except Exception as e:
+        log.debug("Instagram thumbnail fetch failed | err=%r",e)
+        _safe_remove_file(out_path,"fetch_thumb_file")
+        return None
+
+
+async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,status_msg_id=None,label:str="Downloading Instagram media",thumb_url:str="",duration:int=0,width:int=0,height:int=0)->dict:
     _ensure_tmp_dir()
     session=await get_http_session()
     last_error=None
+    thumb_task=asyncio.create_task(_fetch_thumb_file(thumb_url)) if thumb_url else None
 
     for candidate in _download_candidates(url):
         headers=_download_headers_for_url(candidate,source)
@@ -858,6 +1007,9 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                     total=int(resp.headers.get("Content-Length",0) or 0)
                     if total:
                         check_media_size_limit(total,"Instagram media")
+                    track_progress=bool(IG_PROGRESS and bot and chat_id and status_msg_id)
+                    if track_progress and total and total<IG_PROGRESS_MIN_BYTES:
+                        track_progress=False
                     written=0
                     stats=TransferStats(total)
                     chunk_size=max(64*1024,int(IG_AIOHTTP_CHUNK_SIZE or 256*1024))
@@ -878,7 +1030,7 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                                 if sig_type or len(peek)>=12:
                                     sniff_done=True
 
-                            if not IG_PROGRESS or not bot or not chat_id or not status_msg_id:
+                            if not track_progress:
                                 continue
 
                             stats.sample(written)
@@ -904,14 +1056,31 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
                         except Exception as e:
                             log.warning("Failed to rename Instagram media after sniff | err=%r",e)
 
+                    thumb_path=None
+                    if thumb_task is not None:
+                        try:
+                            thumb_path=await thumb_task
+                        except Exception as thumb_err:
+                            log.debug("Instagram thumbnail join failed | err=%r",thumb_err)
+                        thumb_task=None
                     log.info(
-                        "Instagram media saved | source=%s file=%s type=%s size=%s",
+                        "Instagram media saved | source=%s file=%s type=%s size=%s thumb=%s",
                         source or "-",
                         os.path.basename(out_path),
                         media_type,
                         written,
+                        bool(thumb_path),
                     )
-                    return {"path":out_path,"type":media_type}
+                    result={"path":out_path,"type":media_type}
+                    if thumb_path:
+                        result["thumb"]=thumb_path
+                    if duration or width or height:
+                        result["meta"]={
+                            "duration":int(duration or 0),
+                            "width":int(width or 0),
+                            "height":int(height or 0),
+                        }
+                    return result
 
             except Exception as e:
                 last_error=e
@@ -931,6 +1100,12 @@ async def _download_remote_media(url:str,source:str="",bot=None,chat_id=None,sta
 
                 break
 
+    if thumb_task is not None:
+        thumb_task.cancel()
+        try:
+            await thumb_task
+        except (asyncio.CancelledError,Exception):
+            pass
     raise last_error or RuntimeError("Failed to download media")
 
 def _safe_remove_file(path:str,context:str=""):
@@ -941,33 +1116,27 @@ def _safe_remove_file(path:str,context:str=""):
     except Exception as e:
         log.warning("Failed to remove Instagram file | path=%s context=%s err=%s",path,context,e)
 
-def _file_sha1_sync(path:str)->str:
-    h=hashlib.sha1()
-    with open(path,"rb") as f:
-        while True:
-            chunk=f.read(1024*1024)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
+def _file_signature(path:str)->str:
+    try:
+        st=os.stat(path)
+        return f"{st.st_size}:{st.st_mtime_ns}"
+    except OSError:
+        return ""
 
-async def _dedupe_downloaded_items(items:list[dict])->list[dict]:
+
+def _dedupe_downloaded_items(items:list[dict])->list[dict]:
     unique=[]
     seen=set()
     for item in items:
         path=item.get("path")
         if not path or not os.path.exists(path):
             continue
-        try:
-            sig=await asyncio.to_thread(_file_sha1_sync,path)
-        except Exception as e:
-            log.warning("Failed to hash downloaded Instagram media | path=%s err=%s",path,e)
-            unique.append(item)
-            continue
-        if sig in seen:
+        sig=_file_signature(path)
+        if sig and sig in seen:
             _safe_remove_file(path,"dedupe_downloaded_items")
             continue
-        seen.add(sig)
+        if sig:
+            seen.add(sig)
         unique.append(item)
     return unique
 
@@ -1001,6 +1170,9 @@ def _trim_downloaded_items_by_meta(items:list[dict],meta:dict)->list[dict]:
             path=item.get("path")
             if path:
                 _safe_remove_file(path,"trim_downloaded_items_by_meta")
+            thumb=item.get("thumb")
+            if thumb:
+                _safe_remove_file(thumb,"trim_downloaded_thumb_by_meta")
     log.info("Instagram metadata trim applied | expected=%s before=%s after=%s",expected,len(items),len(picked))
     return picked
     
@@ -1046,6 +1218,20 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
     failed_count = 0
     last_error = None
     total_items = len(urls)
+    media_by_url={}
+    for item in (meta or {}).get("items") or []:
+        u=item.get("url")
+        if u:
+            media_by_url[u]=item
+
+    def _media_kwargs(media_url:str)->dict:
+        info=media_by_url.get(media_url) or {}
+        return {
+            "thumb_url":str(info.get("thumbnail") or ""),
+            "duration":int(info.get("duration") or 0),
+            "width":int(info.get("width") or 0),
+            "height":int(info.get("height") or 0),
+        }
 
     if total_items <= 1:
         for idx, media_url in enumerate(urls, start=1):
@@ -1057,6 +1243,7 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
                     chat_id=chat_id,
                     status_msg_id=status_msg_id,
                     label="Downloading Instagram media",
+                    **_media_kwargs(media_url),
                 ))
             except Exception as e:
                 failed_count += 1
@@ -1078,6 +1265,7 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
                         chat_id=chat_id,
                         status_msg_id=status_msg_id,
                         label=f"Downloading Instagram media ({i + 1}/{total_items})",
+                        **_media_kwargs(media_url),
                     )
                 except Exception as e:
                     async with lock:
@@ -1090,63 +1278,77 @@ async def _collect_instagram_downloads(url:str,fmt_key:str,bot,chat_id,status_ms
 
     if not downloaded:
         raise last_error or RuntimeError("All media downloads failed")
-        
-    downloaded = await _dedupe_downloaded_items(downloaded)
+
+    downloaded = _dedupe_downloaded_items(downloaded)
     downloaded = _trim_downloaded_items_by_meta(downloaded, meta or {})
-    
+
     if not downloaded:
         raise RuntimeError("All media downloads were duplicates or invalid")
-        
+
     return {"items": downloaded, "source": source, "failed_count": failed_count}
 
 
 async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,metadata_ready:bool=False):
     meta={"caption":"","username":"","nickname":"","items":[]}
+    cache_key=_extract_shortcode(raw_url)
+    cached=_meta_cache_get(cache_key)
+    _meta_cache_prune()
 
-    if not metadata_ready:
-        await _safe_edit_status(
-            bot,
-            chat_id,
-            status_msg_id,
-            "<b>Scraping Instagram metadata...</b>",
-            min_interval=0,
-        )
-
-    try:
-        meta=await _fetch_instagram_metadata(raw_url)
+    if cached:
+        meta=cached
         log.info(
-            "Instagram primary metadata success | url=%s caption_len=%s username=%r nickname=%r items=%s",
-            raw_url,
-            len(meta.get("caption") or ""),
-            meta.get("username"),
-            meta.get("nickname"),
-            len(meta.get("items") or []),
+            "Instagram metadata cache hit | url=%s shortcode=%s items=%s ttl=%.0fs",
+            raw_url,cache_key,len(meta.get("items") or []),IG_META_CACHE_TTL,
         )
-    except Exception as e:
-        log.warning("Primary Instagram metadata extractor failed | url=%s err=%r",raw_url,e)
+    else:
+        if not metadata_ready:
+            await _safe_edit_status(
+                bot,
+                chat_id,
+                status_msg_id,
+                "<b>Scraping Instagram metadata...</b>",
+                min_interval=0,
+            )
+
         try:
-            fallback_meta=await _fetch_instagram_caption_meta(raw_url)
-            if fallback_meta.get("caption") or fallback_meta.get("username") or fallback_meta.get("nickname"):
-                meta=fallback_meta
-                log.info(
-                    "Instagram fallback metadata success | url=%s caption_len=%s username=%r nickname=%r",
-                    raw_url,
-                    len(meta.get("caption") or ""),
-                    meta.get("username"),
-                    meta.get("nickname"),
-                )
-            else:
-                log.warning("Instagram fallback metadata empty | url=%s",raw_url)
-        except Exception as fe:
-            log.warning("Instagram fallback metadata extractor failed | url=%s err=%r",raw_url,fe)
-            
+            meta=await _fetch_instagram_metadata(raw_url)
+            log.info(
+                "Instagram primary metadata success | url=%s caption_len=%s username=%r nickname=%r items=%s",
+                raw_url,
+                len(meta.get("caption") or ""),
+                meta.get("username"),
+                meta.get("nickname"),
+                len(meta.get("items") or []),
+            )
+        except Exception as e:
+            log.warning("Primary Instagram metadata extractor failed | url=%s err=%r",raw_url,e)
+            try:
+                fallback_meta=await _fetch_instagram_caption_meta(raw_url)
+                if fallback_meta.get("caption") or fallback_meta.get("username") or fallback_meta.get("nickname"):
+                    meta=fallback_meta
+                    log.info(
+                        "Instagram fallback metadata success | url=%s caption_len=%s username=%r nickname=%r",
+                        raw_url,
+                        len(meta.get("caption") or ""),
+                        meta.get("username"),
+                        meta.get("nickname"),
+                    )
+                else:
+                    log.warning("Instagram fallback metadata empty | url=%s",raw_url)
+            except Exception as fe:
+                log.warning("Instagram fallback metadata extractor failed | url=%s err=%r",raw_url,fe)
+
+        if meta.get("items"):
+            _meta_cache_put(cache_key,meta)
+
     log.info(
-        "Instagram metadata result | url=%s caption=%r username=%r nickname=%r items=%s",
+        "Instagram metadata result | url=%s caption=%r username=%r nickname=%r items=%s cached=%s",
         raw_url,
         meta.get("caption"),
         meta.get("username"),
         meta.get("nickname"),
         len(meta.get("items") or []),
+        bool(cached),
     )
     collected=await _collect_instagram_downloads(raw_url,fmt_key,bot,chat_id,status_msg_id,meta=meta)
     items=collected["items"]
@@ -1161,11 +1363,21 @@ async def instagram_api_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_
         media_type=item.get("type") or "photo"
         title=_build_title(meta,media_type)
         log.info("Instagram scraper success | url=%s file=%s source=%s title=%r",raw_url,item.get("path"),source,title)
-        return {"path":item["path"],"title":title,"source":source}
+        result={"path":item["path"],"title":title,"source":source}
+        if item.get("thumb"):
+            result["thumb"]=item["thumb"]
+        if item.get("meta"):
+            result["meta"]=item["meta"]
+        if media_type=="video":
+            result["remux_done"]=True
+        return result
 
     first_type=((items[0] or {}).get("type") or "photo")
     title=_build_title(meta,first_type,len(items))
     log.info("Instagram scraper success | url=%s items=%s source=%s title=%r",raw_url,len(items),source,title)
+    if all((i.get("type") or "")=="video" for i in items):
+        for i in items:
+            i["remux_done"]=True
     return {"items":items,"title":title,"source":source}
 
 async def cleanup_instagram_result(result:dict):
@@ -1174,7 +1386,13 @@ async def cleanup_instagram_result(result:dict):
     path=result.get("path")
     if path and os.path.exists(path):
         _safe_remove_file(path,"cleanup_instagram_result_single")
+    thumb=result.get("thumb")
+    if thumb and os.path.exists(thumb):
+        _safe_remove_file(thumb,"cleanup_instagram_result_thumb")
     for item in result.get("items") or []:
         p=item.get("path")
         if p and os.path.exists(p):
             _safe_remove_file(p,"cleanup_instagram_result_items")
+        t=item.get("thumb")
+        if t and os.path.exists(t):
+            _safe_remove_file(t,"cleanup_instagram_result_item_thumb")

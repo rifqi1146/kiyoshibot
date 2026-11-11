@@ -6,6 +6,7 @@ import shutil
 import logging
 import subprocess
 import asyncio
+import struct
 from .constants import TMP_DIR
 from .proc import spawn_process, PIPE
 from .utils import detect_media_type
@@ -48,6 +49,109 @@ def _delete_file(path:str|None,label:str):
             log.info("Deleted %s file | file=%s",label,os.path.basename(path))
     except Exception as e:
         log.warning("Failed to delete %s file | path=%s err=%r",label,path,e)
+
+
+_MP4_VIDEO_CODECS=(b"avc1",b"avc3",b"hev1",b"hvc1",b"vp09",b"av01")
+
+def mp4_faststart_meta(path:str)->dict|None:
+    try:
+        total=os.path.getsize(path)
+        if total<32:
+            return None
+        with open(path,"rb") as fh:
+            pos=0
+            saw_ftyp=False
+            moov=b""
+            faststart=False
+            for _ in range(64):
+                if pos+8>total:
+                    break
+                fh.seek(pos)
+                head=fh.read(8)
+                if len(head)<8:
+                    break
+                box_size,box_type=struct.unpack(">I4s",head)
+                header_len=8
+                if box_size==1:
+                    ext=fh.read(8)
+                    if len(ext)<8:
+                        break
+                    box_size=struct.unpack(">Q",ext)[0]
+                    header_len=16
+                elif box_size==0:
+                    box_size=total-pos
+                if box_size<header_len or pos+box_size>total:
+                    break
+                if box_type==b"ftyp":
+                    saw_ftyp=True
+                elif box_type==b"moov":
+                    if box_size-header_len<=4*1024*1024:
+                        moov=fh.read(box_size-header_len)
+                elif box_type==b"mdat":
+                    faststart=bool(moov)
+                    break
+                pos+=box_size
+            if not (saw_ftyp and faststart and moov):
+                return None
+            state={"duration":0,"width":0,"height":0,"codec":""}
+
+            def walk(buf):
+                p=0
+                n=len(buf)
+                while p+8<=n:
+                    try:
+                        bsize,btype=struct.unpack(">I4s",buf[p:p+8])
+                    except struct.error:
+                        return
+                    hlen=8
+                    if bsize==1 and p+16<=n:
+                        bsize=struct.unpack(">Q",buf[p+8:p+16])[0]
+                        hlen=16
+                    elif bsize==0:
+                        bsize=n-p
+                    if bsize<hlen or p+bsize>n:
+                        return
+                    body=buf[p+hlen:p+bsize]
+                    if btype==b"mvhd" and len(body)>=20:
+                        ver=body[0]
+                        if ver==0:
+                            ts,dur=struct.unpack(">II",body[12:20])
+                        elif ver==1 and len(body)>=32:
+                            ts,dur=struct.unpack(">IQ",body[20:32])
+                        else:
+                            ts,dur=0,0
+                        if ts>0:
+                            state["duration"]=max(int(round(dur/ts)),0)
+                    elif btype==b"tkhd" and len(body)>=84:
+                        ver=body[0]
+                        off=76 if ver==0 else 88
+                        if len(body)>=off+8:
+                            w_fx,h_fx=struct.unpack(">II",body[off:off+8])
+                            w_px,h_px=w_fx>>16,h_fx>>16
+                            if w_px>0 and h_px>0:
+                                state["width"]=w_px
+                                state["height"]=h_px
+                    elif btype==b"stsd" and len(body)>=16:
+                        fmt=body[12:16]
+                        if fmt in _MP4_VIDEO_CODECS:
+                            state["codec"]="h264" if fmt in (b"avc1",b"avc3") else fmt.decode("latin1")
+                    elif btype in (b"trak",b"mdia",b"minf",b"stbl"):
+                        walk(body)
+                    p+=bsize
+
+            walk(moov)
+            if state["duration"]<=0 or state["width"]<=0 or state["height"]<=0:
+                return None
+            return {
+                "duration":state["duration"],
+                "width":state["width"],
+                "height":state["height"],
+                "codec":state["codec"] or "h264",
+                "faststart":True,
+            }
+    except Exception as e:
+        log.debug("MP4 faststart probe failed | path=%s err=%r",path,e)
+        return None
 
 _VIDEO_META_CACHE: dict[str, tuple[float, dict]] = {}
 _CACHE_TTL = 60.0
@@ -171,22 +275,38 @@ def make_video_thumbnail(src_path:str)->str|None:
         _delete_file(thumb_path,"failed thumbnail")
     return None
 
-async def remux_and_thumbnail_parallel(src_path:str)->tuple[str, str|None, dict]:
+async def remux_and_thumbnail_parallel(src_path:str,thumb_path:str|None=None)->tuple[str, str|None, dict]:
     if not src_path or not os.path.exists(src_path):
         return src_path, None, {}
     if detect_media_type(src_path) != "video":
         return src_path, None, {}
-    
+
+    fast_meta = await asyncio.to_thread(mp4_faststart_meta, src_path)
+    have_thumb = bool(thumb_path and os.path.exists(thumb_path))
+
+    if fast_meta:
+        log.info(
+            "Remux skipped, already faststart | file=%s duration=%s %sx%s thumb=%s",
+            os.path.basename(src_path), fast_meta["duration"], fast_meta["width"], fast_meta["height"], have_thumb,
+        )
+        meta = fast_meta
+        if have_thumb:
+            return src_path, thumb_path, meta
+        thumb = await asyncio.to_thread(make_video_thumbnail, src_path)
+        return src_path, thumb, meta
+
     meta = await asyncio.to_thread(video_meta, src_path)
-    
     remux_fut = asyncio.to_thread(remux_video_for_telegram, src_path, False)
-    thumb_fut = asyncio.to_thread(make_video_thumbnail, src_path)
-    remuxed_path, thumb_path = await asyncio.gather(remux_fut, thumb_fut)
-    
+    if have_thumb:
+        remuxed_path = await remux_fut
+        thumb = thumb_path
+    else:
+        remuxed_path, thumb = await asyncio.gather(remux_fut, asyncio.to_thread(make_video_thumbnail, src_path))
+
     if remuxed_path != src_path and os.path.exists(src_path):
         _delete_file(src_path, "original video after parallel remux")
-        
-    return remuxed_path, thumb_path, meta
+
+    return remuxed_path, thumb, meta
 
 def convert_gif_to_mp4(src_path:str, delete_src:bool=True)->str:
     if not src_path or not os.path.exists(src_path):
@@ -280,17 +400,7 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
                 item["path"] = p
             if detect_media_type(p) == "video":
                 item["type"] = "animation" if was_gif else "video"
-                if item.get("remux_done"):
-                    meta = await asyncio.to_thread(video_meta, p)
-                    thumb_path = item.get("thumb")
-                    if not (thumb_path and os.path.exists(thumb_path)):
-                        thumb_path = await asyncio.to_thread(make_video_thumbnail, p)
-                    if thumb_path:
-                        item["thumb"] = thumb_path
-                    if meta:
-                        item["meta"] = meta
-                    return item
-                new_path, thumb_path, meta = await remux_and_thumbnail_parallel(p)
+                new_path, thumb_path, meta = await remux_and_thumbnail_parallel(p, item.get("thumb"))
                 item["path"] = new_path
                 if thumb_path:
                     item["thumb"] = thumb_path
@@ -315,20 +425,12 @@ async def prepare_download_result_for_send(result,fmt_key:str="mp4"):
                 result["type"] = "animation"
                 result["is_animation"] = True
             if detect_media_type(p)=="video":
-                if result.get("remux_done"):
-                    result["meta"]=await asyncio.to_thread(video_meta,p)
-                    thumb_path=result.get("thumb")
-                    if not (thumb_path and os.path.exists(thumb_path)):
-                        thumb_path=await asyncio.to_thread(make_video_thumbnail,p)
-                    if thumb_path:
-                        result["thumb"]=thumb_path
-                else:
-                    new_path,thumb_path,meta=await remux_and_thumbnail_parallel(p)
-                    result["path"]=new_path
-                    if thumb_path:
-                        result["thumb"]=thumb_path
-                    if meta:
-                        result["meta"]=meta
+                new_path,thumb_path,meta=await remux_and_thumbnail_parallel(p, result.get("thumb"))
+                result["path"]=new_path
+                if thumb_path:
+                    result["thumb"]=thumb_path
+                if meta:
+                    result["meta"]=meta
             else:
                 result["path"]=await asyncio.to_thread(_prepare_single_path,p)
         return result
