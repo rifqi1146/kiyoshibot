@@ -49,6 +49,7 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• yandere\n"
             "• cabul\n"
             "• masokis\n"
+            "• slave\n"
             "• loli",
             parse_mode="HTML"
         )
@@ -64,6 +65,7 @@ async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• yandere\n"
             "• cabul\n"
             "• masokis\n"
+            "• slave\n"
             "• loli",
             parse_mode="HTML",
         )
