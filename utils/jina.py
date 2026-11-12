@@ -28,7 +28,7 @@ def _require_key():
         raise RuntimeError("JINA_API_KEY is not set in env.")
 
 
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(query: str, max_results: int = 5, sources_out: list | None = None) -> str:
     _require_key()
     query = (query or "").strip()
     if not query:
@@ -60,6 +60,8 @@ async def web_search(query: str, max_results: int = 5) -> str:
         if len(snippet) > 600:
             snippet = snippet[:600] + "…"
         if title and url:
+            if sources_out is not None:
+                sources_out.append({"title": title, "url": url})
             lines.append(f"- **{title}**\n  {url}\n  {snippet}")
     if len(lines) == 1:
         return "No search results."

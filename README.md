@@ -881,7 +881,7 @@ Single provider is **Shiteru** (`{CACA_API_BASE}/chat/completions`), locked onto
 with persona prompts, and supports native OpenAI tool-calling for group
 moderation actions (`mute_user`, `unmute_user`, `ban_user`, `unban_user`,
 `kick_user`, `promote_user`, `demote_user`, `tag_user`).
-Explicit persona modes (`cabul`, `bokep`, `masokis`) resolve through
+Explicit persona modes (`cabul`, `bokep`, `masokis`, `slave`) resolve through
 `_model_for_mode()` to `CACA_MODEL_EXPLICIT`, which defaults to `CACA_MODEL`.
 
 ### Persona mechanics
@@ -1370,7 +1370,7 @@ mandatory. Everything else degrades gracefully when absent.
 | `SHITERU_KEY` | — | Single provider API key for Caca & `/ask` |
 | `CACA_API_BASE` | `https://shiteru.id/v1` | Shiteru endpoint base |
 | `CACA_MODEL` | `deepseek-v4-flash` | Model for Caca and `/ask` |
-| `CACA_MODEL_EXPLICIT` | `CACA_MODEL` | Model for explicit persona modes (`cabul`, `bokep`, `masokis`) |
+| `CACA_MODEL_EXPLICIT` | `CACA_MODEL` | Model for explicit persona modes (`cabul`, `bokep`, `masokis`, `slave`) |
 | `CACA_MAX_TOKENS` | 4096 | Output cap, hard-clamped to 4096 |
 | `CACA_TIMEOUT` | 60 | Per-request timeout (seconds) |
 | `ASK_API_BASE` | `CACA_API_BASE` | Shiteru-compatible endpoint for `/ask` |

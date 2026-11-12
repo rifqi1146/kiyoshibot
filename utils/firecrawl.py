@@ -44,7 +44,7 @@ def _pick_results(data: dict) -> list[dict]:
     return []
 
 
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(query: str, max_results: int = 5, sources_out: list | None = None) -> str:
     _require_key()
     query = (query or "").strip()
     if not query:
@@ -88,6 +88,8 @@ async def web_search(query: str, max_results: int = 5) -> str:
             snippet = snippet[:500] + "…"
         if not (title and url):
             continue
+        if sources_out is not None:
+            sources_out.append({"title": title, "url": url})
         block = f"- **{title}**\n  {url}\n  {snippet}"
         if deep:
             md = (item.get("markdown") or "").strip()

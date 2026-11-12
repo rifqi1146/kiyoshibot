@@ -37,8 +37,7 @@ CACA_REFUSAL_RETRIES = max(0, int(os.getenv("CACA_REFUSAL_RETRIES", "2")))
 CACA_MODEL_EXPLICIT = os.getenv("CACA_MODEL_EXPLICIT", CACA_MODEL).strip() or CACA_MODEL
 if ":premium" in CACA_MODEL_EXPLICIT.lower() or "forge/" in CACA_MODEL_EXPLICIT.lower():
     CACA_MODEL_EXPLICIT = CACA_MODEL
-CACA_EXPLICIT_MODES = frozenset({"cabul", "bokep", "masokis"})
-
+CACA_EXPLICIT_MODES = frozenset({"cabul", "bokep", "masokis", "slave"})
 _REFUSAL_PHRASES = (
     "as an ai",
     "as a language model",
@@ -92,6 +91,7 @@ _REFUSAL_FALLBACK = {
     "bokep": "Sayang, aku ga nangkep maksud kamu tadi 😳 coba ulang dong.",
     "cabul": "Hmm? Aku ga nangkep sayang 😏 coba ulang lebih jelas ya.",
     "masokis": "Aduh sayang, aku ga ngerti maksud kamu 😣 coba ulang ya.",
+    "slave": "Maaf Master, aku ga nangkep maksudnya 😳 coba ulang dong.",
 }
 
 
@@ -343,18 +343,22 @@ def _clean_caca_output(raw: str) -> str:
     return sanitize_markdown(raw)
 
 
-async def _send_chunks(bot, msg, chunks: list[str]) -> int | None:
+async def _send_chunks(bot, msg, chunks: list[str], sources: list | None = None) -> int | None:
     from utils.rich_stream import send_rich_message
     if not chunks:
         return None
     last_id = None
     thread_id = _get_thread_id(msg)
+    markup = web_tools.build_sources_markup(sources or [])
+    total = len(chunks)
     for idx, chunk in enumerate(chunks):
+        chunk_markup = markup if (markup and idx == total - 1) else None
         try:
             res = await send_rich_message(
                 bot, msg.chat_id, chunk,
                 message_thread_id=thread_id,
                 reply_to_message_id=msg.message_id if idx == 0 else None,
+                reply_markup=chunk_markup,
             )
             mid = (res or {}).get("message_id") if isinstance(res, dict) else getattr(res, "message_id", None)
             if mid:
@@ -363,7 +367,7 @@ async def _send_chunks(bot, msg, chunks: list[str]) -> int | None:
         except Exception as e:
             logger.warning("Caca send_rich_message failed, falling back to sendMessage HTML | err=%r", e)
         clean_html = sanitize_ai_output(chunk)
-        sent = await _reply_thread(bot, msg, clean_html, parse_mode="HTML")
+        sent = await _reply_thread(bot, msg, clean_html, parse_mode="HTML", reply_markup=chunk_markup)
         if sent:
             last_id = sent.message_id
     return last_id
@@ -476,7 +480,7 @@ async def _headers() -> dict:
     }
 
 
-async def _chat_completion(messages: list[dict], model: str | None = None) -> tuple[str, dict]:
+async def _chat_completion(messages: list[dict], model: str | None = None, sources_out: list | None = None) -> tuple[str, dict]:
     headers = await _headers()
     extra = await _extra_payload()
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -496,6 +500,7 @@ async def _chat_completion(messages: list[dict], model: str | None = None) -> tu
                 timeout=CACA_TIMEOUT,
                 usage_out=usage,
                 extra=extra,
+                sources_out=sources_out,
             )
         except Exception as e:
             if attempt >= attempts - 1:
@@ -535,7 +540,7 @@ async def _caca_chat(messages: list[dict]) -> str:
     return content
 
 
-async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None, model: str | None = None):
+async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None, model: str | None = None, sources_out: list | None = None):
     headers = await _headers()
     extra = await _extra_payload()
     got_any = False
@@ -550,6 +555,7 @@ async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None,
         timeout=CACA_TIMEOUT,
         usage_out=usage_out,
         extra=extra,
+        sources_out=sources_out,
     ):
         got_any = True
         yield piece
@@ -576,10 +582,13 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
     billing.setdefault("usage", {})
     billing["streamed"] = False
     billing["stream_completed"] = False
+    sources: list = []
 
     async def gen():
         got = False
-        async for chunk in _caca_chat_stream(messages, usage_out=billing["usage"], model=model):
+        async for chunk in _caca_chat_stream(
+            messages, usage_out=billing["usage"], model=model, sources_out=sources
+        ):
             got = True
             yield chunk
         if not got:
@@ -603,7 +612,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
         billing["streamed"] = True
         if gen_stop.is_set():
             clean_md = _clean_caca_output(raw) or "⏹ Jawaban dibatalkan."
-            last_id = await _send_chunks(bot, msg, [clean_md])
+            last_id = await _send_chunks(bot, msg, [clean_md], sources=sources)
             await save(clean_md, last_id)
             billing["stream_completed"] = True
             return
@@ -611,7 +620,7 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
         if _is_model_refusal(raw):
             logger.warning("Caca stream refused, retrying without stream | text=%r", str(raw)[:80])
             try:
-                raw3, usage3 = await _chat_completion(messages, model=model)
+                raw3, usage3 = await _chat_completion(messages, model=model, sources_out=sources)
                 billing["usage"].update(usage3)
                 if not _is_model_refusal(raw3):
                     clean_md = _clean_caca_output(raw3) or "Model did not provide an answer."
@@ -619,8 +628,9 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
                 logger.warning("Caca refusal fallback failed | err=%r", e)
             if _is_model_refusal(clean_md):
                 clean_md = _refusal_fallback_reply(mode)
+                sources = []
         chunks = split_message(clean_md, 4000)
-        last_id = await _send_chunks(bot, msg, chunks)
+        last_id = await _send_chunks(bot, msg, chunks, sources=sources)
         await save(clean_md, last_id)
         billing["stream_completed"] = True
     except RuntimeError as e:
@@ -630,14 +640,15 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, message_thread_id=thread_id))
         try:
-            raw2, usage2 = await _chat_completion(messages, model=model)
+            raw2, usage2 = await _chat_completion(messages, model=model, sources_out=sources)
             billing["usage"].update(usage2)
             clean_md = _clean_caca_output(raw2) or "Model did not provide an answer."
             if _is_model_refusal(raw2):
                 clean_md = _refusal_fallback_reply(mode)
+                sources = []
             chunks = split_message(clean_md, 4000)
             await _stop_typing_task(stop, typing)
-            last_id = await _send_chunks(bot, msg, chunks)
+            last_id = await _send_chunks(bot, msg, chunks, sources=sources)
             await save(clean_md, last_id)
             billing["stream_completed"] = True
         finally:
@@ -941,6 +952,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stop = asyncio.Event()
         thread_id = _get_thread_id(msg)
         typing = asyncio.create_task(_typing_loop(context.bot, msg.chat_id, stop, message_thread_id=thread_id))
+        sources: list = []
         if mod_active:
             from handlers.moderation.ai_tools import run_moderation_loop
             raw = await run_moderation_loop(
@@ -962,14 +974,15 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             billing["usage"].setdefault("prompt_tokens", 0)
             billing["usage"].setdefault("completion_tokens", 0)
         else:
-            raw, usage = await _chat_completion(messages, model=model)
+            raw, usage = await _chat_completion(messages, model=model, sources_out=sources)
             billing["usage"].update(usage)
         clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
         if _is_model_refusal(raw):
             clean_md = _refusal_fallback_reply(mode)
+            sources = []
         chunks = split_message(clean_md, 4000)
         await _stop_typing_task(stop, typing)
-        last_id = await _send_chunks(context.bot, msg, chunks)
+        last_id = await _send_chunks(context.bot, msg, chunks, sources=sources)
         history.extend([
             {"role": "user", "content": memory_prompt},
             {"role": "assistant", "content": clean_md},

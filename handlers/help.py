@@ -166,7 +166,7 @@ HELP_TEXT = {
         "**Caca Companion**\n"
         "- `/caca <text>`: Chat with Caca roleplay companion\n"
         "- `/mode`: View current active persona\n"
-        "- `/mode <name>`: Switch persona (default, bokep, sarkas, toxic, yandere, cabul, masokis, loli)\n"
+        "- `/mode <name>`: Switch persona (default, bokep, sarkas, toxic, yandere, cabul, masokis, slave, loli)\n"
         "- `/cacatopup`: Top up Caca AI credits via dynamic QRIS\n"
         "- `/buycaca`: Same as `/cacatopup`\n"
         "- `/cacasaldo`: Check active credit balance and expiry dates"

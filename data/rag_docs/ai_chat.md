@@ -38,7 +38,8 @@ Fitur ini terbuka untuk pengguna yang memiliki saldo credit Caca aktif (atau saa
 - `/mode cabul`: liar dan provokatif.
 - `/mode bokep`: vulgar dan nakal.
 - `/mode masokis`: patuh, pasrah, dan penurut.
+- `/mode slave`: tunduk pada pacar sebagai Master, manja tapi ngeselin.
 - `/mode loli`: lucu, imut, bergaya anime.
 
 Catatan: mengganti mode akan mereset riwayat memori percakapan Caca user tersebut.
-Modes `cabul`, `bokep`, dan `masokis` dijalankan pada model eksplisit (`CACA_MODEL_EXPLICIT`), terpisah dari mode lain, supaya tidak dilunakkan oleh safety model.
+Modes `cabul`, `bokep`, `masokis`, dan `slave` dijalankan pada model eksplisit (`CACA_MODEL_EXPLICIT`), terpisah dari mode lain, supaya tidak dilunakkan oleh safety model.

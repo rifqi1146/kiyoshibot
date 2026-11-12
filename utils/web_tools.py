@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import logging
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -43,7 +44,9 @@ SEARCH_TOOL_HINT = (
     "sebelum menjawab. Jangan menebak, jangan mengarang, dan jangan menganggap "
     "sesuatu hoax tanpa mengeceknya. Setelah hasilnya ada, jawab langsung seolah "
     "kamu memang tahu — jangan bilang 'berdasarkan hasil pencarian' atau "
-    "'aku baru googling'."
+    "'aku baru googling'.\n"
+    "JANGAN menulis daftar sumber, referensi, atau tautan di akhir jawabanmu — "
+    "sistem menambahkan blok sumber otomatis dari URL yang benar-benar kamu buka."
 )
 
 
@@ -53,18 +56,78 @@ class _Reset:
 
 RESET = _Reset()
 
+SOURCE_LIMIT = 5
+
+
+def _source_key(url: str) -> str:
+    return str(url or "").split("#", 1)[0].rstrip("/").lower()
+
+
+def _source_title(title: str, url: str, idx: int) -> str:
+    text = " ".join(str(title or "").split())
+    if not text:
+        try:
+            text = urlparse(url).netloc or f"Sumber {idx}"
+        except Exception:
+            text = f"Sumber {idx}"
+    if len(text) > 96:
+        text = text[:93].rstrip() + "..."
+    return text
+
+
+def normalize_sources(items, limit: int = SOURCE_LIMIT) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or item.get("link") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        key = _source_key(url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append({"title": _source_title(item.get("title"), url, len(out) + 1), "url": url})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def absorb_sources(sources_out, items) -> None:
+    if sources_out is None:
+        return
+    merged = list(sources_out) + [i for i in (items or []) if isinstance(i, dict)]
+    sources_out[:] = normalize_sources(merged)
+
+
+def build_sources_markup(sources):
+    items = normalize_sources(sources)
+    if not items:
+        return None
+    try:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    except Exception:
+        return None
+    rows = []
+    for item in items:
+        label = item["title"]
+        if len(label) > 64:
+            label = label[:61].rstrip() + "..."
+        rows.append([InlineKeyboardButton(label, url=item["url"])])
+    return InlineKeyboardMarkup(rows)
+
 
 def search_backend_available() -> bool:
     return bool(app_config.FIRECRAWL_API_KEY) or bool(app_config.JINA_API_KEY)
 
 
-async def run_web_search(query: str, max_results: int = 5) -> str:
+async def run_web_search(query: str, max_results: int = 5, sources_out: list | None = None) -> str:
     query = (query or "").strip()
     if not query:
         return ""
 
     log.info("Web search start | q=%s", query)
-
     engine = "firecrawl"
     try:
         from utils.search_settings import get_search_engine
@@ -79,9 +142,14 @@ async def run_web_search(query: str, max_results: int = 5) -> str:
                 from utils.jina import web_search as _search
             else:
                 from utils.firecrawl import web_search as _search
-            text = await _search(query, max_results=max_results)
+            found: list = []
+            text = await _search(query, max_results=max_results, sources_out=found)
             if text and text.strip():
-                log.info("Web search done | q=%s engine=%s chars=%s", query, engine, len(text))
+                absorb_sources(sources_out, found)
+                log.info(
+                    "Web search done | q=%s engine=%s chars=%s sources=%s",
+                    query, engine, len(text), len(found),
+                )
                 return text.strip()
         except Exception as e:
             log.warning("Web search (%s) failed | q=%s err=%r", engine, query, e)
@@ -95,6 +163,10 @@ async def run_web_search(query: str, max_results: int = 5) -> str:
                 f"- {r.get('title', '')}\n  {r.get('snippet', '')}\n  Sumber: {r.get('link', '')}"
                 for r in results
             )
+            absorb_sources(
+                sources_out,
+                [{"title": r.get("title"), "url": r.get("link")} for r in results],
+            )
             log.info("Web search done | q=%s engine=google results=%s", query, len(results))
             return text
     except Exception as e:
@@ -102,6 +174,7 @@ async def run_web_search(query: str, max_results: int = 5) -> str:
 
     log.warning("Web search empty | q=%s", query)
     return ""
+
 
 
 def _call_name(call: dict) -> str:
@@ -144,10 +217,10 @@ def _normalize_calls(raw: list[dict]) -> list[dict]:
     return out
 
 
-async def _execute_one(call: dict) -> dict:
+async def _execute_one(call: dict, sources_out: list | None = None) -> dict:
     query = _call_query(call)
     try:
-        result = await run_web_search(query) if query else ""
+        result = await run_web_search(query, sources_out=sources_out) if query else ""
     except Exception as e:
         log.warning("Tool execution failed | query=%s err=%r", query, e)
         result = ""
@@ -160,12 +233,12 @@ async def _execute_one(call: dict) -> dict:
     }
 
 
-async def _execute_calls(calls: list[dict]) -> list[dict]:
+async def _execute_calls(calls: list[dict], sources_out: list | None = None) -> list[dict]:
     if not calls:
         return []
     if len(calls) == 1:
-        return [await _execute_one(calls[0])]
-    return list(await asyncio.gather(*(_execute_one(c) for c in calls)))
+        return [await _execute_one(calls[0], sources_out)]
+    return list(await asyncio.gather(*(_execute_one(c, sources_out) for c in calls)))
 
 
 async def _stream_events(session, endpoint, headers, payload, timeout, usage_out=None):
@@ -298,6 +371,7 @@ async def stream_completion(
     extra: dict | None = None,
     use_tools: bool = True,
     max_rounds: int = 2,
+    sources_out: list | None = None,
 ):
     if not search_backend_available():
         use_tools = False
@@ -358,7 +432,7 @@ async def stream_completion(
             current.append(
                 {"role": "assistant", "content": text or None, "tool_calls": calls}
             )
-            current.extend(await _execute_calls(calls))
+            current.extend(await _execute_calls(calls, sources_out))
             searched = True
             yield RESET
             continue
@@ -428,6 +502,7 @@ async def complete_with_search(
     usage_out: dict | None = None,
     extra: dict | None = None,
     use_tools: bool = True,
+    sources_out: list | None = None,
 ) -> str:
     parts: list[str] = []
     async for piece in stream_completion(
@@ -441,6 +516,7 @@ async def complete_with_search(
         usage_out=usage_out,
         extra=extra,
         use_tools=use_tools,
+        sources_out=sources_out,
     ):
         if piece is RESET:
             parts = []

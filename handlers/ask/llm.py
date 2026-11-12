@@ -45,7 +45,7 @@ def _usage_from(data: dict) -> dict:
     }
 
 
-async def chat_stream(messages: list[dict], usage_out: dict | None = None):
+async def chat_stream(messages: list[dict], usage_out: dict | None = None, sources_out: list | None = None):
     key = _api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
@@ -65,6 +65,7 @@ async def chat_stream(messages: list[dict], usage_out: dict | None = None):
         max_tokens=ASK_MAX_TOKENS,
         timeout=ASK_TIMEOUT,
         usage_out=usage_out,
+        sources_out=sources_out,
     ):
         got_any = True
         yield piece
@@ -74,9 +75,9 @@ async def chat_stream(messages: list[dict], usage_out: dict | None = None):
     log.info("Ask stream success | provider=shiteru model=%s usage=%s", ASK_MODEL, usage_out or {})
 
 
-async def chat(messages: list[dict], usage_out: dict | None = None) -> str:
+async def chat(messages: list[dict], usage_out: dict | None = None, sources_out: list | None = None) -> str:
     parts: list[str] = []
-    async for piece in chat_stream(messages, usage_out):
+    async for piece in chat_stream(messages, usage_out, sources_out=sources_out):
         if piece is web_tools.RESET:
             parts = []
             continue

@@ -75,7 +75,8 @@ def _system_instruction() -> str:
         "ATURAN: jangan pakai sintaks Markdown (###, **, ```, '> '). Escape karakter & < > di teks biasa "
         "menjadi &amp; &lt; &gt;. Untuk sapaan singkat atau jawaban satu-dua kalimat, cukup '<p>' tanpa "
         "tabel atau heading — jangan memaksakan struktur pada jawaban pendek.\n"
-        "Kalau memakai data hasil pencarian web, sebutkan sumbernya singkat di dalam <footer> atau <p>."
+        "Jangan menulis daftar sumber, referensi, atau tautan di akhir jawaban — sistem "
+        "menambahkan blok sumber otomatis dari URL yang benar-benar dipakai."
     )
 
 
@@ -122,7 +123,7 @@ async def _stop_typing_task(stop: asyncio.Event | None, typing: asyncio.Task | N
             log.warning("Typing task stop failed | err=%r", e)
 
 
-async def _reply_thread(bot, msg, text: str, parse_mode=None):
+async def _reply_thread(bot, msg, text: str, parse_mode=None, reply_markup=None):
     thread_id = getattr(msg, "message_thread_id", None)
     kwargs = {
         "chat_id": msg.chat_id,
@@ -131,6 +132,8 @@ async def _reply_thread(bot, msg, text: str, parse_mode=None):
         "message_thread_id": thread_id,
         "reply_to_message_id": msg.message_id,
     }
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
     try:
         return await bot.send_message(**kwargs)
     except Exception as e:
@@ -158,14 +161,19 @@ def _final_parts(raw: str) -> tuple[list[str], bool, str]:
     return split_message(plain, 4000), False, plain
 
 
-async def _send_chunks(bot, msg, chunks: list[str], as_html: bool = False) -> Optional[int]:
+async def _send_chunks(
+    bot, msg, chunks: list[str], as_html: bool = False, sources: list | None = None
+) -> Optional[int]:
     from utils.rich_stream import send_rich_message
 
     if not chunks:
         return None
     last_id = None
     thread_id = getattr(msg, "message_thread_id", None)
+    markup = web_tools.build_sources_markup(sources or [])
+    total = len(chunks)
     for idx, chunk in enumerate(chunks):
+        chunk_markup = markup if (markup and idx == total - 1) else None
         try:
             if as_html:
                 res = await send_rich_message(
@@ -174,6 +182,7 @@ async def _send_chunks(bot, msg, chunks: list[str], as_html: bool = False) -> Op
                     chunk,
                     message_thread_id=thread_id,
                     reply_to_message_id=msg.message_id if idx == 0 else None,
+                    reply_markup=chunk_markup,
                     rich_html=chunk,
                 )
             else:
@@ -183,6 +192,7 @@ async def _send_chunks(bot, msg, chunks: list[str], as_html: bool = False) -> Op
                     chunk,
                     message_thread_id=thread_id,
                     reply_to_message_id=msg.message_id if idx == 0 else None,
+                    reply_markup=chunk_markup,
                 )
             mid = (res or {}).get("message_id") if isinstance(res, dict) else getattr(res, "message_id", None)
             if mid:
@@ -191,7 +201,9 @@ async def _send_chunks(bot, msg, chunks: list[str], as_html: bool = False) -> Op
         except Exception as e:
             log.warning("send_rich_message failed, fallback HTML | err=%r", e)
         clean_html = sanitize_ai_output(chunk)
-        sent = await _reply_thread(bot, msg, clean_html, parse_mode="HTML")
+        sent = await _reply_thread(
+            bot, msg, clean_html, parse_mode="HTML", reply_markup=chunk_markup
+        )
         if sent:
             last_id = sent.message_id
     return last_id
@@ -266,9 +278,11 @@ async def _ask_stream_dm(update, context, msg, user_id: int, history: list, prom
     if app:
         app.bot_data[stop_key] = gen_stop
 
+    sources: list = []
+
     async def gen():
         got = False
-        async for chunk in llm.chat_stream(messages):
+        async for chunk in llm.chat_stream(messages, sources_out=sources):
             if chunk:
                 got = True
                 yield chunk
@@ -285,12 +299,13 @@ async def _ask_stream_dm(update, context, msg, user_id: int, history: list, prom
             stop_event=gen_stop,
             html_mode=True,
         )
+
         if gen_stop.is_set():
             chunks, as_html, stored = _final_parts(raw)
             if not stored:
                 stored = "Response cancelled."
                 chunks, as_html = [stored], False
-            last_id = await _send_chunks(bot, msg, chunks, as_html=as_html)
+            last_id = await _send_chunks(bot, msg, chunks, as_html=as_html, sources=sources)
             history.append({"user": prompt, "ai": stored})
             await ai_memory.set_history(user_id, history, last_id, msg.chat_id)
             return
@@ -299,7 +314,7 @@ async def _ask_stream_dm(update, context, msg, user_id: int, history: list, prom
         if not stored:
             stored = "Model did not provide an answer."
             chunks, as_html = [stored], False
-        last_id = await _send_chunks(bot, msg, chunks, as_html=as_html)
+        last_id = await _send_chunks(bot, msg, chunks, as_html=as_html, sources=sources)
         history.append({"user": prompt, "ai": stored})
         await ai_memory.set_history(user_id, history, last_id, msg.chat_id)
     except RuntimeError as e:
@@ -307,13 +322,13 @@ async def _ask_stream_dm(update, context, msg, user_id: int, history: list, prom
             stop = asyncio.Event()
             typing = asyncio.create_task(_typing_loop(bot, msg.chat_id, stop, None))
             try:
-                raw2 = await llm.chat(messages)
+                raw2 = await llm.chat(messages, sources_out=sources)
                 chunks, as_html, stored = _final_parts(raw2)
                 if not stored:
                     stored = "Model did not provide an answer."
                     chunks, as_html = [stored], False
                 await _stop_typing_task(stop, typing)
-                last_id = await _send_chunks(bot, msg, chunks, as_html=as_html)
+                last_id = await _send_chunks(bot, msg, chunks, as_html=as_html, sources=sources)
                 history.append({"user": prompt, "ai": stored})
                 await ai_memory.set_history(user_id, history, last_id, msg.chat_id)
             finally:
@@ -412,15 +427,15 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 timeout_sec=llm.ASK_TIMEOUT,
                 prompt=prompt,
             )
+        sources: list = []
         if not raw:
-            raw = await llm.chat(messages)
-
+            raw = await llm.chat(messages, sources_out=sources)
         chunks, as_html, stored = _final_parts(raw)
         if not stored:
             stored = "Model did not provide an answer."
             chunks, as_html = [stored], False
         await _stop_typing_task(stop, typing)
-        last_sent_id = await _send_chunks(context.bot, msg, chunks, as_html=as_html)
+        last_sent_id = await _send_chunks(context.bot, msg, chunks, as_html=as_html, sources=sources)
         if last_sent_id:
             history.append({"user": prompt, "ai": stored})
             await ai_memory.set_history(user_id, history, last_sent_id, msg.chat_id)
