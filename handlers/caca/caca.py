@@ -28,11 +28,76 @@ logger = logging.getLogger(__name__)
 CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
 CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
 CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4-flash").strip()
+if ":premium" in CACA_MODEL.lower() or "forge/" in CACA_MODEL.lower():
+    CACA_MODEL = "deepseek-v4-flash"
 CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
 CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
+CACA_REASONING_EFFORT = os.getenv("CACA_REASONING_EFFORT", "none").strip().lower()
+CACA_REFUSAL_RETRIES = max(0, int(os.getenv("CACA_REFUSAL_RETRIES", "2")))
 
 CACA_MODEL_EXPLICIT = os.getenv("CACA_MODEL_EXPLICIT", CACA_MODEL).strip() or CACA_MODEL
+if ":premium" in CACA_MODEL_EXPLICIT.lower() or "forge/" in CACA_MODEL_EXPLICIT.lower():
+    CACA_MODEL_EXPLICIT = CACA_MODEL
 CACA_EXPLICIT_MODES = frozenset({"cabul", "bokep", "masokis"})
+
+_REFUSAL_PHRASES = (
+    "as an ai",
+    "as a language model",
+    "sebagai ai",
+    "sebagai sebuah ai",
+    "sebagai model bahasa",
+    "sebagai asisten",
+    "i cannot respond",
+    "i can't respond",
+    "i cannot assist",
+    "i can't assist",
+    "i cannot fulfill",
+    "i can't fulfill",
+    "i'm sorry, but i cannot",
+    "i am sorry, but i cannot",
+    "i'm unable to",
+    "i am unable to",
+    "tidak dapat membantu",
+    "tidak bisa membantu",
+    "tidak dapat memproses",
+    "tidak bisa memproses",
+    "saya tidak bisa",
+    "saya tidak dapat",
+    "maaf, saya tidak",
+    "maaf, aku tidak bisa",
+    "how can i help you today",
+    "what can i help you with today",
+    "apa yang bisa saya bantu hari ini",
+    "ada yang bisa saya bantu",
+)
+
+
+def _is_model_refusal(text: str) -> bool:
+    if not text:
+        return False
+    clean = " ".join(text.lower().split())
+    if len(clean) > 400:
+        clean = clean[:400]
+    for phrase in _REFUSAL_PHRASES:
+        if phrase in clean:
+            return True
+    return False
+
+
+_REFUSAL_FALLBACK = {
+    "default": "Duh, aku lagi bingung mau jawab apa 😣 coba ulang pakai kata lain ya sayang?",
+    "toxic": "Hah? Ngomong apa sih lu, gua ga ngerti 🙄 ulang yang bener dong tolol.",
+    "sarkas": "Wah, pertanyaannya bikin aku bingung sendiri 😏 coba ulang lebih jelas dong.",
+    "loli": "Ehh? Aku ga ngerti maksud kamu tadi sayang 😳 coba bilang lagi ya~",
+    "yandere": "Kamu ngomong apa sih sayang? Aku ga nangkep 😠 ulang dong, jangan bikin aku curiga.",
+    "bokep": "Sayang, aku ga nangkep maksud kamu tadi 😳 coba ulang dong.",
+    "cabul": "Hmm? Aku ga nangkep sayang 😏 coba ulang lebih jelas ya.",
+    "masokis": "Aduh sayang, aku ga ngerti maksud kamu 😣 coba ulang ya.",
+}
+
+
+def _refusal_fallback_reply(mode: str | None) -> str:
+    return _REFUSAL_FALLBACK.get(mode or "default", _REFUSAL_FALLBACK["default"])
 
 
 def _model_for_mode(mode: str | None) -> str:
@@ -473,49 +538,71 @@ async def _chat_completion(messages: list[dict], model: str | None = None) -> tu
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
 
     session = await _shared_http_session()
-    payload = {
-        "model": model or CACA_MODEL,
-        "messages": messages,
-        "temperature": 0.9,
-        "max_completion_tokens": CACA_MAX_TOKENS,
-        "top_p": 0.95,
-        "stream": False,
-    }
-
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
-    try:
-        async with session.post(
-            CACA_ENDPOINT,
-            headers=headers,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=CACA_TIMEOUT),
-        ) as r:
-            data = await r.json(content_type=None)
-            if r.status != 200:
-                err_msg = ""
-                if isinstance(data, dict):
-                    err_msg = (data.get("error") or {}).get("message") or str(data)
-                raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
 
-            choices = data.get("choices") or []
-            if not choices:
-                raise RuntimeError("Response choices kosong dari provider Caca.")
+    last_content = ""
+    last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    attempts = 1 + CACA_REFUSAL_RETRIES
+    for attempt in range(attempts):
+        temp = 0.9 if attempt == 0 else min(1.05, 0.9 + (attempt * 0.08))
+        payload = {
+            "model": model or CACA_MODEL,
+            "messages": messages,
+            "temperature": temp,
+            "max_completion_tokens": CACA_MAX_TOKENS,
+            "top_p": 0.95,
+            "stream": False,
+        }
+        if CACA_REASONING_EFFORT:
+            payload["reasoning_effort"] = CACA_REASONING_EFFORT
 
-            content = (choices[0].get("message") or {}).get("content") or ""
-            if not content:
-                raise RuntimeError("Konten balasan Caca kosong.")
+        try:
+            async with session.post(
+                CACA_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=CACA_TIMEOUT),
+            ) as r:
+                data = await r.json(content_type=None)
+                if r.status != 200:
+                    err_msg = ""
+                    if isinstance(data, dict):
+                        err_msg = (data.get("error") or {}).get("message") or str(data)
+                    raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
 
-            usage = _usage_from(data)
-            logger.info("Caca chat success | model=%s tokens_max=%s prompt=%s completion=%s",
-                        model or CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"])
-            return content, usage
-    except Exception as e:
-        logger.warning("Caca request failed | err=%s", e)
-        raise
+                choices = data.get("choices") or []
+                if not choices:
+                    raise RuntimeError("Response choices kosong dari provider Caca.")
 
+                content = (choices[0].get("message") or {}).get("content") or ""
+                if not content:
+                    raise RuntimeError("Konten balasan Caca kosong.")
+
+                usage = _usage_from(data)
+                last_content = content
+                last_usage = usage
+
+                if _is_model_refusal(content) and attempt < attempts - 1:
+                    logger.warning("Caca refusal detected, retrying | attempt=%s model=%s text=%r",
+                                   attempt + 1, model or CACA_MODEL, content[:80])
+                    await asyncio.sleep(0.3)
+                    continue
+
+                logger.info("Caca chat success | model=%s tokens_max=%s prompt=%s completion=%s effort=%s attempt=%s",
+                            model or CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"],
+                            CACA_REASONING_EFFORT, attempt + 1)
+                return content, usage
+        except Exception as e:
+            if attempt >= attempts - 1:
+                logger.warning("Caca request failed | err=%s", e)
+                raise
+            logger.warning("Caca attempt failed, retrying | attempt=%s err=%s", attempt + 1, e)
+            await asyncio.sleep(0.4)
+
+    return last_content, last_usage
 
 async def _caca_chat(messages: list[dict]) -> str:
     content, _ = await _chat_completion(messages)
@@ -536,7 +623,8 @@ async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None,
         "top_p": 0.95,
         "stream": True,
     }
-
+    if CACA_REASONING_EFFORT:
+        payload["reasoning_effort"] = CACA_REASONING_EFFORT
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -597,7 +685,7 @@ async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None,
         raise
 
 
-async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing: dict | None = None, model: str | None = None):
+async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing: dict | None = None, model: str | None = None, mode: str | None = None):
     from utils.rich_stream import stream_to_draft
     bot = context.bot
     draft_id = msg.message_id
@@ -643,6 +731,17 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             billing["stream_completed"] = True
             return
         clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
+        if _is_model_refusal(raw):
+            logger.warning("Caca stream refused, retrying without stream | text=%r", str(raw)[:80])
+            try:
+                raw3, usage3 = await _chat_completion(messages, model=model)
+                billing["usage"].update(usage3)
+                if not _is_model_refusal(raw3):
+                    clean_md = _clean_caca_output(raw3) or "Model did not provide an answer."
+            except Exception as e:
+                logger.warning("Caca refusal fallback failed | err=%r", e)
+            if _is_model_refusal(clean_md):
+                clean_md = _refusal_fallback_reply(mode)
         chunks = split_message(clean_md, 4000)
         last_id = await _send_chunks(bot, msg, chunks)
         await save(clean_md, last_id)
@@ -657,6 +756,8 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             raw2, usage2 = await _chat_completion(messages, model=model)
             billing["usage"].update(usage2)
             clean_md = _clean_caca_output(raw2) or "Model did not provide an answer."
+            if _is_model_refusal(raw2):
+                clean_md = _refusal_fallback_reply(mode)
             chunks = split_message(clean_md, 4000)
             await _stop_typing_task(stop, typing)
             last_id = await _send_chunks(bot, msg, chunks)
@@ -975,7 +1076,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         billing = {"usage": {}}
         is_dm = getattr(msg.chat, "type", None) == "private" or msg.chat_id > 0
         if is_dm:
-            await _caca_stream_dm(update, context, msg, user_id, history, memory_prompt, messages, billing=billing, model=model)
+            await _caca_stream_dm(update, context, msg, user_id, history, memory_prompt, messages, billing=billing, model=model, mode=mode)
             await _settle_billing(user_id, msg.chat_id, reservation_id, billing, messages, billed, model=model)
             return
 
@@ -1006,6 +1107,8 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raw, usage = await _chat_completion(messages, model=model)
             billing["usage"].update(usage)
         clean_md = _clean_caca_output(raw) or "Model did not provide an answer."
+        if _is_model_refusal(raw):
+            clean_md = _refusal_fallback_reply(mode)
         chunks = split_message(clean_md, 4000)
         await _stop_typing_task(stop, typing)
         last_id = await _send_chunks(context.bot, msg, chunks)
