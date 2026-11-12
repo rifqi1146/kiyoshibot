@@ -196,14 +196,53 @@ def _caption_block(caption: str, summary: str | None = None, collapsible: bool =
     }
 
 
-async def send_rich_slideshow(
+_VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
+
+_MAX_RICH_ATTACHMENTS = 50
+
+def _media_block(
+    kind: str,
+    path: str | None,
+    thumb: str | None,
+    meta: dict,
+    spoiler: bool,
+    index: int,
+    attach: list,
+) -> dict:
+    import os as _os
+
+    local = path if path and _os.path.isfile(path) else None
+    media: dict = {
+        "type": kind,
+        "media": f"attach://f{index}" if local else (path or ""),
+    }
+    if local:
+        attach.append((f"f{index}", local))
+    if kind == "video":
+        if thumb and _os.path.isfile(thumb):
+            attach.append((f"t{index}", thumb))
+            media["thumbnail"] = f"attach://t{index}"
+        for key in ("width", "height", "duration"):
+            try:
+                val = int((meta or {}).get(key) or 0)
+            except (TypeError, ValueError):
+                val = 0
+            if val > 0:
+                media[key] = val
+        media["supports_streaming"] = True
+    if spoiler:
+        media["has_spoiler"] = True
+    return {"type": kind, kind: media}
+
+async def send_rich_media_group(
     bot: Bot,
     chat_id: int,
-    photos: list[str],
+    items: list,
     caption: str | None = None,
     credit: str | None = None,
     heading: str | None = None,
     summary: str | None = None,
+    layout: str = "slideshow",
     message_thread_id: int | None = None,
     reply_to_message_id: int | None = None,
     reply_markup=None,
@@ -215,19 +254,36 @@ async def send_rich_slideshow(
 
     attach: list[tuple[str, str]] = []
     slides: list[dict] = []
-    for i, item in enumerate(photos):
-        if item and _os.path.isfile(item):
-            field = f"photo{i}"
-            attach.append((field, item))
-            slides.append({"type": "photo", "photo": {"type": "photo", "media": f"attach://{field}"}})
-        else:
-            slides.append({"type": "photo", "photo": {"type": "photo", "media": item}})
+    for index, raw in enumerate(items):
+        item = raw if isinstance(raw, dict) else {"path": raw}
+        path = item.get("path")
+        kind = str(item.get("type") or "").strip().lower()
+        if kind not in ("photo", "video"):
+            ext = _os.path.splitext(str(path or "").lower())[1]
+            kind = "video" if ext in _VIDEO_EXTS else "photo"
+        slides.append(
+            _media_block(
+                kind,
+                path,
+                item.get("thumb"),
+                item.get("meta") or {},
+                bool(item.get("has_spoiler")),
+                index,
+                attach,
+            )
+        )
+    if not slides:
+        raise RuntimeError("Rich media group is empty")
+    if len(attach) > _MAX_RICH_ATTACHMENTS:
+        raise RuntimeError(f"Rich media group exceeds {_MAX_RICH_ATTACHMENTS} attachments")
+
+    layout_key = "collage" if str(layout or "").strip().lower() == "collage" else "slideshow"
 
     def build_blocks(collapsible: bool) -> list[dict]:
         blocks: list[dict] = []
         if heading:
             blocks.append({"type": "heading", "text": heading, "size": 3})
-        blocks.append({"type": "slideshow", "blocks": slides})
+        blocks.append({"type": layout_key, "blocks": slides})
         if caption:
             blocks.append(_caption_block(caption, summary=summary, collapsible=collapsible))
         if credit:
@@ -253,21 +309,30 @@ async def send_rich_slideshow(
             return res
         import aiohttp
 
-        form = aiohttp.FormData()
-        for key, val in payload.items():
-            form.add_field(key, _json.dumps(val) if isinstance(val, (dict, list)) else str(val))
-        for field, path in attach:
-            with open(path, "rb") as fh:
-                data = fh.read()
-            form.add_field(
-                field, data,
-                filename=_os.path.basename(path),
-                content_type="application/octet-stream",
-            )
-        session = await get_http_session()
-        url = f"{bot.base_url}/sendRichMessage"
-        async with session.post(url, data=form) as resp:
-            data = await resp.json(content_type=None)
+        handles: list = []
+        try:
+            form = aiohttp.FormData()
+            for key, val in payload.items():
+                form.add_field(key, _json.dumps(val) if isinstance(val, (dict, list)) else str(val))
+            for field, path in attach:
+                fh = open(path, "rb")
+                handles.append(fh)
+                form.add_field(
+                    field, fh,
+                    filename=_os.path.basename(path),
+                    content_type="application/octet-stream",
+                )
+            session = await get_http_session()
+            url = f"{bot.base_url}/sendRichMessage"
+            upload_timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=1200)
+            async with session.post(url, data=form, timeout=upload_timeout) as resp:
+                data = await resp.json(content_type=None)
+        finally:
+            for fh in handles:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
         if not data.get("ok"):
             raise RuntimeError(data.get("description") or "sendRichMessage failed")
         return data.get("result")

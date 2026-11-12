@@ -49,7 +49,7 @@ _BOT_FIRST_NAME_CACHE=None
 
 _ALBUM_CHUNK_SIZE=10
 _ALBUM_CHUNK_COOLDOWN=5
-
+_RICH_ALBUM_VIDEO_MAX_BYTES=MAX_TG_SIZE
 _UPLOAD_ENGINE_DEFAULT=os.getenv("UPLOAD_ENGINE","pyrofork").strip()
 _UPLOAD_ENGINE_STATE_FILE=os.getenv("UPLOAD_ENGINE_STATE_FILE","data/upload_engine.json")
 _UPLOAD_ENGINE_CACHE=None
@@ -660,39 +660,58 @@ def _rich_slideshow_label(fmt_key: str, source: str) -> str:
     return "Media"
 
 
-async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key: str, message_thread_id=None, has_spoiler=False) -> bool:
+async def _try_send_rich_media_group(bot, chat_id, reply_to, result: dict, fmt_key: str, message_thread_id=None, has_spoiler=False) -> bool:
     items = result.get("items") or []
     if len(items) < 2:
         return False
-    if has_spoiler:
-        log.info(
-            "Rich slideshow skipped | chat_id=%s reason=spoiler count=%s",
-            chat_id, len(items),
-        )
-        return False
-    paths: list[str] = []
+    prepared: list[dict] = []
     for it in items:
         p = it.get("path")
         if not p or not os.path.exists(p):
             return False
-        if detect_media_type(p) != "photo":
+        kind = detect_media_type(p)
+        if kind not in ("photo", "video"):
             return False
-        paths.append(p)
+        if kind == "video" and os.path.getsize(p) > _RICH_ALBUM_VIDEO_MAX_BYTES:
+            log.info(
+                "Rich media group skipped | chat_id=%s reason=video_too_large size=%s limit=%s",
+                chat_id, os.path.getsize(p), _RICH_ALBUM_VIDEO_MAX_BYTES,
+            )
+            return False
+        if kind == "photo":
+            await _ensure_photo_size(p)
+        entry = {"path": p, "type": kind, "thumb": it.get("thumb"), "meta": dict(it.get("meta") or {})}
+        if has_spoiler or bool(it.get("has_spoiler")):
+            entry["has_spoiler"] = True
+        prepared.append(entry)
 
-    from utils.rich_stream import send_rich_slideshow
+    videos = [e for e in prepared if e["type"] == "video"]
+    missing = [e for e in videos if not (e["meta"].get("width") and e["meta"].get("height"))]
+    if missing:
+        metas = await asyncio.gather(
+            *(asyncio.to_thread(video_meta, e["path"]) for e in missing),
+            return_exceptions=True,
+        )
+        for entry, meta in zip(missing, metas):
+            if isinstance(meta, dict):
+                for key in ("duration", "width", "height"):
+                    if meta.get(key) and not entry["meta"].get(key):
+                        entry["meta"][key] = meta[key]
+
+    from utils.rich_stream import send_rich_media_group
     title = (result.get("title") or "").strip()
     source = str(result.get("source") or "").strip()
     bot_name = await _get_bot_name(bot)
     credit = f"🪄 Powered by {bot_name or 'Bot'}"
     caption = title or _rich_slideshow_label(fmt_key, source)
 
-    chunks = [paths[i:i + _ALBUM_CHUNK_SIZE] for i in range(0, len(paths), _ALBUM_CHUNK_SIZE)]
+    chunks = [prepared[i:i + _ALBUM_CHUNK_SIZE] for i in range(0, len(prepared), _ALBUM_CHUNK_SIZE)]
     for idx, chunk in enumerate(chunks):
         try:
-            await send_rich_slideshow(
+            await send_rich_media_group(
                 bot=bot,
                 chat_id=chat_id,
-                photos=chunk,
+                items=chunk,
                 caption=caption,
                 credit=credit,
                 message_thread_id=message_thread_id,
@@ -700,7 +719,7 @@ async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key
             )
         except Exception as e:
             log.warning(
-                "Rich slideshow failed | chat_id=%s chunk=%s/%s err=%r",
+                "Rich media group failed | chat_id=%s chunk=%s/%s err=%r",
                 chat_id, idx + 1, len(chunks), e,
             )
             if idx == 0:
@@ -711,13 +730,17 @@ async def _try_send_rich_slideshow(bot, chat_id, reply_to, result: dict, fmt_key
                 reply_to=reply_to,
                 result={"items": items[idx * _ALBUM_CHUNK_SIZE:], "title": title},
                 message_thread_id=message_thread_id,
+                has_spoiler=has_spoiler,
             )
             return True
         if idx < len(chunks) - 1 and _ALBUM_CHUNK_COOLDOWN > 0:
             await asyncio.sleep(_ALBUM_CHUNK_COOLDOWN)
     log.info(
-        "Rich slideshow sent successfully | chat_id=%s count=%s chunks=%s source=%s",
-        chat_id, len(paths), len(chunks), source or fmt_key,
+        "Rich media group sent successfully | chat_id=%s count=%s photos=%s videos=%s chunks=%s source=%s",
+        chat_id, len(prepared),
+        sum(1 for e in prepared if e["type"] == "photo"),
+        sum(1 for e in prepared if e["type"] == "video"),
+        len(chunks), source or fmt_key,
     )
     return True
 
@@ -728,9 +751,15 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
         album_items=[it for it in all_items if it.get("type")!="animation"]
         anim_items=[it for it in all_items if it.get("type")=="animation"]
 
-        video_items=[it for it in album_items if (it.get("type") or "").lower()=="video"]
-        if video_items:
-            album_items=[it for it in album_items if (it.get("type") or "").lower()!="video"]
+        split_videos=[]
+        kept=[]
+        for it in album_items:
+            p=it.get("path")
+            if (it.get("type") or "").lower()=="video" and p and os.path.exists(p) and os.path.getsize(p)>_RICH_ALBUM_VIDEO_MAX_BYTES:
+                split_videos.append(it)
+                continue
+            kept.append(it)
+        album_items=kept
 
         if len(album_items) == 1:
             it = album_items[0]
@@ -744,18 +773,13 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
                 bot=bot, chat_id=chat_id, reply_to=reply_to,
                 status_msg_id=status_msg_id, path=single_payload,
                 fmt_key=fmt_key, message_thread_id=message_thread_id,
-                has_spoiler=has_spoiler,
+                has_spoiler=has_spoiler or bool(it.get("has_spoiler")),
             )
         elif len(album_items) > 1:
             path={**path, "items": album_items}
-            first=album_items[0]
-            first_path=first.get("path")
-            first_type=str(first.get("type") or "").strip().lower()
-            if first_path and os.path.exists(first_path):
-                first_type=detect_media_type(first_path)
             await _set_uploading_status(bot,chat_id,status_msg_id,"album")
             try:
-                sent = await _try_send_rich_slideshow(
+                sent = await _try_send_rich_media_group(
                     bot=bot, chat_id=chat_id, reply_to=reply_to,
                     result=path, fmt_key=fmt_key, message_thread_id=message_thread_id,
                     has_spoiler=has_spoiler,
@@ -765,7 +789,7 @@ async def send_downloaded_media(bot,chat_id,reply_to,status_msg_id,path,fmt_key,
             finally:
                 await _cleanup_album_files(album_items)
 
-        for it in video_items:
+        for it in split_videos:
             video_path=it.get("path")
             if not video_path or not os.path.exists(video_path):
                 continue
@@ -1034,7 +1058,12 @@ async def send_batch_downloaded_media(bot,chat_id,reply_to,status_msg_id,results
     if album_items:
         payload={"items":album_items,"title":"Batch Download"}
         try:
-            await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=payload,message_thread_id=message_thread_id,has_spoiler=has_spoiler)
+            sent=await _try_send_rich_media_group(
+                bot=bot,chat_id=chat_id,reply_to=reply_to,result=payload,
+                fmt_key="mp4",message_thread_id=message_thread_id,has_spoiler=has_spoiler,
+            )
+            if not sent:
+                await _send_media_group_result(bot=bot,chat_id=chat_id,reply_to=reply_to,result=payload,message_thread_id=message_thread_id,has_spoiler=has_spoiler)
         except Exception as e:
             log.warning("Batch album send failed, sending individually | chat_id=%s err=%r",chat_id,e)
             for it in album_items:
