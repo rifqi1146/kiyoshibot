@@ -164,9 +164,9 @@ def probe_nekopoi(raw_url: str) -> dict:
         return api_url, sz
 
     primary_err = None
-    primary_host = None
     last_err = None
-    
+    hls_variants: list = []
+
     for emb in embeds:
         emb_host = (urlsplit(emb).hostname or "").lower()
         is_primary = any(emb_host == d or emb_host.endswith("." + d) for d in EMBED_HOST_STREAMPOI)
@@ -178,31 +178,17 @@ def probe_nekopoi(raw_url: str) -> dict:
             variants = _dedup_by_height(ext.list_resolutions(master))
             if not variants:
                 raise RuntimeError("No resolution variants in Nekopoi playlist")
-            res_list = [
-                {
-                    "height": int(v["height"]),
-                    "format_id": v["format_id"],
-                    "has_audio": True,
-                    "filesize": 0,
-                    "total_size": 0,
-                }
-                for v in variants
-            ]
-            probe = {
-                "title": title,
-                "thumbnail": post.get("thumbnail") or "",
-                "master": master,
-                "variants": variants,
-                "res_list": res_list,
-            }
-            cache_probe(raw_url, probe)
-            log.info("Nekopoi HLS ready | master=%s", master)
-            return probe
+            for v in variants:
+                v["type"] = "hls"
+                v["master"] = master
+            hls_variants = variants
+            log.info("Nekopoi HLS ready | master=%s heights=%s", master, [v["height"] for v in variants])
+            break
         except RuntimeError as e:
             log.info("Nekopoi HLS failed | embed=%s err=%s", emb_host, e)
             last_err = e
-            if is_primary and primary_err is None:
-                primary_err, primary_host = e, emb_host
+            if primary_err is None:
+                primary_err = e
             continue
 
     dood_variants: list = []
@@ -214,27 +200,49 @@ def probe_nekopoi(raw_url: str) -> dict:
         try:
             info = ext.probe_doodstream(emb, referer=raw_url)
         except Exception as e:
-            log.debug("DoodStream embed gagal | embed=%s err=%r", emb, e)
+            log.debug("DoodStream embed failed | embed=%s err=%r", emb, e)
             continue
         if info:
             dood_variants.append(info)
 
     pd_variants = scrape_pixeldrain_variants(post.get("raw_html") or "")
 
-    merged: list = []
-    seen_heights: set = set()
-    for v in pd_variants:
-        h = int(v.get("height") or 0)
-        if h and h not in seen_heights:
-            seen_heights.add(h)
-            merged.append(v)
-    for v in dood_variants:
-        h = int(v.get("height") or 0)
-        if h and h not in seen_heights:
-            seen_heights.add(h)
-            merged.append(v)
+    by_height: dict = {}
 
-    if merged:
+    def _offer(v: dict, rank: int) -> None:
+        h = int(v.get("height") or 0)
+        if not h:
+            return
+        cur = by_height.get(h)
+        if cur is None:
+            v["_rank"] = rank
+            by_height[h] = v
+            return
+        if rank < cur["_rank"]:
+            alt_url = cur.get("url")
+            alt_type = cur.get("type")
+            v["_rank"] = rank
+            by_height[h] = v
+            cur = v
+        else:
+            alt_url = v.get("url")
+            alt_type = v.get("type")
+        if alt_url and not cur.get("alt_url"):
+            cur["alt_url"] = alt_url
+            cur["alt_type"] = alt_type
+
+    for v in dood_variants:
+        _offer(v, 0)
+    for v in hls_variants:
+        _offer(v, 1)
+    for v in pd_variants:
+        _offer(v, 2)
+
+    if by_height:
+        merged = []
+        for v in by_height.values():
+            v.pop("_rank", None)
+            merged.append(v)
         variants = _dedup_by_height(merged)
         res_list = [
             {
@@ -246,17 +254,23 @@ def probe_nekopoi(raw_url: str) -> dict:
             }
             for v in variants
         ]
-        has_dood = any(v.get("type") == "doodstream_direct" for v in variants)
-        has_pd = any(v.get("type") == "pixeldrain_ouo" for v in variants)
-        if has_dood and has_pd:
-            master_tag = "pixeldrain+doodstream_fallback"
-            log.info("Nekopoi HLS tidak tersedia, fallback ke Pixeldrain + DoodStream")
-        elif has_pd:
-            master_tag = "pixeldrain_fallback"
-            log.info("Nekopoi HLS tidak tersedia, fallback ke download link Pixeldrain")
-        else:
+        kinds = {v.get("type") for v in variants}
+        if "doodstream_direct" in kinds and ("pixeldrain_ouo" in kinds or "mp4upload_ouo" in kinds):
+            master_tag = "doodstream+pixeldrain_fallback"
+        elif "doodstream_direct" in kinds:
             master_tag = "doodstream_fallback"
-            log.info("Nekopoi HLS tidak tersedia, fallback ke embed DoodStream")
+        elif "hls" in kinds and "pixeldrain_ouo" in kinds:
+            master_tag = "hls+pixeldrain_fallback"
+        elif "hls" in kinds:
+            master_tag = "hls"
+        elif "pixeldrain_ouo" in kinds:
+            master_tag = "pixeldrain_fallback"
+        else:
+            master_tag = "mp4upload_fallback"
+        log.info(
+            "Nekopoi sources merged | master=%s heights=%s",
+            master_tag, [(v["height"], v.get("type")) for v in variants],
+        )
         probe = {
             "title": title,
             "thumbnail": post.get("thumbnail") or "",
@@ -275,7 +289,6 @@ def probe_nekopoi(raw_url: str) -> dict:
             "no HLS (streampoi), DoodStream (playmogo), Pixeldrain, or Mp4Upload. "
             f"Available hosts in post ({names}) are not supported by the scraper."
         )
-
     raise primary_err or last_err or RuntimeError("Failed to fetch Nekopoi stream from all embeds & download links")
 
 
@@ -325,169 +338,83 @@ async def nekopoi_download(
             title, label, fmt_key, format_id, [v.get("height") for v in variants], chosen.get("type"),
         )
 
-        if chosen.get("type") == "doodstream_direct":
-            direct_url = chosen["url"]
-            headers = {
-                "User-Agent": ext.UA,
-                "Referer": chosen.get("referer") or "",
-            }
-
-            if fmt_key == "mp3":
-                tmp_mp4 = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_tmp.mp4")
-                final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
-                try:
-                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, headers, total_size=int(chosen.get("size") or 0))
-                    await asyncio.to_thread(ext._run_ffmpeg, [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        "-i", tmp_mp4, "-vn", "-acodec", "libmp3lame", "-q:a", "2", final_path,
-                    ])
-                finally:
-                    if os.path.exists(tmp_mp4):
-                        try:
-                            os.remove(tmp_mp4)
-                        except OSError:
-                            pass
-                size = os.path.getsize(final_path)
-                if size > MAX_TG_SIZE:
-                    raise FileSizeLimitExceeded("Audio exceeds 2GB limit. Download canceled.")
-                result = {"path": final_path, "title": title}
-                cover = await asyncio.to_thread(
-                    ext.download_thumb,
-                    probe.get("thumbnail"),
-                    os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_thumb.jpg"),
-                )
-                if cover:
-                    result["thumb"] = cover
-                    result["artist"] = title
-                return result
-
-            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp4")
-            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, headers, total_size=int(chosen.get("size") or 0))
-            size = os.path.getsize(final_path)
-            if size > MAX_TG_SIZE:
-                raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
-            log.info("Nekopoi DoodStream sukses | title=%r label=%s size=%.2fMB", title, label, size / 1024 / 1024)
-            return {"path": final_path, "title": title, "remux_done": True}
-
-        if chosen.get("type") in ("pixeldrain_ouo", "mp4upload_ouo"):
-            srcs: list[tuple[str, str]] = []
-            if chosen.get("type") == "pixeldrain_ouo" and chosen.get("url"):
-                srcs.append(("pixeldrain", chosen["url"]))
-            if chosen.get("alt_url"):
-                srcs.append(("mp4upload", chosen["alt_url"]))
-            if chosen.get("type") == "mp4upload_ouo" and chosen.get("url"):
-                srcs.append(("mp4upload", chosen["url"]))
-
-            if not srcs:
-                raise RuntimeError("Tidak ada sumber unduh yang tersedia untuk resolusi ini")
-
-            direct_url = ""
-            src_headers: dict = {"User-Agent": ext.UA}
-            src_kind = ""
-            src_size = 0
-            last_src_err: Exception | None = None
-            for kind, ouo_url in srcs:
-                label_kind = "Pixeldrain" if kind == "pixeldrain" else "Mp4Upload"
-                log.info("Nekopoi try %s | url=%s", label_kind, ouo_url)
-                try:
-                    bypassed = await asyncio.to_thread(ext.resolve_shortener, ouo_url)
-                    if kind == "pixeldrain":
-                        if bypassed and "pixeldrain.com/u/" in bypassed:
-                            pid = bypassed.split("/u/")[-1].split("?")[0].split("/")[0]
-                            direct_url = f"https://pixeldrain.com/api/file/{pid}"
-                            src_headers = {"User-Agent": ext.UA}
-                            src_kind = "Pixeldrain"
-                            src_size = await asyncio.to_thread(ext._probe_direct_size, direct_url, {"User-Agent": ext.UA})
-                            log.info("Nekopoi Pixeldrain ready | pid=%s url=%s size=%s", pid, direct_url, src_size)
-                            break
-                        log.info("Nekopoi Pixeldrain failed (%s), fallback ke Mp4Upload", bypassed)
-                    else:
-                        if bypassed and "mp4upload.com" in bypassed:
-                            cdn, _sz = await asyncio.to_thread(ext.mp4upload_to_direct_cdn, bypassed)
-                            if cdn:
-                                direct_url = cdn
-                                src_headers = {"User-Agent": ext.UA, "Referer": "https://www.mp4upload.com/"}
-                                src_kind = "Mp4Upload"
-                                src_size = int(_sz or 0)
-                                log.info("Nekopoi Mp4Upload ready | cdn=%s size=%s", cdn, _sz)
-                                break
-                        log.info("Nekopoi Mp4Upload failed | url=%s", ouo_url)
-                except Exception as e:
-                    last_src_err = e
-                    log.info("Nekopoi try %s failed | err=%r", label_kind, e)
-
-            if not direct_url:
-                if last_src_err and chosen.get("type") == "mp4upload_ouo":
-                    raise RuntimeError("Failed to bypass Nekopoi Mp4Upload link") from last_src_err
-                raise RuntimeError("Failed to bypass Nekopoi Pixeldrain link")
-
-            if src_kind == "Mp4Upload":
-                log.info("Nekopoi Mp4Upload sukses | title=%r label=%s", title, label)
-
-            if fmt_key == "mp3":
-                tmp_mp4 = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_tmp.mp4")
-                final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
-                try:
-                    await ext.download_direct_mp4(direct_url, tmp_mp4, bot, chat_id, status_msg_id, title, label, src_headers, total_size=src_size)
-                    await asyncio.to_thread(ext._run_ffmpeg, [
-                        "ffmpeg", "-y", "-loglevel", "error",
-                        "-i", tmp_mp4, "-vn", "-acodec", "libmp3lame", "-q:a", "2", final_path,
-                    ])
-                finally:
-                    if os.path.exists(tmp_mp4):
-                        try:
-                            os.remove(tmp_mp4)
-                        except OSError:
-                            pass
-                size = os.path.getsize(final_path)
-                if size > MAX_TG_SIZE:
-                    raise FileSizeLimitExceeded("Audio exceeds 2GB limit. Download canceled.")
-                result = {"path": final_path, "title": title}
-                cover = await asyncio.to_thread(
-                    ext.download_thumb,
-                    probe.get("thumbnail"),
-                    os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_thumb.jpg"),
-                )
-                if cover:
-                    result["thumb"] = cover
-                    result["artist"] = title
-                return result
-
-            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp4")
-            await ext.download_direct_mp4(direct_url, final_path, bot, chat_id, status_msg_id, title, label, src_headers, total_size=src_size)
-            size = os.path.getsize(final_path)
-            if size > MAX_TG_SIZE:
-                raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
-            log.info("Nekopoi %s sukses | title=%r label=%s size=%.2fMB", src_kind, title, label, size / 1024 / 1024)
-            return {"path": final_path, "title": title, "remux_done": True}
-
-        if fmt_key == "mp3":
-            final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp3")
-            await ext.download_audio(
-                chosen["url"], final_path, title, label,
-                bot=bot, chat_id=chat_id, status_msg_id=status_msg_id,
-            )
-            size = os.path.getsize(final_path)
-            if size > MAX_TG_SIZE:
-                raise FileSizeLimitExceeded("Audio exceeds 2GB limit. Download canceled.")
-            result = {"path": final_path, "title": title}
-            cover = await asyncio.to_thread(
-                ext.download_thumb,
-                probe.get("thumbnail"),
-                os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_neko_thumb.jpg"),
-            )
-            if cover:
-                result["thumb"] = cover
-                result["artist"] = title
-            return result
+        candidates: list[dict] = []
+        for v in [chosen, *[x for x in variants if x is not chosen and int(x.get("height") or 0) == int(chosen.get("height") or 0)]]:
+            if v and v not in candidates:
+                candidates.append(v)
+        alt = chosen.get("alt_url")
+        if alt:
+            candidates.append({
+                "type": chosen.get("alt_type") or "pixeldrain_ouo",
+                "url": alt,
+                "height": chosen.get("height"),
+                "size": 0,
+            })
 
         final_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}_nekopoi.mp4")
-        await ext.download_variant(chosen["url"], final_path, bot, chat_id, status_msg_id, title, label)
-        size = os.path.getsize(final_path)
-        if size > MAX_TG_SIZE:
-            raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
-        log.info("Nekopoi sukses | title=%r label=%s size=%.2fMB", title, label, size / 1024 / 1024)
-        return {"path": final_path, "title": title, "remux_done": True}
+        last_err: Exception | None = None
+        for cand in candidates:
+            ctype = cand.get("type") or ""
+            log.info("Nekopoi attempt src=%s url=%s", ctype, cand.get("url"))
+            try:
+                if ctype == "doodstream_direct":
+                    headers = {
+                        "User-Agent": ext.UA,
+                        "Referer": cand.get("referer") or "",
+                    }
+                    await ext.download_direct_mp4(
+                        cand["url"], final_path, bot, chat_id, status_msg_id,
+                        title, label, headers, total_size=int(cand.get("size") or 0),
+                    )
+                elif ctype in ("pixeldrain_ouo", "mp4upload_ouo"):
+                    direct_url = ""
+                    src_headers: dict = {"User-Agent": ext.UA}
+                    src_size = 0
+                    bypassed = await asyncio.to_thread(ext.resolve_shortener, cand["url"])
+                    if bypassed and "pixeldrain.com/u/" in bypassed:
+                        pid = bypassed.split("/u/")[-1].split("?")[0].split("/")[0]
+                        direct_url = f"https://pixeldrain.com/api/file/{pid}"
+                        src_headers = {"User-Agent": ext.UA}
+                        src_size = await asyncio.to_thread(ext._probe_direct_size, direct_url, {"User-Agent": ext.UA})
+                        log.info("Nekopoi Pixeldrain ready | pid=%s size=%s", pid, src_size)
+                    elif bypassed and "mp4upload.com" in bypassed:
+                        cdn, _sz = await asyncio.to_thread(ext.mp4upload_to_direct_cdn, bypassed)
+                        if cdn:
+                            direct_url = cdn
+                            src_headers = {"User-Agent": ext.UA, "Referer": "https://www.mp4upload.com/"}
+                            src_size = int(_sz or 0)
+                            log.info("Nekopoi Mp4Upload ready | cdn=%s size=%s", cdn, _sz)
+                    if not direct_url:
+                        raise RuntimeError(f"Shortener did not resolve to a file host ({bypassed})")
+                    await ext.download_direct_mp4(
+                        direct_url, final_path, bot, chat_id, status_msg_id,
+                        title, label, src_headers, total_size=src_size,
+                    )
+                else:
+                    await ext.download_variant(
+                        cand["url"], final_path, bot, chat_id, status_msg_id, title, label,
+                    )
+                size = os.path.getsize(final_path)
+                if size > MAX_TG_SIZE:
+                    raise FileSizeLimitExceeded("Video exceeds 2GB limit. Download canceled.")
+                log.info(
+                    "Nekopoi download success | title=%r label=%s src=%s size=%.2fMB",
+                    title, label, ctype, size / 1024 / 1024,
+                )
+                return {"path": final_path, "title": title, "remux_done": True}
+            except FileSizeLimitExceeded:
+                raise
+            except Exception as e:
+                last_err = e
+                log.warning("Nekopoi attempt failed | src=%s err=%r", ctype, e)
+                if os.path.exists(final_path):
+                    try:
+                        os.remove(final_path)
+                    except OSError:
+                        pass
+                continue
+
+        raise last_err or RuntimeError("Failed to download Nekopoi video from every source")
     except FileSizeLimitExceeded:
         if final_path and os.path.exists(final_path):
             try:

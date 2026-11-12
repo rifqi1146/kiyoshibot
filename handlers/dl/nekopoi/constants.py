@@ -13,7 +13,14 @@ DEBUG_NEKOPOI = os.getenv("NEKOPOI_DEBUG", "0").strip().lower() in ("1", "true",
 NEKOPOI_HOSTS = ("nekopoi.care", "nekopoi.best", "nekopoi.care")
 
 EMBED_HOST_STREAMPOI = ("streampoi.com", "streamruby.com", "streamruby.net")
-EMBED_HOST_DOOD = ("playmogo.com", "doodstream.com", "dood.", "ds2play.com")
+EMBED_HOST_DOOD = ("playmogo.com", "doodstream.com", "dood.", "ds2play.com", "vidnest.live")
+
+EMBED_HOST_TYPO = {"plamogo.com": "playmogo.com"}
+
+DOOD_IMPERSONATE = ("safari17_0", "firefox133", "chrome")
+
+OUO_BUDGET_MS = int(os.getenv("NEKOPOI_OUO_BUDGET_MS", "20000"))
+DOOD_BROWSER_BUDGET_MS = int(os.getenv("NEKOPOI_DOOD_BROWSER_BUDGET_MS", "25000"))
 
 SEG_CONCURRENCY = int(os.getenv("NEKOPOI_SEG_CONCURRENCY", "12"))
 SEG_RETRIES = int(os.getenv("NEKOPOI_SEG_RETRIES", "3"))

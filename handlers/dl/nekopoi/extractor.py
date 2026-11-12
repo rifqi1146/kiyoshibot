@@ -31,6 +31,10 @@ from .constants import (
     DEBUG_NEKOPOI,
     FORCE_IPV4,
     EMBED_HOST_STREAMPOI,
+    EMBED_HOST_TYPO,
+    DOOD_IMPERSONATE,
+    OUO_BUDGET_MS,
+    DOOD_BROWSER_BUDGET_MS,
     SEG_CONCURRENCY,
     SEG_RETRIES,
     SEG_TIMEOUT,
@@ -107,11 +111,19 @@ def _meta(html_text: str, prop: str) -> str:
     return ""
 
 
+def _normalize_embed(url: str) -> str:
+    host = (urlsplit(url).hostname or "").lower()
+    for bad, good in EMBED_HOST_TYPO.items():
+        if host == bad or host.endswith("." + bad):
+            return url.replace(bad, good, 1)
+    return url
+
+
 def _collect_embeds(html_text: str) -> list:
     seen: set = set()
     order: list = []
     for m in re.finditer(r"<iframe[^>]+(?:src|data-src)=[\"'](https?://[^\"']+)[\"']", html_text, re.I):
-        u = m.group(1).strip()
+        u = _normalize_embed(m.group(1).strip())
         if u in seen:
             continue
         seen.add(u)
@@ -133,7 +145,7 @@ def _collect_embeds(html_text: str) -> list:
 def scrape_post(url: str) -> dict:
     r = _http().get(url, headers={"User-Agent": UA}, timeout=_HTTP_TIMEOUT)
     if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code} saat mengambil halaman Nekopoi")
+        raise RuntimeError(f"HTTP {r.status_code} while fetching the Nekopoi page")
     html_text = r.text
     title = _meta(html_text, "og:title")
     if not title:
@@ -194,7 +206,7 @@ def _probe_range_size(url: str, headers: dict) -> int:
             return int(m.group(1))
         return int(cl or 0)
     except Exception as e:
-        log.debug("probe range size gagal | %s : %r", url[:80], e)
+        log.debug("range size probe failed | %s : %r", url[:80], e)
         return 0
 
 
@@ -222,17 +234,17 @@ async def download_direct_mp4(url: str, out_path: str, bot, chat_id, status_msg_
         )
         if ok:
             return os.path.getsize(out_path)
-        log.info("Nekopoi aria2c tidak tersedia/gagal, fallback streaming | url=%s", url[:80])
+        log.info("Nekopoi aria2c unavailable/failed, falling back to streaming | url=%s", url[:80])
     except FileSizeLimitExceeded:
         raise
     except Exception as e:
-        log.warning("Nekopoi aria2c exception, fallback streaming | err=%r", e)
+        log.warning("Nekopoi aria2c exception, falling back to streaming | err=%r", e)
 
     def _do():
         r = _http().get(url, headers=headers, stream=True, timeout=_HTTP_TIMEOUT)
         if r.status_code not in (200, 206):
             r.close()
-            raise RuntimeError(f"HTTP {r.status_code} saat mengunduh direct MP4")
+            raise RuntimeError(f"HTTP {r.status_code} while downloading direct MP4")
         return r
 
     resp = await asyncio.to_thread(_do)
@@ -355,11 +367,9 @@ def _bypass_ouo_form(url: str) -> str | None:
         return None
 
 
-def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
+def _bypass_ouo_stealth(url: str, timeout_ms: int = OUO_BUDGET_MS) -> str | None:
     start_host = (urlsplit(url).hostname or "").lower()
     result = {"url": None}
-    deadline = time.time() + timeout_ms / 1000.0
-
     def _reached_target(u: str) -> bool:
         h = (urlsplit(u or "").hostname or "").lower()
         if not h or h == start_host:
@@ -374,90 +384,67 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
             return False
         return _is_final_target(u)
 
+    def _ready(page) -> bool:
+        try:
+            tok = page.evaluate(
+                "() => (document.querySelector('[name=cf-turnstile-response]')||{}).value || ''"
+            )
+        except Exception:
+            tok = ""
+        try:
+            ifr = page.locator('iframe[src*="challenges.cloudflare.com"]').count()
+        except Exception:
+            ifr = 1
+        btn = page.locator("#btn-main")
+        if not btn.count():
+            return False
+        if tok or ifr == 0:
+            cls = btn.first.get_attribute("class") or ""
+            return not btn.first.is_disabled() and "disabled" not in cls
+        return False
+
     def _auto(page):
         page.on("popup", lambda p: p.close())
-
-        def _solve_cf():
-            ifr = page.locator('iframe[src*="challenges.cloudflare.com"]')
-            if ifr.count():
-                try:
-                    fr = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
-                    cb = fr.locator('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage')
-                    if cb.count():
-                        cb.first.click(timeout=2000)
-                except Exception:
-                    pass
-
+        deadline = time.time() + timeout_ms / 1000.0
         try:
-            _solve_cf()
-            btn1 = page.locator("#btn-main")
-            for _ in range(35):
+            for _ in range(60):
                 if time.time() > deadline:
                     break
-                if btn1.count() and not btn1.first.is_disabled() and "disabled" not in (btn1.first.get_attribute("class") or ""):
+                if _ready(page):
+                    page.locator("#btn-main").first.click(force=True)
                     break
-                _solve_cf()
                 page.wait_for_timeout(300)
 
-            if btn1.count():
-                try:
-                    btn1.first.click(force=True)
-                except Exception:
-                    pass
-
-            for _ in range(35):
+            for _ in range(60):
                 if time.time() > deadline or "/go/" in page.url:
                     break
                 page.wait_for_timeout(300)
 
-            _solve_cf()
-            btn2 = page.locator("#btn-main")
-            for _ in range(45):
+            for _ in range(60):
                 if time.time() > deadline:
                     break
-                txt = (btn2.first.inner_text() if btn2.count() else "").strip()
-                c = (btn2.first.get_attribute("class") if btn2.count() else "") or ""
-                if "disabled" not in c and "get link" in txt.lower():
-                    break
-                _solve_cf()
+                btn = page.locator("#btn-main")
+                if btn.count():
+                    txt = (btn.first.inner_text() or "").strip().lower()
+                    cls = btn.first.get_attribute("class") or ""
+                    if "disabled" not in cls and "get link" in txt:
+                        btn.first.click(force=True)
+                        break
                 page.wait_for_timeout(300)
 
-            if btn2.count():
-                try:
-                    btn2.first.click(force=True)
-                except Exception:
-                    pass
-
-            for _ in range(45):
-                if time.time() > deadline:
-                    break
+            for _ in range(80):
                 u = page.url
                 if _reached_target(u):
                     result["url"] = u
                     return
                 if _is_ad_hijack(u):
-                    log.debug("ouo tab dibajak iklan, batal | %s -> %s", url, u)
+                    log.debug("ouo tab hijacked by an ad, aborting | %s -> %s", url, u)
                     return
-                page.wait_for_timeout(300)
-
-            if not _reached_target(page.url) and not _is_ad_hijack(page.url):
-                for cand in ("#continue", ".btn-main", ".btn-continue", "a.btn", "button"):
-                    loc = page.locator(cand)
-                    if loc.count() and loc.first.is_visible() and loc.first.is_enabled():
-                        try:
-                            loc.first.click(force=True)
-                            page.wait_for_timeout(2000)
-                            if _reached_target(page.url):
-                                result["url"] = page.url
-                                return
-                        except Exception:
-                            pass
-
-            u = page.url
-            if _reached_target(u):
-                result["url"] = u
+                if time.time() > deadline:
+                    break
+                page.wait_for_timeout(250)
         except Exception as e:
-            log.debug("Aksi stealth shortener gagal %s : %r", url, e)
+            log.debug("stealth shortener action failed %s : %r", url, e)
 
     try:
         _sb.fetch_html(
@@ -467,31 +454,31 @@ def _bypass_ouo_stealth(url: str, timeout_ms: int = 60000) -> str | None:
             solve_cloudflare=True,
         )
     except Exception as e:
-        log.debug("Stealth fetcher gagal untuk %s : %r", url, e)
+        log.debug("stealth fetcher failed for %s : %r", url, e)
         return None
     return result["url"]
 
 
-def bypass_ouo(url: str, retries: int = 1) -> str | None:
+def bypass_ouo(url: str, retries: int = 0) -> str | None:
     host = (urlsplit(url).hostname or "").lower()
     if not (host.endswith("ouo.io") or host.endswith("ouo.press")):
-        log.debug("bypass_ouo dipanggil untuk host non-ouo (%s) -> tolak", url)
+        log.debug("bypass_ouo called for a non-ouo host (%s) -> rejected", url)
         return None
 
     target = _bypass_ouo_form(url)
     if not target:
-        log.debug("Jalur form ouo gagal, fallback ke Scrapling | %s", url)
+        log.debug("ouo form path failed, falling back to Scrapling | %s", url)
         target = _bypass_ouo_stealth(url)
         if not target and retries > 0:
-            log.info("Bypass ouo attempt 1 miss, retry sekali lagi | %s", url)
+            log.info("ouo bypass attempt 1 missed, retrying once | %s", url)
             target = _bypass_ouo_stealth(url)
 
     if target and not _is_known_file_host(target):
-        log.info("Bypass ouo mendarat di host bukan file (%s), tolak", target)
+        log.info("ouo bypass landed on a non-file host (%s), rejected", target)
         target = None
 
     if target:
-        log.info("Bypass ouo.io sukses | %s -> %s", url, target)
+        log.info("ouo.io bypass succeeded | %s -> %s", url, target)
     else:
         log.debug("ouo.io bypass failed | %s", url)
     return target
@@ -532,7 +519,7 @@ def _follow_http_redirects(url: str, hops: int = 5) -> str | None:
         try:
             r = _http().get(cur, headers=headers, timeout=_HTTP_TIMEOUT, allow_redirects=False)
         except Exception as e:
-            log.debug("redirect follow gagal | %s : %r", cur, e)
+            log.debug("redirect follow failed | %s : %r", cur, e)
             return None
         loc = r.headers.get("Location") or r.headers.get("location")
         if loc:
@@ -563,7 +550,7 @@ def _shortener_quick_status(url: str) -> int:
         r = _http().get(url, headers={"User-Agent": UA}, timeout=PROBE_TIMEOUT, allow_redirects=False)
         return int(r.status_code)
     except Exception as e:
-        log.debug("shortener pre-check gagal | %s : %r", url, e)
+        log.debug("shortener pre-check failed | %s : %r", url, e)
         return 0
 
 
@@ -590,18 +577,18 @@ def resolve_shortener(url: str) -> str | None:
         return bypass_ouo(url)
 
     if shortener_dead(url):
-        log.info("Shortener mati (5xx), dilewati | %s", url)
+        log.info("Shortener dead (5xx), skipped | %s", url)
         return None
 
     got = _follow_http_redirects(url)
     if got and _is_known_file_host(got):
-        log.info("Shortener terresolusi via redirect | %s -> %s", url, got)
+        log.info("Shortener resolved via redirect | %s -> %s", url, got)
         return got
 
-    log.debug("Redirect HTTP shortener mentok, fallback ke browser | %s", url)
+    log.debug("Shortener HTTP redirect stalled, falling back to browser | %s", url)
     target = _bypass_ouo_stealth(url)
     if target and _is_known_file_host(target):
-        log.info("Shortener terresolusi via browser | %s -> %s", url, target)
+        log.info("Shortener resolved via browser | %s -> %s", url, target)
         return target
     log.debug("shortener resolution failed | %s", url)
     return None
@@ -621,22 +608,22 @@ def mp4upload_to_direct_cdn(mp4upload_page_url: str) -> tuple[str | None, int]:
     try:
         r = _http().get(mp4upload_page_url, headers=H, timeout=20)
         if r.status_code != 200:
-            log.debug("mp4upload halaman gagal | status=%s", r.status_code)
+            log.debug("mp4upload page failed | status=%s", r.status_code)
             return None, 0
         soup = BeautifulSoup(r.text, "html.parser")
         f1 = soup.find("form")
         if not f1:
-            log.debug("mp4upload form tidak ditemukan")
+            log.debug("mp4upload form not found")
             return None, 0
         inputs1 = {i.get("name"): (i.get("value") or "") for i in f1.find_all("input") if i.get("name")}
     except Exception as e:
-        log.debug("mp4upload GET gagal | %r", e)
+        log.debug("mp4upload GET failed | %r", e)
         return None, 0
 
     try:
         r2 = _http().post(f"{BASE}/", data=inputs1, headers=H, timeout=20)
         if r2.status_code != 200:
-            log.debug("mp4upload stage1 gagal | status=%s", r2.status_code)
+            log.debug("mp4upload stage1 failed | status=%s", r2.status_code)
             return None, 0
         soup2 = BeautifulSoup(r2.text, "html.parser")
         f2 = None
@@ -646,38 +633,38 @@ def mp4upload_to_direct_cdn(mp4upload_page_url: str) -> tuple[str | None, int]:
                 f2 = f
                 break
         if not f2:
-            log.debug("mp4upload stage2 form tidak ditemukan")
+            log.debug("mp4upload stage2 form not found")
             return None, 0
         inputs2 = {i.get("name"): (i.get("value") or "") for i in f2.find_all("input") if i.get("name")}
     except Exception as e:
-        log.debug("mp4upload stage1 gagal | %r", e)
+        log.debug("mp4upload stage1 failed | %r", e)
         return None, 0
 
     try:
         r3 = _http().post(f"{BASE}/", data=inputs2, headers=H, timeout=20, allow_redirects=False)
         loc = r3.headers.get("Location") or r3.headers.get("location")
         if not loc:
-            log.debug("mp4upload tidak ada Location CDN")
+            log.debug("mp4upload has no CDN Location")
             return None, 0
         if not loc.startswith("http"):
             loc = BASE + loc
         p = urlsplit(loc)
         safe_cdn = f"{p.scheme}://{p.netloc}{_quote(p.path)}"
     except Exception as e:
-        log.debug("mp4upload stage2 gagal | %r", e)
+        log.debug("mp4upload stage2 failed | %r", e)
         return None, 0
 
     try:
         r_probe = _http().get(safe_cdn, headers={"User-Agent": UA, "Referer": BASE + "/"}, stream=True, timeout=20)
         if r_probe.status_code != 200:
             r_probe.close()
-            log.debug("mp4upload CDN probe gagal | status=%s", r_probe.status_code)
+            log.debug("mp4upload CDN probe failed | status=%s", r_probe.status_code)
             return None, 0
         sz = int(r_probe.headers.get("Content-Length") or 0)
         r_probe.close()
         return safe_cdn, sz
     except Exception as e:
-        log.debug("mp4upload CDN probe gagal | %r", e)
+        log.debug("mp4upload CDN probe failed | %r", e)
         return None, 0
 
 
@@ -701,16 +688,26 @@ def _streampoi_file_code(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+_JW_FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+?\.m3u8[^"']*)["']""", re.I)
+_HLS_ANY_RE = re.compile(r"""["'](https?://[^"']+?\.m3u8[^"']*)["']""", re.I)
+
+
 def _extract_master_from_html(text: str) -> str | None:
+    m = _JW_FILE_RE.search(text)
+    if m:
+        return m.group(1)
+    m = _HLS_ANY_RE.search(text)
+    if m:
+        return m.group(1)
     m = _PACKER_RE.search(text)
     if not m:
         return None
     try:
         unpacked = _unpack_eval(m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).split("|"))
     except Exception as e:
-        log.debug("unpack packer gagal | %r", e)
+        log.debug("packer unpack failed | %r", e)
         return None
-    fm = re.search(r"file\s*:\s*\"([^\"]+)\"", unpacked) or re.search(r"file\s*:\s*'([^']+)'", unpacked)
+    fm = _JW_FILE_RE.search(unpacked) or _HLS_ANY_RE.search(unpacked)
     return fm.group(1) if fm else None
 
 
@@ -727,7 +724,7 @@ def _streampoi_post_dl(embed_url: str, referer: str) -> str:
             timeout=_HTTP_TIMEOUT,
         )
     except Exception as e:
-        log.debug("streampoi /dl POST gagal | %s : %r", embed_url, e)
+        log.debug("streampoi /dl POST failed | %s : %r", embed_url, e)
         return ""
     if r.status_code != 200:
         return ""
@@ -760,7 +757,7 @@ def probe_stream(emb_url: str, referer: str) -> str:
 
     if last_err is not None:
         raise last_err
-    raise RuntimeError("Skrip packer tidak ditemukan di embed")
+    raise RuntimeError("Packer script not found in the embed page")
 
 
 def _dood_variant_from_html(embed_url: str, html: str, title_hint: str = "") -> dict | None:
@@ -776,13 +773,13 @@ def _dood_variant_from_html(embed_url: str, html: str, title_hint: str = "") -> 
             timeout=PROBE_TIMEOUT,
         )
     except Exception as e:
-        log.debug("DoodStream pass_md5 GET gagal | %s : %r", pass_url, e)
+        log.debug("DoodStream pass_md5 GET failed | %s : %r", pass_url, e)
         return None
     if rp.status_code != 200:
         return None
     base_video = (rp.text or "").strip()
     if not base_video.startswith("http"):
-        log.debug("DoodStream base URL tidak valid | %r", base_video[:60])
+        log.debug("DoodStream base URL invalid | %r", base_video[:60])
         return None
 
     m_tok = re.search(r"token=([A-Za-z0-9]+)", html)
@@ -844,9 +841,14 @@ def _probe_doodstream_browser(embed_url: str, title_hint: str = "") -> dict | No
                     return
             holder["html"] = page.content()
         except Exception as e:
-            log.debug("DoodStream browser aksi gagal | %s : %r", embed_url, e)
+            log.debug("DoodStream browser action failed | %s : %r", embed_url, e)
 
-    html = _sb.fetch_html(embed_url, timeout_ms=60000, page_action=_auto, solve_cloudflare=True)
+    html = _sb.fetch_html(
+        embed_url,
+        timeout_ms=DOOD_BROWSER_BUDGET_MS,
+        page_action=_auto,
+        solve_cloudflare=True,
+    )
     if not html:
         html = holder["html"]
     if not html or "/pass_md5/" not in html:
@@ -854,33 +856,48 @@ def _probe_doodstream_browser(embed_url: str, title_hint: str = "") -> dict | No
     return _dood_variant_from_html(embed_url, html, title_hint)
 
 
+def _dood_http_get(embed_url: str, headers: dict) -> str:
+    for imp in DOOD_IMPERSONATE:
+        try:
+            sess = curl_requests.Session(
+                impersonate=imp,
+                curl_options={CurlOpt.IPRESOLVE: 1} if FORCE_IPV4 else None,
+            )
+        except Exception:
+            continue
+        try:
+            r = sess.get(embed_url, headers=headers, timeout=PROBE_TIMEOUT)
+            body = r.text or ""
+            if r.status_code == 200 and "/pass_md5/" in body:
+                return body
+        except Exception as e:
+            log.debug("DoodStream GET (%s) failed | %s : %r", imp, embed_url, e)
+        finally:
+            try:
+                sess.close()
+            except Exception:
+                pass
+    return ""
+
+
 def probe_doodstream(embed_url: str, referer: str = "") -> dict | None:
+    embed_url = _normalize_embed(embed_url)
     headers = {"User-Agent": UA}
     if referer:
         headers["Referer"] = referer
 
-    html = ""
-    try:
-        r = _http().get(embed_url, headers=headers, timeout=PROBE_TIMEOUT)
-        if r.status_code == 200:
-            html = r.text or ""
-    except Exception as e:
-        log.debug("DoodStream embed GET gagal | %s : %r", embed_url, e)
-
-    if html and "/pass_md5/" in html:
+    html = _dood_http_get(embed_url, headers)
+    if html:
         info = _dood_variant_from_html(embed_url, html)
         if info:
             return info
 
-    if html and ("turnstile" in html.lower() or "challenges.cloudflare.com" in html):
-        log.debug("DoodStream butuh Turnstile, fallback browser | %s", embed_url)
-    else:
-        low = html.lower()
-        if "video you are looking for is not found" in low or "file was deleted" in low:
-            log.debug("DoodStream file sudah dihapus | %s", embed_url)
-            return None
-        log.debug("DoodStream pass_md5 tidak ada di HTML murni | %s", embed_url)
+    low = (html or "").lower()
+    if "video you are looking for is not found" in low or "file was deleted" in low:
+        log.debug("DoodStream file was deleted | %s", embed_url)
+        return None
 
+    log.debug("DoodStream needs the browser | %s", embed_url)
     return _probe_doodstream_browser(embed_url)
 
 
@@ -932,6 +949,7 @@ def _parse_master(master_url: str, text: str) -> list:
             "bandwidth": pending["bandwidth"],
             "url": uri,
             "format_id": str(int(height)),
+            "type": "hls",
         })
         pending = None
     variants.sort(key=lambda v: (v["height"], v["bandwidth"]), reverse=True)
@@ -963,7 +981,7 @@ def list_variant_segments(variant_url: str, referer: str = "") -> list:
             continue
         seg_url = urljoin(variant_url, ln)
         if _is_decoy_seg(seg_url):
-            raise RuntimeError("Playlist varian Nekopoi tidak valid (dekoy)")
+            raise RuntimeError("Nekopoi variant playlist is invalid (decoy)")
         segs.append(seg_url)
     if not segs:
         raise RuntimeError("No video segments in Nekopoi playlist")
@@ -988,7 +1006,7 @@ def _download_segment(url: str, referer: str, out_path: str) -> int:
         except Exception as e:
             last = repr(e)
         time.sleep(0.6 * (attempt + 1))
-    raise RuntimeError(f"Gagal mengunduh segmen Nekopoi ({last})")
+    raise RuntimeError(f"Failed to download a Nekopoi segment ({last})")
 
 
 def _progress_text(title: str, done_seg: int, total_seg: int, done_bytes: int,
@@ -1215,7 +1233,7 @@ async def download_audio(
             "-i", tmp_ts, "-vn", "-acodec", "libmp3lame", "-q:a", "2", out_path,
         ])
         if not os.path.exists(out_path) or os.path.getsize(out_path) <= 0:
-            raise RuntimeError("Gagal membuat MP3 dari Nekopoi")
+            raise RuntimeError("Failed to create MP3 from Nekopoi")
         return os.path.getsize(out_path)
     finally:
         import shutil

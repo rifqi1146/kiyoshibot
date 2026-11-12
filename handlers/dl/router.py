@@ -639,6 +639,8 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     }
     
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
+    if is_nekopoi_url(text):
+        auto_choice = "video"
     
     silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
     
@@ -693,6 +695,16 @@ async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         DL_CACHE.pop(dl_id,None)
         return await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"download request menu")
     register_message_owner(q.message.chat.id, q.message.message_id, data["user"])
+    if is_nekopoi_url(data.get("url") or ""):
+        return await _process_choice(
+            context=context,
+            message=q.message,
+            dl_id=dl_id,
+            data=data,
+            choice="video",
+            user_id=q.from_user.id,
+            status_ready=True,
+        )
     await q.edit_message_text("📥 <b>Select format</b>",reply_markup=dl_keyboard(dl_id),parse_mode="HTML")
 
 async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,media:dict,message_thread_id=None):
@@ -1081,6 +1093,8 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     }
     settings=get_user_settings(user_id)
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
+    if is_nekopoi_url(url):
+        auto_choice = "video"
     
     is_yt = is_youtube_url(url) and not is_youtube_shorts_url(url)
     silent_mode = bool(settings.get("silent_download")) and auto_choice == "video" and not is_yt

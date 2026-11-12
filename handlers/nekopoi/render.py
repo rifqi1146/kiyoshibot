@@ -374,21 +374,14 @@ def build_format_choice_content(
         f"<h1>🌸 {t_esc}</h1>"
         f"{sub}"
         "<hr/>"
-        "<h3>Format Selection</h3>"
-        "<ul>"
-        "<li><b>Video</b> — MP4 video</li>"
-        "<li><b>MP3</b> — Extracted audio track</li>"
-        "</ul>"
+        f"<p><b>Format:</b> MP4 video (direct download)</p>"
         "<hr/>"
-        "<aside>💡 Tap a format below to begin download.</aside>"
+        "<aside>💡 Tap Download below to begin.</aside>"
     )
-    plain_html = f"<b>🌸 {t_esc}</b>\n{plain_sub}\n\nChoose a download format:"
+    plain_html = f"<b>🌸 {t_esc}</b>\n{plain_sub}\n\nReady to download as MP4 video."
 
     rows = [
-        [
-            InlineKeyboardButton("Video", callback_data=dl_cb.format(fmt="video")),
-            InlineKeyboardButton("MP3", callback_data=dl_cb.format(fmt="mp3")),
-        ],
+        [InlineKeyboardButton("Download", callback_data=dl_cb.format(fmt="video"))],
     ]
     if direct:
         rows.append([
