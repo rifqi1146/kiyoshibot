@@ -6,15 +6,14 @@ import random
 import html
 import logging
 import inspect
-import aiohttp
-import json
+
 
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 from handlers.join import require_join_or_block
-from handlers.gsearch import google_search
 from utils.text import split_message, sanitize_ai_output, sanitize_markdown, strip_tags_plain
+from utils import web_tools
 from .caca_prompt import PERSONAS
 from utils.http import get_http_session
 from utils.timectx import time_context
@@ -113,22 +112,6 @@ def _emo():
     return random.choice(_EMOS)
 
 
-_SEARCH_TRIGGERS = (
-    "cariin", "carikan", "cari in", "coba cari", "coba search", "coba googling",
-    "googling", "search", "browsing", "browse", "cek di google", "cek google",
-    "cari di internet", "cari di web", "cari di google", "tolong cari",
-    "spek", "spesifikasi", "harga", "berita", "terbaru", "rilis", "rilisan",
-    "kapan rilis", "kapan keluar", "jadwal", "skor", "hasil pertandingan",
-    "kabar", "info terbaru", "update terbaru", "kondisi terkini", "cuaca",
-    "sekarang berapa", "kurs", "harga saham",
-)
-
-
-def _needs_search(text: str) -> bool:
-    low = (text or "").lower()
-    if not low.strip():
-        return False
-    return any(t in low for t in _SEARCH_TRIGGERS)
 
 
 CACA_MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -239,26 +222,6 @@ _MEDIA_ERROR_TEXT = {
 def _media_error_reply(reason: str) -> str:
     return _MEDIA_ERROR_TEXT.get(reason, "Aku gak bisa liat gambarnya sayang 🥺")
 
-
-async def _extract_search_query(user_text: str) -> str:
-    from handlers.caca.caca_prompt import PERSONAS
-    system_q = (
-        "Kamu mesin pencari. Ubah pertanyaan user menjadi SATU query pencarian "
-        "yang optimal untuk Google. Balas HANYA query-nya saja tanpa penjelasan, "
-        "tanpa tanda kutip, tanpa bullet."
-    )
-    messages = [
-        {"role": "user", "content": f"{system_q}\n\nPertanyaan: {user_text}"},
-    ]
-    try:
-        raw = await _caca_chat(messages)
-    except Exception as e:
-        logger.warning("Caca query extract failed | err=%r", e)
-        return (user_text or "").strip()[:200]
-    query = (raw or "").strip().strip('"').strip("'").split("\n")[0].strip()
-    return (query or user_text or "").strip()[:200]
-
-
 async def _bot_context(prompt: str) -> str:
     try:
         from rag.retriever import retrieve_context
@@ -271,42 +234,6 @@ async def _bot_context(prompt: str) -> str:
     logger.info("Caca bot-context injected | prompt=%r chunks=%d", prompt[:80], len(contexts))
     return "\n\n".join(contexts)
 
-
-async def _web_search_text(query: str) -> str:
-    query = (query or "").strip()
-    if not query:
-        return ""
-
-    engine = "firecrawl"
-    try:
-        from utils.search_settings import get_search_engine
-        engine = get_search_engine()
-    except Exception:
-        pass
-
-    try:
-        if engine == "jina":
-            from utils.jina import web_search as _search
-        else:
-            from utils.firecrawl import web_search as _search
-        text = await _search(query, max_results=5)
-        if text and text.strip():
-            return text.strip()
-    except Exception as e:
-        logger.warning("Caca web_search (%s) failed | q=%s err=%r", engine, query, e)
-
-    try:
-        ok, results = await google_search(query, limit=5)
-        if ok and results:
-            lines = [
-                f"- {r.get('title', '')}\n  {r.get('snippet', '')}\n  Sumber: {r.get('link', '')}"
-                for r in results
-            ]
-            return "\n".join(lines)
-    except Exception as e:
-        logger.warning("Caca google_search fallback failed | q=%s err=%r", query, e)
-
-    return ""
 
 
 def _cleanup_memory():
@@ -532,77 +459,76 @@ def _estimate_tokens(messages: list[dict]) -> int:
     return max(1, chars // 4)
 
 
-async def _chat_completion(messages: list[dict], model: str | None = None) -> tuple[str, dict]:
+async def _extra_payload() -> dict:
+    extra = {"top_p": 0.95}
+    if CACA_REASONING_EFFORT:
+        extra["reasoning_effort"] = CACA_REASONING_EFFORT
+    return extra
+
+
+async def _headers() -> dict:
     key = _caca_api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
-
-    session = await _shared_http_session()
-    headers = {
+    return {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
 
-    last_content = ""
-    last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+async def _chat_completion(messages: list[dict], model: str | None = None) -> tuple[str, dict]:
+    headers = await _headers()
+    extra = await _extra_payload()
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     attempts = 1 + CACA_REFUSAL_RETRIES
+    last_content = ""
+
     for attempt in range(attempts):
         temp = 0.9 if attempt == 0 else min(1.05, 0.9 + (attempt * 0.08))
-        payload = {
-            "model": model or CACA_MODEL,
-            "messages": messages,
-            "temperature": temp,
-            "max_completion_tokens": CACA_MAX_TOKENS,
-            "top_p": 0.95,
-            "stream": False,
-        }
-        if CACA_REASONING_EFFORT:
-            payload["reasoning_effort"] = CACA_REASONING_EFFORT
-
         try:
-            async with session.post(
-                CACA_ENDPOINT,
+            content = await web_tools.complete_with_search(
+                messages,
+                endpoint=CACA_ENDPOINT,
                 headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=CACA_TIMEOUT),
-            ) as r:
-                data = await r.json(content_type=None)
-                if r.status != 200:
-                    err_msg = ""
-                    if isinstance(data, dict):
-                        err_msg = (data.get("error") or {}).get("message") or str(data)
-                    raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
-
-                choices = data.get("choices") or []
-                if not choices:
-                    raise RuntimeError("Response choices kosong dari provider Caca.")
-
-                content = (choices[0].get("message") or {}).get("content") or ""
-                if not content:
-                    raise RuntimeError("Konten balasan Caca kosong.")
-
-                usage = _usage_from(data)
-                last_content = content
-                last_usage = usage
-
-                if _is_model_refusal(content) and attempt < attempts - 1:
-                    logger.warning("Caca refusal detected, retrying | attempt=%s model=%s text=%r",
-                                   attempt + 1, model or CACA_MODEL, content[:80])
-                    await asyncio.sleep(0.3)
-                    continue
-
-                logger.info("Caca chat success | model=%s tokens_max=%s prompt=%s completion=%s effort=%s attempt=%s",
-                            model or CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"], usage["completion_tokens"],
-                            CACA_REASONING_EFFORT, attempt + 1)
-                return content, usage
+                model=model or CACA_MODEL,
+                temperature=temp,
+                max_tokens=CACA_MAX_TOKENS,
+                timeout=CACA_TIMEOUT,
+                usage_out=usage,
+                extra=extra,
+            )
         except Exception as e:
             if attempt >= attempts - 1:
                 logger.warning("Caca request failed | err=%s", e)
                 raise
             logger.warning("Caca attempt failed, retrying | attempt=%s err=%s", attempt + 1, e)
             await asyncio.sleep(0.4)
+            continue
 
-    return last_content, last_usage
+        if not content:
+            if attempt >= attempts - 1:
+                raise RuntimeError("Konten balasan Caca kosong.")
+            await asyncio.sleep(0.3)
+            continue
+
+        last_content = content
+        if _is_model_refusal(content) and attempt < attempts - 1:
+            logger.warning(
+                "Caca refusal detected, retrying | attempt=%s model=%s text=%r",
+                attempt + 1, model or CACA_MODEL, content[:80],
+            )
+            await asyncio.sleep(0.3)
+            continue
+
+        logger.info(
+            "Caca chat success | model=%s tokens_max=%s prompt=%s completion=%s effort=%s attempt=%s",
+            model or CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"],
+            usage["completion_tokens"], CACA_REASONING_EFFORT, attempt + 1,
+        )
+        return content, usage
+
+    return last_content, usage
+
 
 async def _caca_chat(messages: list[dict]) -> str:
     content, _ = await _chat_completion(messages)
@@ -610,79 +536,30 @@ async def _caca_chat(messages: list[dict]) -> str:
 
 
 async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None, model: str | None = None):
-    key = _caca_api_key()
-    if not key:
-        raise RuntimeError("SHITERU_KEY is not set in the environment.")
+    headers = await _headers()
+    extra = await _extra_payload()
+    got_any = False
 
-    session = await _shared_http_session()
-    payload = {
-        "model": model or CACA_MODEL,
-        "messages": messages,
-        "temperature": 0.9,
-        "max_completion_tokens": CACA_MAX_TOKENS,
-        "top_p": 0.95,
-        "stream": True,
-    }
-    if CACA_REASONING_EFFORT:
-        payload["reasoning_effort"] = CACA_REASONING_EFFORT
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with session.post(
-            CACA_ENDPOINT,
-            headers=headers,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=CACA_TIMEOUT),
-        ) as r:
-            if r.status != 200:
-                err_msg = ""
-                try:
-                    err_data = await r.json(content_type=None)
-                    if isinstance(err_data, dict):
-                        err_msg = (err_data.get("error") or {}).get("message") or str(err_data)
-                except Exception:
-                    err_msg = await r.text()
-                raise RuntimeError(f"HTTP {r.status}: {err_msg or 'Request error'}")
+    async for piece in web_tools.stream_completion(
+        messages,
+        endpoint=CACA_ENDPOINT,
+        headers=headers,
+        model=model or CACA_MODEL,
+        temperature=0.9,
+        max_tokens=CACA_MAX_TOKENS,
+        timeout=CACA_TIMEOUT,
+        usage_out=usage_out,
+        extra=extra,
+    ):
+        got_any = True
+        yield piece
 
-            buffer = b""
-            got_any = False
-            async for chunk_bytes in r.content.iter_any():
-                buffer += chunk_bytes
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    line = line.strip()
-                    if not line.startswith(b"data:"):
-                        continue
-                    data = line[5:].strip()
-                    if not data or data == b"[DONE]":
-                        continue
-                    try:
-                        obj = json.loads(data.decode("utf-8"))
-                    except Exception:
-                        continue
-                    if usage_out is not None and obj.get("usage"):
-                        parsed = _usage_from(obj)
-                        if parsed["total_tokens"] > 0:
-                            usage_out.update(parsed)
-                    choices = obj.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        got_any = True
-                        yield content
-            if got_any:
-                logger.info("Caca stream success | model=%s tokens_max=%s usage=%s",
-                            model or CACA_MODEL, CACA_MAX_TOKENS, usage_out or {})
-
-                return
-            raise RuntimeError("Response stream kosong dari provider Caca.")
-    except Exception as e:
-        logger.warning("Caca stream failed | err=%s", e)
-        raise
+    if not got_any:
+        raise RuntimeError("Response stream kosong dari provider Caca.")
+    logger.info(
+        "Caca stream success | model=%s tokens_max=%s usage=%s",
+        model or CACA_MODEL, CACA_MAX_TOKENS, usage_out or {},
+    )
 
 
 async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing: dict | None = None, model: str | None = None, mode: str | None = None):
@@ -770,15 +647,11 @@ async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messag
             app.bot_data.pop(stop_key, None)
 
 
-def _build_persona_messages(system_prompt: str, history: list, user_prompt: str, search_result: str = "", bot_info: str = "", images: list | None = None) -> list[dict]:
+def _build_persona_messages(system_prompt: str, history: list, user_prompt: str, bot_info: str = "", images: list | None = None) -> list[dict]:
     search_block = ""
-    if search_result and search_result.strip():
-        search_block = (
-            f"\n\n[Hasil Pencarian Internet]\n{search_result.strip()[:4000]}\n"
-            "Data di atas adalah info internet terkini. Pakai buat menjawab pacar, "
-            "tapi JANGAN bilang 'berdasarkan hasil pencarian' atau 'aku baru googling'. "
-            "Ceritakan langsung seperti kamu sudah tahu, tetap dengan gaya Caca."
-        )
+    if web_tools.search_backend_available():
+        search_block = "\n\n" + web_tools.SEARCH_TOOL_HINT
+
 
     bot_block = ""
     if bot_info and bot_info.strip():
@@ -1031,21 +904,7 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await _reply_no_credit(context, msg)
             billed = True
 
-        search_result = ""
-        if _needs_search(prompt):
-            try:
-                query = await _extract_search_query(prompt)
-                logger.info("Caca auto-search | prompt=%r query=%r", prompt[:80], query)
-                search_result = await _web_search_text(query)
-                if search_result:
-                    logger.info("Caca auto-search ok | query=%r len=%s", query, len(search_result))
-                else:
-                    logger.warning("Caca auto-search empty | query=%r", query)
-            except Exception as e:
-                logger.error("Caca auto-search failed | prompt=%r err=%r", prompt, e, exc_info=True)
-
-        from handlers.moderation.ai_tools import looks_like_moderation_intent
-        bot_info = "" if looks_like_moderation_intent(prompt) else await _bot_context(prompt)
+        bot_info = await _bot_context(prompt)
 
         history = [] if fresh_session else await caca_memory.get_history(user_id)
         mode = caca_db.get_mode(user_id)
@@ -1055,7 +914,6 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         messages = _build_persona_messages(
             system_prompt, history, user_prompt,
-            search_result=search_result,
             bot_info=bot_info,
             images=image_urls or None,
         )

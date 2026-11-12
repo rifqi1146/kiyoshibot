@@ -32,7 +32,7 @@ _TARGET_DESC = {
 }
 _DURATION_DESC = {
     "type": "string",
-    "description": "Optional duration like 30m, 2h, 1d, 1w. Indonesian forms (10 menit, 1 hari) are accepted. Empty means permanent.",
+    "description": "Optional duration like 30m, 2h, 1d, 1w, 1mo, 1y. Indonesian forms (10 menit, 1 hari, 2 bulan, 1 tahun) are accepted. Empty means permanent.",
 }
 
 _LAST_TARGET: dict[int, tuple[int, str]] = {}
@@ -249,15 +249,25 @@ _ACTION_LABEL = {
 }
 
 _UNIT_SECONDS = {
-    "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "detik": 1,
-    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60, "menit": 60,
-    "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600, "jam": 3600,
+    "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "detik": 1, "dtk": 1,
+    "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60, "menit": 60, "mnt": 60,
+    "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600, "jam": 3600, "jm": 3600,
     "d": 86400, "day": 86400, "days": 86400, "hari": 86400,
-    "w": 604800, "week": 604800, "weeks": 604800, "minggu": 604800,
+    "w": 604800, "week": 604800, "weeks": 604800, "minggu": 604800, "mgg": 604800,
+    "mo": 2592000, "mos": 2592000, "mon": 2592000, "month": 2592000, "months": 2592000,
+    "bln": 2592000, "buln": 2592000, "bulan": 2592000,
+    "y": 31536000, "yr": 31536000, "yrs": 31536000, "year": 31536000, "years": 31536000,
+    "thn": 31536000, "th": 31536000, "tahun": 31536000,
 }
 
 _UNIT_HUMAN = {
-    1: "second", 60: "minute", 3600: "hour", 86400: "day", 604800: "week",
+    31536000: "year",
+    2592000: "month",
+    604800: "week",
+    86400: "day",
+    3600: "hour",
+    60: "minute",
+    1: "second",
 }
 
 _DURATION_RE = re.compile(r"(\d+)\s*([a-zA-Z]+)")
@@ -269,6 +279,7 @@ def parse_duration_seconds(raw: str | None) -> int:
         return 0
     if text in ("permanent", "forever", "selamanya", "permanen", "0"):
         return 0
+    text = re.sub(r"\bse(detik|menit|jam|hari|minggu|bulan|tahun)\b", r"1 \1", text)
     m = _DURATION_RE.search(text)
     if not m:
         return 0
@@ -276,22 +287,28 @@ def parse_duration_seconds(raw: str | None) -> int:
     unit = m.group(2)
     mult = _UNIT_SECONDS.get(unit)
     if mult is None:
-        for key, val in _UNIT_SECONDS.items():
+        for key in sorted(_UNIT_SECONDS, key=len, reverse=True):
             if unit.startswith(key):
-                mult = val
+                mult = _UNIT_SECONDS[key]
                 break
     if mult is None:
         mult = 86400
-    return max(0, n * mult)
+    sec = n * mult
+    if sec > 0:
+        sec = max(30, min(sec, 365 * 86400))
+    return sec
 
 
 def humanize_seconds(seconds: int) -> str:
     if seconds <= 0:
         return "Permanent"
+    for u in (31536000, 2592000, 604800, 86400, 3600, 60, 1):
+        if seconds >= u and seconds % u == 0:
+            n = seconds // u
+            return f"{n} {_UNIT_HUMAN[u]}{'' if n == 1 else 's'}"
     best = max(u for u in _UNIT_HUMAN if seconds >= u)
     n = seconds // best
     return f"{n} {_UNIT_HUMAN[best]}{'' if n == 1 else 's'}"
-
 
 def _clean_token(raw: str | None) -> str:
     t = (raw or "").strip().strip(",.;:!?\"'`")
@@ -409,6 +426,27 @@ async def log_action(bot, *, chat, actor, action: str, target_id: int | None, ta
         log.warning("Moderation log send failed | err=%r", e)
 
 
+def _log_moderation_outcome(chat_id, actor, action, target_id, target_name, duration_sec, ok, error):
+    line = (
+        "Moderation action done | action=%s chat_id=%s actor=%s target=%s(%s) "
+        "duration=%s ok=%s error=%r"
+    )
+    args = (
+        action,
+        chat_id,
+        int(getattr(actor, "id", 0) or 0),
+        target_name,
+        target_id,
+        humanize_seconds(duration_sec) if duration_sec > 0 else "",
+        ok,
+        error,
+    )
+    if ok:
+        log.info(line, *args)
+    else:
+        log.warning(line, *args)
+
+
 async def execute_action(bot, *, chat, actor, action: str, args: dict, reply_user_id: int | None) -> dict:
     chat_id = int(chat.id)
     target_token = args.get("target")
@@ -418,18 +456,22 @@ async def execute_action(bot, *, chat, actor, action: str, args: dict, reply_use
 
     target_id = await resolve_target(bot, target_token, reply_user_id, chat_id=chat_id)
     if not target_id:
+        error = f"Could not resolve target {target_token!r}. Ask for an @username, numeric id, or a reply."
+        _log_moderation_outcome(chat_id, actor, action, None, str(target_token), duration_sec, False, error)
         return {
             "ok": False,
-            "error": f"Could not resolve target {target_token!r}. Ask for an @username, numeric id, or a reply.",
+            "error": error,
             "target_id": None,
             "summary": "Target not found",
         }
 
     needs_restrict_guard = action in ("mute_user", "ban_user", "kick_user")
     if await _protected(bot, chat_id, target_id, include_admin=needs_restrict_guard):
+        error = "That user is an admin, sudo, owner, or the bot itself and cannot be actioned."
+        _log_moderation_outcome(chat_id, actor, action, target_id, str(target_id), duration_sec, False, error)
         return {
             "ok": False,
-            "error": "That user is an admin, sudo, owner, or the bot itself and cannot be actioned.",
+            "error": error,
             "target_id": target_id,
             "summary": "Protected target",
         }
@@ -542,6 +584,8 @@ async def execute_action(bot, *, chat, actor, action: str, args: dict, reply_use
         error = str(e)
         summary = f"Failed to {action.replace('_user', '')} {target_name}: {error}"
         log.warning("Moderation tool failed | action=%s chat=%s target=%s err=%r", action, chat_id, target_id, e)
+
+    _log_moderation_outcome(chat_id, actor, action, target_id, target_name, duration_sec, ok, error)
 
     await log_action(
         bot,
@@ -713,6 +757,15 @@ async def run_moderation_loop(
                 "content": new_parts,
             }
 
+    log.info(
+        "Moderation tool request | model=%s chat_id=%s actor=%s inferred=%s prompt=%r",
+        model,
+        int(getattr(chat, "id", 0) or 0),
+        int(getattr(actor, "id", 0) or 0),
+        inferred or "",
+        (prompt or "")[:120],
+    )
+
     payload = {
         "model": model,
         "messages": contextual_messages,
@@ -749,7 +802,20 @@ async def run_moderation_loop(
             log.warning("Forced moderation tool returned no call | action=%s", inferred)
 
     if not tool_calls:
+        log.info(
+            "Moderation tool not called | chat_id=%s actor=%s inferred=%s reason=model_replied_directly",
+            int(getattr(chat, "id", 0) or 0),
+            int(getattr(actor, "id", 0) or 0),
+            inferred or "",
+        )
         return content
+
+    log.info(
+        "Moderation tool calls | chat_id=%s actor=%s calls=%s",
+        int(getattr(chat, "id", 0) or 0),
+        int(getattr(actor, "id", 0) or 0),
+        [str((c.get("function") or {}).get("name") or "") for c in tool_calls],
+    )
 
     step_messages = list(contextual_messages)
     step_messages.append({

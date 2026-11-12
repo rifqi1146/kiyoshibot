@@ -24,9 +24,11 @@ Perintah pengaturan grup dan moderasi. Hanya dapat digunakan oleh Admin grup ata
 - `/spoiler status`: Cek status spoiler di grup.
 
 ## Moderasi Anggota
-- `/ban [durasi] <user_id|@username|reply> [alasan]`: Ban anggota. Tanpa durasi = permanen. Durasi didukung seperti `7d` (hari), `1h` (jam), `10m` (menit). Contoh: `/ban 7d @user toxic`, atau reply pesan lalu ketik `/ban 7d toxic`.
+- Durasi yang didukung: `10m`/`30 menit`, `2h`/`5 jam`, `3d`/`2 hari`, `2w`/`3 minggu`, `2mo`/`2 bulan`, `1y`/`1 tahun`, termasuk bentuk `sebulan`/`setahun`/`seminggu`/`sehari`/`sejam`. Tanpa durasi = permanen. Batas Telegram 1 tahun (366 hari) — minta lebih dari itu otomatis dipotong ke 1 tahun.
+- Urutan argumen bebas: `/mute 2mo @user spam` dan `/mute @user 2mo spam` sama-sama benar.
+- `/ban [durasi] <user_id|@username|reply> [alasan]`: Ban anggota. Tanpa durasi = permanen. Contoh: `/ban 7d @user toxic`, atau reply pesan lalu ketik `/ban 7d toxic`.
 - `/unban <user_id|@username|reply>`: Lepas ban anggota.
-- `/mute [durasi] <user_id|@username|reply> [alasan]`: Bisukan anggota, bisa sementara atau permanen. Contoh: `/mute 10m @user spam`.
+- `/mute [durasi] <user_id|@username|reply> [alasan]`: Bisukan anggota, bisa sementara atau permanen. Contoh: `/mute 2mo @user spam`, `/mute @user 1 tahun spam`.
 - `/unmute <user_id|@username|reply>`: Buka bisu anggota.
 - `/kick <user_id|@username|reply> [alasan]`: Tendang anggota dari grup. Bot otomatis meng-unban setelah 45 detik, jadi sifatnya sementara.
 - `/promote <user_id|@username|reply> [gelar]`: Jadikan anggota sebagai admin, boleh sekaligus memberi gelar custom (mis. `/promote @user Mod Tampan`).

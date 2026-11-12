@@ -10,7 +10,18 @@ from database.moderation_db import lookup_user_id
 
 log = logging.getLogger(__name__)
 
-DURATION_RE = re.compile(r"^(\d+)([smhdw])$", re.I)
+DURATION_RE = re.compile(r"^(\d+)([a-zA-Z]+)$", re.I)
+_DURATION_UNITS = {
+    "s": (1, "sec"), "sec": (1, "sec"), "secs": (1, "sec"), "second": (1, "sec"), "seconds": (1, "sec"), "detik": (1, "sec"),
+    "m": (60, "min"), "min": (60, "min"), "mins": (60, "min"), "minute": (60, "min"), "minutes": (60, "min"), "menit": (60, "min"),
+    "h": (3600, "hour"), "hr": (3600, "hour"), "hrs": (3600, "hour"), "hour": (3600, "hour"), "hours": (3600, "hour"), "jam": (3600, "hour"),
+    "d": (86400, "day"), "day": (86400, "day"), "days": (86400, "day"), "hari": (86400, "day"),
+    "w": (604800, "week"), "week": (604800, "week"), "weeks": (604800, "week"), "minggu": (604800, "week"),
+    "mo": (2592000, "month"), "mos": (2592000, "month"), "mon": (2592000, "month"), "month": (2592000, "month"), "months": (2592000, "month"),
+    "bln": (2592000, "month"), "buln": (2592000, "month"), "bulan": (2592000, "month"),
+    "y": (31536000, "year"), "yr": (31536000, "year"), "yrs": (31536000, "year"), "year": (31536000, "year"), "years": (31536000, "year"),
+    "thn": (31536000, "year"), "tahun": (31536000, "year"),
+}
 
 
 def get_message_thread_id(msg) -> int | None:
@@ -51,7 +62,9 @@ def _looks_like_explicit_target(token: str | None) -> bool:
     return False
     
 def parse_duration(raw: str) -> tuple[datetime | None, str | None]:
-    m = DURATION_RE.match((raw or "").strip())
+    text = (raw or "").strip().lower()
+    text = re.sub(r"^se(detik|menit|jam|hari|minggu|bulan|tahun)$", r"1\1", text)
+    m = DURATION_RE.match(text)
     if not m:
         return None, None
 
@@ -61,12 +74,19 @@ def parse_duration(raw: str) -> tuple[datetime | None, str | None]:
     if n <= 0:
         return None, None
 
-    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
-    seconds = n * mult
-    until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    entry = _DURATION_UNITS.get(unit)
+    if not entry:
+        return None, None
 
-    unit_name = {"s": "sec", "m": "min", "h": "hour", "d": "day", "w": "week"}[unit]
-    human = f"{n} {unit_name}{'' if n == 1 else 's'}"
+    mult, unit_name = entry
+    seconds = max(30, min(n * mult, 365 * 86400))
+    until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    if seconds == 365 * 86400 and n * mult > 365 * 86400:
+        human = "365 days"
+    elif seconds == 30 and n * mult < 30:
+        human = "30 secs"
+    else:
+        human = f"{n} {unit_name}{'' if n == 1 else 's'}"
 
     return until, human
 
@@ -117,8 +137,25 @@ def text_mention_user_from_message(msg, token: str | None):
     return None
 
 
+def _merge_duration_tokens(tokens: list[str]) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        cur = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if cur.isdigit() and len(cur) <= 5 and nxt and re.fullmatch(r"[a-zA-Z]+", nxt):
+            if parse_duration(cur + nxt)[0] is not None:
+                out.append(cur + nxt)
+                i += 2
+                continue
+
+        out.append(cur)
+        i += 1
+    return out
+
+
 def extract_duration_target_reason(args: list[str], has_reply_target: bool) -> tuple[datetime | None, str | None, str | None, str]:
-    a = [x for x in (args or []) if (x or "").strip()]
+    a = _merge_duration_tokens([x for x in (args or []) if (x or "").strip()])
     if not a:
         return None, None, None, "-"
 
@@ -140,9 +177,13 @@ def extract_duration_target_reason(args: list[str], has_reply_target: bool) -> t
 
     if _looks_like_explicit_target(a[0]):
         target = a[0]
+        if len(a) >= 2:
+            u2, d2 = parse_duration(a[1])
+            if u2 is not None:
+                reason = " ".join(a[2:]).strip() or "-"
+                return u2, d2, target, reason
         reason = " ".join(a[1:]).strip() or "-"
         return None, None, target, reason
-
     if has_reply_target:
         reason = " ".join(a).strip() or "-"
         return None, None, None, reason

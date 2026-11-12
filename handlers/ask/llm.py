@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-import aiohttp
 
-from utils.http import get_http_session
+from utils import web_tools
 
 log = logging.getLogger(__name__)
 
@@ -47,80 +45,41 @@ def _usage_from(data: dict) -> dict:
     }
 
 
-async def _session() -> aiohttp.ClientSession:
-    return await get_http_session()
-
-
 async def chat_stream(messages: list[dict], usage_out: dict | None = None):
     key = _api_key()
     if not key:
         raise RuntimeError("SHITERU_KEY is not set in the environment.")
 
-    session = await _session()
-    payload = {
-        "model": ASK_MODEL,
-        "messages": messages,
-        "temperature": ASK_TEMPERATURE,
-        "max_completion_tokens": ASK_MAX_TOKENS,
-        "stream": True,
-    }
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
 
-    async with session.post(
-        ASK_ENDPOINT,
+    got_any = False
+    async for piece in web_tools.stream_completion(
+        messages,
+        endpoint=ASK_ENDPOINT,
         headers=headers,
-        json=payload,
-        timeout=aiohttp.ClientTimeout(total=ASK_TIMEOUT),
-    ) as r:
-        if r.status != 200:
-            err_msg = ""
-            try:
-                err_data = await r.json(content_type=None)
-                if isinstance(err_data, dict):
-                    err_msg = (err_data.get("error") or {}).get("message") or str(err_data)
-            except Exception:
-                err_msg = await r.text()
-            raise RuntimeError(f"Shiteru HTTP {r.status}: {err_msg or 'Request error'}")
+        model=ASK_MODEL,
+        temperature=ASK_TEMPERATURE,
+        max_tokens=ASK_MAX_TOKENS,
+        timeout=ASK_TIMEOUT,
+        usage_out=usage_out,
+    ):
+        got_any = True
+        yield piece
 
-        buffer = b""
-        got_any = False
-        async for chunk_bytes in r.content.iter_any():
-            buffer += chunk_bytes
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                line = line.strip()
-                if not line.startswith(b"data:"):
-                    continue
-                data = line[5:].strip()
-                if not data or data == b"[DONE]":
-                    continue
-                try:
-                    obj = json.loads(data.decode("utf-8"))
-                except Exception:
-                    continue
-                if usage_out is not None and obj.get("usage"):
-                    parsed = _usage_from(obj)
-                    if parsed["total_tokens"] > 0:
-                        usage_out.update(parsed)
-                choices = obj.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                content = delta.get("content")
-                if content:
-                    got_any = True
-                    yield content
-        if not got_any:
-            raise RuntimeError("Shiteru returned an empty stream.")
-        log.info("Ask stream success | provider=shiteru model=%s usage=%s", ASK_MODEL, usage_out or {})
+    if not got_any:
+        raise RuntimeError("Shiteru returned an empty stream.")
+    log.info("Ask stream success | provider=shiteru model=%s usage=%s", ASK_MODEL, usage_out or {})
 
 
 async def chat(messages: list[dict], usage_out: dict | None = None) -> str:
     parts: list[str] = []
     async for piece in chat_stream(messages, usage_out):
+        if piece is web_tools.RESET:
+            parts = []
+            continue
         parts.append(piece)
     text = "".join(parts).strip()
     if not text:

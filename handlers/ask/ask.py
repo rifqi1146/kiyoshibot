@@ -14,8 +14,8 @@ from handlers.join import require_join_or_block
 from rag.loader import load_chunked_docs
 from rag.retriever import retrieve_context
 from utils import ai_memory
-from utils import config as app_config
 from utils import search_settings
+from utils import web_tools
 from utils.config import OWNER_ID
 from utils.text import (
     sanitize_ai_output,
@@ -33,33 +33,6 @@ log = logging.getLogger(__name__)
 
 LOCAL_CONTEXTS = load_chunked_docs()
 
-_SEARCH_TRIGGERS = (
-    "cariin", "carikan", "cari in", "coba cari", "coba search", "coba googling",
-    "googling", "search", "browsing", "browse", "cek di google", "cek google",
-    "cari di internet", "cari di web", "cari di google", "tolong cari",
-    "spek", "spesifikasi", "harga", "berita", "terbaru", "rilis", "rilisan",
-    "kapan rilis", "kapan keluar", "jadwal", "skor", "hasil pertandingan",
-    "kabar", "info terbaru", "update terbaru", "kondisi terkini", "cuaca",
-    "sekarang berapa", "kurs", "harga saham", "siapa presiden", "siapa yang",
-    "who is", "what is the latest", "current price", "release date",
-)
-
-
-def _needs_search(text: str) -> bool:
-    low = (text or "").lower()
-    return any(t in low for t in _SEARCH_TRIGGERS)
-
-
-def _active_engine() -> str:
-    return search_settings.get_search_engine()
-
-
-async def _web_search(query: str) -> str:
-    if _active_engine() == "jina":
-        from utils.jina import web_search as _s
-    else:
-        from utils.firecrawl import web_search as _s
-    return await _s(query)
 
 
 def _system_instruction() -> str:
@@ -250,14 +223,12 @@ def _reference_block(contexts: list[str]) -> str:
 
 async def _build_messages(history: list, prompt: str) -> list[dict]:
     sys_text = _system_instruction()
-    from handlers.moderation.ai_tools import looks_like_moderation_intent
     contexts = []
-    if not looks_like_moderation_intent(prompt):
-        try:
-            contexts = await retrieve_context(prompt, LOCAL_CONTEXTS, top_k=2)
-        except Exception as e:
-            log.warning("RAG retrieve failed | err=%r", e)
-            contexts = []
+    try:
+        contexts = await retrieve_context(prompt, LOCAL_CONTEXTS, top_k=2)
+    except Exception as e:
+        log.warning("RAG retrieve failed | err=%r", e)
+        contexts = []
     blocks = ""
     if contexts:
         blocks += _reference_block(contexts)
@@ -266,22 +237,8 @@ async def _build_messages(history: list, prompt: str) -> list[dict]:
             len(contexts), len(blocks),
         )
 
-    has_backend = bool(app_config.FIRECRAWL_API_KEY) or bool(app_config.JINA_API_KEY)
-    if has_backend and _needs_search(prompt):
-        try:
-            results = await _web_search(prompt)
-            if results and results.strip():
-                blocks += (
-                    "<web_search_results>\n"
-                    + results.strip()[:6000]
-                    + "\n</web_search_results>\n"
-                    "Data di atas adalah hasil pencarian internet TERBARU — pakai sebagai "
-                    "sumber utama untuk pertanyaan yang butuh data terkini. JANGAN bilang "
-                    "\"berdasarkan hasil pencarian\" atau \"aku baru googling\"; jawab langsung "
-                    "seolah kamu memang tahu. Sebutkan sumbernya singkat bila relevan.\n\n"
-                )
-        except Exception as e:
-            log.warning("Pre-search failed | err=%r", e)
+    if web_tools.search_backend_available():
+        blocks += web_tools.SEARCH_TOOL_HINT + "\n\n"
 
     messages = [{"role": "system", "content": sys_text}]
     for h in history:

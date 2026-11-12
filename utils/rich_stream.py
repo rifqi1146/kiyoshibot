@@ -80,12 +80,18 @@ async def stream_to_draft(
     except Exception as e:
         raise RuntimeError(f"Rich draft not supported in this chat: {e}")
 
+    from utils.web_tools import RESET
+
     acc = ""
     last_sent = time.monotonic()
     stop_event = stop_event or asyncio.Event()
     async for delta in text_iter:
         if stop_event.is_set():
             break
+        if delta is RESET:
+            acc = ""
+            last_sent = 0.0
+            continue
         if delta:
             acc = (acc + delta)[:max_chars]
         now = time.monotonic()
