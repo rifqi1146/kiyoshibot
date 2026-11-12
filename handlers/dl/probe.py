@@ -66,6 +66,10 @@ def supports_spankbang_resolution(url: str) -> bool:
         return False
     return _host_match(host, "spankbang.com") or _host_match(host, "spankbang.party")
 
+def supports_thisvid_resolution(url: str) -> bool:
+    from .thisvid.main import is_thisvid_url
+    return is_thisvid_url(url)
+
 def supports_resolution_picker(url: str) -> bool:
     return (
         supports_ytdlp_resolution(url)
@@ -76,6 +80,7 @@ def supports_resolution_picker(url: str) -> bool:
         or supports_anichin_resolution(url)
         or supports_moviebox_resolution(url)
         or supports_spankbang_resolution(url)
+        or supports_thisvid_resolution(url)
     )
 
 def supports_both_resolution_engines(url: str) -> bool:
@@ -366,6 +371,15 @@ async def get_resolutions_detailed(url: str, engine: str | None = None) -> tuple
             return (probe.get("res_list") or []), None
         except Exception as e:
             log.warning("SpankBang probe failed | url=%s err=%r", url, e)
+            return [], str(e)
+
+    if chosen == "thisvid" or (not chosen and supports_thisvid_resolution(url)):
+        try:
+            from .thisvid.main import probe_thisvid
+            probe = await asyncio.to_thread(probe_thisvid, url)
+            return (probe.get("res_list") or []), None
+        except Exception as e:
+            log.warning("ThisVid probe failed | url=%s err=%r", url, e)
             return [], str(e)
 
     if chosen and chosen != "ytdlp":

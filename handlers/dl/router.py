@@ -19,8 +19,9 @@ from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls,AdultContentNotAllowed
 from .adult_gate import ADULT_BLOCK_NOT_PREMIUM,ADULT_BLOCK_NOT_NSFW
 from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
-from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution,supports_anichin_resolution,supports_moviebox_resolution,supports_spankbang_resolution
+from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution,supports_anichin_resolution,supports_moviebox_resolution,supports_spankbang_resolution,supports_thisvid_resolution
 from .nekopoi.main import is_nekopoi_url
+from .thisvid.main import is_thisvid_url
 from .cosxplay.main import is_cosxplay_url
 from .tiktok.main import is_tiktok,tiktok_download
 from .service import download_non_tiktok,send_downloaded_media,send_batch_downloaded_media
@@ -215,6 +216,7 @@ def _platform_label(url:str)->str:
         (("drakorid.co",),"Drakor.id"),
         (("officialmoviebox.com","moviebox.ph","moviebox.co"),"MovieBox"),
         (("spankbang.com","spankbang.party"),"SpankBang"),
+        (("thisvid.com",),"ThisVid"),
         ((
             "bokepcrot.*",
             "lendirqu.*",
@@ -432,6 +434,8 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
         DL_CACHE[dl_id]=dict(data)
     if is_youtube_shorts_url(url):
         log.info("YouTube Shorts detected: skipping resolution picker, downloading best quality | url=%s", url)
+    if is_thisvid_url(url):
+        choice = "video"
     since_msg = time.time() - float(data.get("msg_date") or data.get("ts") or time.time())
     if choice=="video" and supports_resolution_picker(url):
         DL_CACHE[dl_id]["fmt_key"]="video"
@@ -479,6 +483,11 @@ async def _process_choice(context,message,dl_id:str,data:dict,choice:str,user_id
                 await message.edit_text(_metadata_status(url),parse_mode="HTML")
                 status_ready=True
             return await _show_resolution_picker(context,message,dl_id,data,engine="spankbang",status_ready=status_ready)
+        if supports_thisvid_resolution(url):
+            if not status_ready and message:
+                await message.edit_text(_metadata_status(url),parse_mode="HTML")
+                status_ready=True
+            return await _show_resolution_picker(context,message,dl_id,data,engine="thisvid",status_ready=status_ready)
     DL_CACHE.pop(dl_id,None)
     return await _start_dl_task(context=context,message=message,data=data,fmt_key=choice,format_id=None,has_audio=False,status_ready=status_ready)
 
@@ -639,7 +648,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     }
     
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
-    if is_nekopoi_url(text):
+    if is_nekopoi_url(text) or is_thisvid_url(text):
         auto_choice = "video"
     
     silent_mode = bool(settings.get("silent_download")) and auto_choice == "video"
@@ -695,7 +704,7 @@ async def dlask_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
         DL_CACHE.pop(dl_id,None)
         return await _safe_delete_message(context.bot,q.message.chat.id,q.message.message_id,"download request menu")
     register_message_owner(q.message.chat.id, q.message.message_id, data["user"])
-    if is_nekopoi_url(data.get("url") or ""):
+    if is_nekopoi_url(data.get("url") or "") or is_thisvid_url(data.get("url") or ""):
         return await _process_choice(
             context=context,
             message=q.message,
@@ -1093,7 +1102,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
     }
     settings=get_user_settings(user_id)
     auto_choice=str(settings.get("autodl_format") or "ask").lower()
-    if is_nekopoi_url(url):
+    if is_nekopoi_url(url) or is_thisvid_url(url):
         auto_choice = "video"
     
     is_yt = is_youtube_url(url) and not is_youtube_shorts_url(url)

@@ -74,6 +74,7 @@ PREMIUM_ONLY_DOMAINS = {
     "cosplaytele.com",
     "spankbang.com",
     "spankbang.party",
+    "thisvid.com",
 }
 
 PREMIUM_NO_NSFW_DOMAINS = {
@@ -169,6 +170,7 @@ AUTO_DOWNLOAD_DOMAINS = {
     "cosplaytele.com",
     "spankbang.com",
     "spankbang.party",
+    "thisvid.com",
     "drakorid.co",
     "anichin.moe",
     "officialmoviebox.com",

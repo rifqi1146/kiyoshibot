@@ -37,6 +37,7 @@ from .bdsmlust.main import is_bdsmlust_url,bdsmlust_download
 from .heavyr.main import is_heavyr_url,heavyr_download
 from .cosplaytele.main import is_cosplaytele_url,cosplaytele_download
 from .spankbang.main import is_spankbang_url,spankbang_download
+from .thisvid.main import is_thisvid_url,thisvid_download
 from .remux import video_meta,make_video_thumbnail
 from .mtproto_uploader import try_send_video_via_mtproto
 from .pyrogram_uploader import try_send_video_via_pyrogram
@@ -80,6 +81,7 @@ PLATFORM_ROUTES = (
     Route(is_heavyr_url, heavyr_download, "heavyr"),
     Route(is_cosplaytele_url, cosplaytele_download, "cosplaytele"),
     Route(is_spankbang_url, spankbang_download, "spankbang"),
+    Route(is_thisvid_url, thisvid_download, "thisvid"),
     Route(is_youtube_post_url, download_youtube_post, "youtube_post"),
 )
 
