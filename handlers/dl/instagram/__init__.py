@@ -6,6 +6,7 @@ from .main import (
     warmup_instagram_session,
     clear_instagram_meta_cache,
 )
+from .details import fetch_instagram_details, build_instagram_details_report
 
 __all__ = [
     "is_instagram_url",
@@ -14,4 +15,6 @@ __all__ = [
     "close_instagram_session",
     "warmup_instagram_session",
     "clear_instagram_meta_cache",
+    "fetch_instagram_details",
+    "build_instagram_details_report",
 ]

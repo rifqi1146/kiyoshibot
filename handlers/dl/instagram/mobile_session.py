@@ -89,14 +89,40 @@ def _resolve_blocking(shortcode: str) -> dict | None:
     if not items:
         return None
     user = getattr(media, "user", None)
+    taken_at = getattr(media, "taken_at", None)
+    taken_ts = int(taken_at.timestamp()) if hasattr(taken_at, "timestamp") else int(taken_at or 0)
+    loc = getattr(media, "location", None)
+    loc_name = str(getattr(loc, "name", "") or "").strip() if loc else ""
     return {
         "caption": str(getattr(media, "caption_text", "") or ""),
         "username": str(getattr(user, "username", "") or ""),
         "nickname": str(getattr(user, "full_name", "") or ""),
         "items": items,
         "source": "Instagram Session",
+        "details": {
+            "pk": str(getattr(media, "pk", "") or ""),
+            "code": str(getattr(media, "code", "") or shortcode),
+            "taken_at": taken_ts,
+            "media_type": int(getattr(media, "media_type", 0) or 0),
+            "product_type": str(getattr(media, "product_type", "") or ""),
+            "is_verified": bool(getattr(user, "is_verified", False)),
+            "coauthors": [],
+            "location": loc_name,
+            "like_count": getattr(media, "like_count", None),
+            "comment_count": getattr(media, "comment_count", None),
+            "play_count": getattr(media, "play_count", None) or getattr(media, "view_count", None),
+            "counts_disabled": False,
+            "comments_disabled": bool(getattr(media, "comments_disabled", False)),
+            "caption_edited": False,
+            "has_audio": None,
+            "audio_title": "",
+            "audio_artist": "",
+            "accessibility_caption": str(getattr(media, "accessibility_caption", "") or ""),
+            "width": 0,
+            "height": 0,
+            "duration": int(round(float(getattr(media, "video_duration", 0) or 0))),
+        },
     }
-
 
 async def fetch_media_via_session(shortcode: str) -> dict | None:
     global _session_failed_at

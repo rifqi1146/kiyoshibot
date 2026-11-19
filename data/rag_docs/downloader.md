@@ -4,10 +4,17 @@ KiyoshiBot menyediakan fitur unduh video, audio, gambar, dan galeri otomatis dar
 
 ## Perintah Utama Downloader
 - `/dl <url>`: Download media dari link yang dikirim (bisa pilih resolusi & format video/MP3).
-- `/dl <tiktok_url> --details`: Tampilkan metadata lengkap postingan TikTok (statistik, kreator, spesifikasi video/stream, audio, subtitle, dan pengaturan post) dalam format Rich Message tanpa mengunduh file, lengkap dengan tombol unduh.
-- Auto-Download: Jika fitur `/autodl enable` aktif di grup, cukup kirim link langsung tanpa mengetik `/dl` (tambahkan `--details` pada link TikTok untuk melihat metadata saja).
+- `/dl <url> --details`: Unduh media langsung beserta metadata lengkap postingan (TikTok, Instagram, X/Twitter, Reddit, Pinterest, Threads) sebagai caption Rich Message dalam satu pesan.
+- Auto-Download: Jika fitur `/autodl enable` aktif di grup, cukup kirim link langsung tanpa mengetik `/dl` (tambahkan `--details` pada link TikTok, Instagram, X, Reddit, Pinterest, atau Threads untuk mengirim media beserta metadata lengkap).
 - Batch Download: Kirim 2-5 link sekaligus dalam satu pesan untuk download otomatis sebagai satu album.
 - `/asupan`: Kirim video acak FYP TikTok (khusus chat/grup yang mengaktifkan `/asupann enable`).
+
+## Flag --details (Media + Metadata Lengkap)
+- Gunakan `/dl <url> --details` atau kirim `<url> --details` langsung di chat/grup dengan Auto-Download aktif.
+- Platform yang didukung: **TikTok** (kecuali Douyin), **Instagram**, **X / Twitter**, **Reddit**, **Pinterest**, dan **Threads**.
+- Bot mengunduh media langsung lewat scraper internal dan mengirimkannya bersama metadata lengkap postingan (statistik engagement, info kreator/author, spesifikasi video/stream, audio, dan pengaturan post) dalam **satu Rich Message**.
+- Postingan teks saja (tanpa media) tetap menampilkan laporan metadata lengkap tanpa mengunduh file.
+- Tetap menghormati gate konten dewasa (`adult_gate` pada X/Reddit), `/spoiler enable`, dan mode **Silent Download** (hanya memberi reaksi `😍` tanpa pesan status teks).
 
 ## Platform Sosial Media
 - Instagram: Download Reels, Post, Carousel (multi-slide paralel), dan Story lewat `/igstory <username>`, plus info profil lewat `/igstalk <username>`.
@@ -44,7 +51,7 @@ Selain konten dewasa otomatis di sosmed, ada juga domain khusus dewasa yang hany
   - **YouTube Resolution**: Kualitas default video YouTube — `Ask (Default)` (pilih manual), `360p`, `480p`, `720p`, atau `1080p ⭐️` (otomatis ambil resolusi tersebut tanpa menampilkan picker).
   - **Music Output Format**: Format audio saat mengunduh lagu via `/music` — `FLAC` (kualitas tinggi lossless) atau `MP3`.
   - **TikTok Slideshow**: Pilihan hasil untuk konten slideshow foto TikTok — `Ask` (tanya format), `Images` (kirim album foto), `Video` (jadikan video slideshow bergerak), atau `Audio Only` (lagunya saja).
-  - **Silent Download**: Mode senyap saat mendownload media. Jika aktif (ON), bot tidak akan mengedit pesan progres berkala di chat — hasil langsung dikirim begitu unduhan selesai (berguna agar tidak mengganggu obrolan grup).
+  - **Silent Download**: Mode senyap saat mendownload media (termasuk saat memakai `--details`). Jika aktif (ON), bot hanya memberi reaksi `😍` pada pesan tanpa mengirim atau mengedit pesan status progres — hasil langsung dikirim begitu selesai.
 
 ## Tips Penggunaan
 - Semua downloader otomatis mendukung pilih resolusi (kualitas rendah sampai tinggi sesuai sumber) dan opsi ekstrak audio MP3.

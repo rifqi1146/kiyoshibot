@@ -55,13 +55,3 @@ def tiktok_slideshow_keyboard(dl_id:str,has_audio:bool=True):
         rows.append([InlineKeyboardButton("Audio",callback_data=f"ttslide:{dl_id}:audio")])
     rows.append([InlineKeyboardButton("Cancel",callback_data=f"ttslide:{dl_id}:cancel")])
     return InlineKeyboardMarkup(rows)
-
-def tiktok_details_keyboard(dl_id: str):
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("Download Media", callback_data=f"dlask:{dl_id}:go"),
-                InlineKeyboardButton("Close", callback_data=f"dlask:{dl_id}:close"),
-            ]
-        ]
-    )

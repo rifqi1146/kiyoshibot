@@ -128,7 +128,7 @@ HELP_TEXT = {
         "### 📥 Media & Downloader\n"
         "\n"
         "- `/dl <url>`: Download media from supported platforms\n"
-        "- `/dl <tiktok_url> --details`: Inspect full TikTok post metadata without downloading\n"
+        "- `/dl <url> --details`: Download media with full post metadata caption (TikTok, Instagram, X, Reddit, Pinterest, Threads)\n"
         "- `/asupan`: Get a random short video\n"
         "- `/music <query>`: Search and download songs\n"
         "- `/nobg`: Remove image background via photo reply\n"

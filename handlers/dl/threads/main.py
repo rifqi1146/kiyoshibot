@@ -96,14 +96,37 @@ async def _fetch_threads_embed_html(post_id:str)->bytes:
             raise RuntimeError(f"failed to get embed media: HTTP {resp.status}")
         return body
 
-def _parse_threads_embed_media(body:bytes)->dict:
+def _parse_threads_embed_details(body:bytes,post_id:str="")->dict:
     if b"Thread not available" in body:
         raise RuntimeError("Thread not available")
     soup=BeautifulSoup(body,"html.parser")
-    result={"caption":"","items":[]}
+    result={
+        "post_id":post_id,
+        "username":"",
+        "verified":False,
+        "community_tag":"",
+        "timestamp_text":"",
+        "caption":"",
+        "counts":[],
+        "items":[],
+    }
+    author_el=soup.select_one(".AuthorIdentity a.HeaderLink")
+    if author_el:
+        result["username"]=html.unescape(author_el.get_text(" ",strip=True) or "").strip().lstrip("@")
+    result["verified"]=bool(soup.select_one(".AuthorIdentity .VerifiedBadge"))
+    tag_el=soup.select_one(".CommunityTagLink")
+    if tag_el:
+        result["community_tag"]=html.unescape(tag_el.get_text(" ",strip=True) or "").strip()
+    ts_el=soup.select_one(".Timestamp")
+    if ts_el:
+        result["timestamp_text"]=html.unescape(ts_el.get_text(" ",strip=True) or "").strip()
     caption_el=soup.select_one(".BodyTextContainer")
     if caption_el:
         result["caption"]=html.unescape(caption_el.get_text(" ",strip=True) or "").strip()
+    result["counts"]=[
+        html.unescape(el.get_text(" ",strip=True) or "").strip()
+        for el in soup.select(".ActionBarContainer .ActionBarCount")
+    ]
     seen=set()
     blocked_imgs=set()
     for container in soup.select(".MediaContainer, .SoloMediaContainer"):
@@ -123,11 +146,14 @@ def _parse_threads_embed_media(body:bytes)->dict:
                 continue
             seen.add(src)
             result["items"].append({"type":"photo","url":src})
+    return result
+
+def _parse_threads_embed_media(body:bytes)->dict:
+    result=_parse_threads_embed_details(body)
     _dbg("parse embed done | caption=%s items=%s types=%s",bool(result["caption"]),len(result["items"]),[x.get("type") for x in result["items"]])
     if not result["items"]:
         raise RuntimeError("no media found in threads embed")
     return result
-
 async def _probe_total_bytes(session,url:str,headers:dict|None=None)->int:
     try:
         async with session.head(url,headers=headers,timeout=aiohttp.ClientTimeout(total=20),allow_redirects=True) as resp:
@@ -278,29 +304,30 @@ async def _download_threads_items(parsed:dict,fmt_key:str,bot,chat_id,status_msg
             _safe_remove_file(item.get("path"),"threads download failed cleanup")
         raise
 
-async def threads_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
+async def resolve_threads_post_id(raw_url:str)->str:
+    post_id=_extract_threads_post_id(raw_url)
+    if not post_id:
+        try:
+            session=await get_http_session()
+            async with session.get(raw_url,headers=THREADS_HEADERS,allow_redirects=True,timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                post_id=_extract_threads_post_id(str(resp.url))
+        except Exception as e:
+            log.warning("Failed to resolve threads share URL | url=%s err=%r",raw_url,e)
+    return post_id
+
+async def threads_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,prefetched:dict|None=None):
     del format_id,has_audio
     if not metadata_ready:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Threads post...</b>")
-        
-    post_id = _extract_threads_post_id(raw_url)
-    
-    if not post_id:
-        try:
-            session = await get_http_session()
-            async with session.get(raw_url, headers=THREADS_HEADERS, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                resolved_url = str(resp.url)
-                post_id = _extract_threads_post_id(resolved_url)
-        except Exception as e:
-            log.warning("Failed to resolve threads share URL | url=%s err=%r", raw_url, e)
-
-    _dbg("threads scrape start | url=%s post_id=%s",raw_url,post_id)
-    if not post_id:
-        raise RuntimeError("failed to extract threads post id")
-        
-    body=await _fetch_threads_embed_html(post_id)
-    parsed=_parse_threads_embed_media(body)
-    _dbg("threads parsed | items=%s caption=%s",len(parsed.get("items") or []),bool(parsed.get("caption")))
+    if isinstance(prefetched,dict) and prefetched.get("items"):
+        parsed=prefetched
+    else:
+        post_id=await resolve_threads_post_id(raw_url)
+        _dbg("threads scrape start | url=%s post_id=%s",raw_url,post_id)
+        if not post_id:
+            raise RuntimeError("failed to extract threads post id")
+        body=await _fetch_threads_embed_html(post_id)
+        parsed=_parse_threads_embed_media(body)
     result=await _download_threads_items(parsed,fmt_key,bot,chat_id,status_msg_id)
     _dbg("threads scrape success | result_type=%s","album" if isinstance(result,dict) and result.get("items") else "single")
     return result

@@ -35,7 +35,7 @@ INDONESIAN_STOPWORDS = {
 
 BOT_INTENT_KEYWORDS = {
     "bot", "kiyoshi", "kiyoshibot", "fitur", "command", "perintah", "bantuan",
-    "downloader", "download", "unduh", "premium", "buypremium", "qris", "bayar",
+    "downloader", "download", "unduh", "details", "metadata", "premium", "buypremium", "qris", "bayar",
     "harga", "vip", "benefit", "premiumbenefit", "iklan", "ads", "sponsor",
     "grup", "admin", "moderasi", "moderation", "ban", "unban", "kick", "mute", "unmute",
     "bisu", "bisukan", "bungkam", "tendang", "keluarkan", "usir", "depak", "blokir",

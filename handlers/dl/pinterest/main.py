@@ -455,20 +455,23 @@ async def _download_pin_items(parsed: dict, bot, chat_id, status_msg_id) -> dict
         return {"path": downloaded[0]["path"], "title": title, "desc": parsed.get("desc") or ""}
     return {"items": downloaded, "title": title, "desc": parsed.get("desc") or ""}
 
-async def pinterest_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):
+async def fetch_pinterest_pin(raw_url: str) -> dict:
+    url = (raw_url or "").strip()
+    if SHORT_RE.search(url):
+        url = await _resolve_short_url(url)
+    pin_id = _extract_pin_id(url)
+    if not pin_id:
+        raise RuntimeError("failed to extract Pinterest pin ID")
+    return await _get_pin_data(pin_id)
+
+async def pinterest_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,prefetched:dict|None=None):
     del fmt_key,format_id,has_audio
     if not metadata_ready:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Pinterest media...</b>")
-    url=(raw_url or "").strip()
-    if SHORT_RE.search(url):
-        url=await _resolve_short_url(url)
-    pin_id=_extract_pin_id(url)
-    if not pin_id:
-        raise RuntimeError("failed to extract Pinterest pin ID")
-    pin_data=await _get_pin_data(pin_id)
+    pin_data=prefetched if isinstance(prefetched,dict) and prefetched else await fetch_pinterest_pin(raw_url)
     parsed=_extract_pin_media(pin_data)
     result=await _download_pin_items(parsed,bot,chat_id,status_msg_id)
-    _dbg("pinterest scrape success | pin_id=%s result=%s",pin_id,"album" if result.get("items") else "single")
+    _dbg("pinterest scrape success | pin_id=%s result=%s",pin_data.get("id"),"album" if result.get("items") else "single")
     return result
 
 async def pinterest_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False):

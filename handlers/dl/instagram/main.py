@@ -410,9 +410,60 @@ def _polaris_node_item(node:dict|None)->dict|None:
         h=cand_h
     return {"type":"photo","url":url,"thumbnail":"","width":w,"height":h,"duration":0}
 
+def _extract_gql_details(media:dict)->dict:
+    if not isinstance(media,dict):
+        return {}
+    owner=media.get("owner") or media.get("user") or {}
+    dims=media.get("dimensions") or {}
+    like_count=media.get("like_count")
+    if like_count is None:
+        like_count=(media.get("edge_media_preview_like") or {}).get("count")
+    comment_count=media.get("comment_count")
+    if comment_count is None:
+        comment_count=(media.get("edge_media_to_comment") or media.get("edge_media_to_parent_comment") or {}).get("count")
+    play_count=media.get("play_count")
+    if play_count is None:
+        play_count=media.get("video_view_count")
+    if play_count is None:
+        play_count=media.get("view_count")
+    coauthors=[]
+    for c in (media.get("coauthor_producers") or []):
+        if isinstance(c,dict) and c.get("username"):
+            coauthors.append(str(c.get("username")).strip())
+    loc=media.get("location")
+    loc_name=str(loc.get("name") or "").strip() if isinstance(loc,dict) else ""
+    clips=media.get("clips_metadata") or {}
+    music_info=(clips.get("music_info") or {}).get("music_asset_info") or {}
+    orig_sound=clips.get("original_sound_info") or {}
+    audio_title=str(music_info.get("title") or orig_sound.get("original_audio_title") or "").strip()
+    audio_artist=str(music_info.get("display_artist") or ((orig_sound.get("ig_artist") or {}).get("username")) or "").strip()
+    return {
+        "pk":str(media.get("pk") or media.get("id") or "").strip(),
+        "code":str(media.get("code") or media.get("shortcode") or "").strip(),
+        "taken_at":int(media.get("taken_at") or media.get("taken_at_timestamp") or 0),
+        "media_type":int(media.get("media_type") or 0),
+        "product_type":str(media.get("product_type") or "").strip(),
+        "is_verified":bool(owner.get("is_verified")),
+        "coauthors":coauthors,
+        "location":loc_name,
+        "like_count":like_count,
+        "comment_count":comment_count,
+        "play_count":play_count,
+        "counts_disabled":bool(media.get("like_and_view_counts_disabled")),
+        "comments_disabled":bool(media.get("commenting_disabled_for_viewer") or media.get("comments_disabled")),
+        "caption_edited":bool(media.get("caption_is_edited")),
+        "has_audio":media.get("has_audio"),
+        "audio_title":audio_title,
+        "audio_artist":audio_artist,
+        "accessibility_caption":str(media.get("accessibility_caption") or "").strip(),
+        "width":int(media.get("original_width") or dims.get("width") or 0),
+        "height":int(media.get("original_height") or dims.get("height") or 0),
+        "duration":_node_duration(media),
+    }
+
 def _parse_gql_media(media:dict)->dict:
     if not isinstance(media,dict):
-        return {"caption":"","username":"","nickname":"","items":[]}
+        return {"caption":"","username":"","nickname":"","items":[],"details":{}}
     owner=media.get("owner") or media.get("user") or {}
     username=str(owner.get("username") or "").strip()
     nickname=str(owner.get("full_name") or owner.get("fullName") or "").strip()
@@ -438,8 +489,7 @@ def _parse_gql_media(media:dict)->dict:
         if it:
             items.append(it)
 
-    return {"caption":caption,"username":username,"nickname":nickname,"items":items}
-
+    return {"caption":caption,"username":username,"nickname":nickname,"items":items,"details":_extract_gql_details(media)}
 async def _fetch_gql_metadata(raw_url:str)->dict:
     shortcode=_extract_shortcode(raw_url)
     if not shortcode:
@@ -616,6 +666,7 @@ def _meta_cache_put(key:str,value:dict):
             "username":value.get("username") or "",
             "nickname":value.get("nickname") or "",
             "items":list(value.get("items") or []),
+            "details":dict(value.get("details") or {}),
         },
     )
     IG_META_CACHE.move_to_end(key)

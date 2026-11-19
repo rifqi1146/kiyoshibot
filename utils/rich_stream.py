@@ -4,7 +4,7 @@ import time
 from typing import AsyncIterator
 from telegram import Bot
 
-from .rich_common import is_message_not_modified
+from .rich_common import is_message_not_modified, post_rich_multipart
 from .text import strip_code_wrapper
 
 DEFAULT_DRAFT_INTERVAL = 0.8
@@ -253,11 +253,7 @@ async def send_rich_media_group(
     reply_to_message_id: int | None = None,
     reply_markup=None,
 ):
-    import json as _json
     import os as _os
-
-    from utils.http import get_http_session
-
     attach: list[tuple[str, str]] = []
     slides: list[dict] = []
     for index, raw in enumerate(items):
@@ -307,46 +303,10 @@ async def send_rich_media_group(
             payload["reply_markup"] = markup
         return payload
 
-    async def post(payload: dict):
-        if not attach:
-            res = await bot.do_api_request("sendRichMessage", payload)
-            if isinstance(res, dict) and res.get("error_code"):
-                raise RuntimeError(res.get("description") or "sendRichMessage failed")
-            return res
-        import aiohttp
-
-        handles: list = []
-        try:
-            form = aiohttp.FormData()
-            for key, val in payload.items():
-                form.add_field(key, _json.dumps(val) if isinstance(val, (dict, list)) else str(val))
-            for field, path in attach:
-                fh = open(path, "rb")
-                handles.append(fh)
-                form.add_field(
-                    field, fh,
-                    filename=_os.path.basename(path),
-                    content_type="application/octet-stream",
-                )
-            session = await get_http_session()
-            url = f"{bot.base_url}/sendRichMessage"
-            upload_timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=1200)
-            async with session.post(url, data=form, timeout=upload_timeout) as resp:
-                data = await resp.json(content_type=None)
-        finally:
-            for fh in handles:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-        if not data.get("ok"):
-            raise RuntimeError(data.get("description") or "sendRichMessage failed")
-        return data.get("result")
-
     try:
-        return await post(build_payload(build_blocks(collapsible=bool(caption))))
+        return await post_rich_multipart(bot, build_payload(build_blocks(collapsible=bool(caption))), attach)
     except Exception as e:
         err = str(e).lower()
         if caption and ("unsupported" in err or "can't parse" in err):
-            return await post(build_payload(build_blocks(collapsible=False)))
+            return await post_rich_multipart(bot, build_payload(build_blocks(collapsible=False)), attach)
         raise

@@ -16,21 +16,25 @@ from .state import DL_CACHE
 from database.download_db import load_auto_dl,save_auto_dl,is_premium_user,is_premium_required
 from database.spoiler_db import is_spoiler_enabled
 from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
-from .utils import normalize_url,is_invalid_video,extract_all_urls,AdultContentNotAllowed
+from .utils import normalize_url,is_invalid_video,extract_all_urls,AdultContentNotAllowed,detect_media_type
 from .adult_gate import ADULT_BLOCK_NOT_PREMIUM,ADULT_BLOCK_NOT_NSFW
-from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard,tiktok_details_keyboard
+from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
 from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution,supports_anichin_resolution,supports_moviebox_resolution,supports_spankbang_resolution,supports_thisvid_resolution
 from .nekopoi.main import is_nekopoi_url
 from .thisvid.main import is_thisvid_url
 from .cosxplay.main import is_cosxplay_url
 from .tiktok.main import is_tiktok,tiktok_download,fetch_tiktok_details
-from .service import download_non_tiktok,send_downloaded_media,send_batch_downloaded_media
+from .instagram import is_instagram_url,fetch_instagram_details,instagram_api_download
+from .twitter import is_x_url,fetch_twitter_details,twitter_scrape_download
+from .reddit import is_reddit_url,fetch_reddit_details,reddit_scrape_download
+from .pinterest import is_pinterest_url,fetch_pinterest_details,pinterest_scrape_download
+from .threads import is_threads_url,fetch_threads_details,threads_scrape_download
+from .service import download_non_tiktok,send_downloaded_media,send_batch_downloaded_media,_ensure_photo_size
 from database.user_settings_db import get_user_settings
-from .remux import prepare_download_result_for_send
+from .remux import prepare_download_result_for_send,video_meta
 from .youtube.main import is_youtube_url, is_youtube_shorts_url, is_youtube_post_url
 from utils.menu_lock import guard_callback_owner, register_message_owner, message_id_from_send
-from utils.rich_msg import send_rich
-
+from utils.rich_msg import send_rich,send_rich_with_media
 log=logging.getLogger(__name__)
 os.makedirs(TMP_DIR,exist_ok=True)
 try:
@@ -304,7 +308,9 @@ async def _cleanup_download_result(result):
                 for item in items or []:
                     if isinstance(item,dict):
                         await _remove_file(item.get("path"),"failed download item")
+                        await _remove_file(item.get("thumb"),"failed download thumb")
             await _remove_file(result.get("path"),"failed download")
+            await _remove_file(result.get("thumb"),"failed download thumb")
         elif isinstance(result,str):
             await _remove_file(result,"failed download")
     except Exception as e:
@@ -603,10 +609,10 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if not await require_join_or_block(update, context, silent=_silent):
             return
         if len(batch_urls) > 1:
-            return await msg.reply_text("Please provide a single TikTok link when using --details.")
+            return await msg.reply_text("Please provide a single link when using --details.")
         target_url = batch_urls[0] if batch_urls else any_urls[0]
-        if not is_tiktok(target_url):
-            return await msg.reply_text("The --details flag is currently supported for TikTok links only.")
+        if not _supports_details(target_url):
+            return await msg.reply_text("The --details flag is supported for TikTok, Instagram, X, Reddit, Pinterest, and Threads links.")
         user_id = update.effective_user.id
         ok, reason = _premium_link_allowed(target_url, user_id, chat.id, chat.type)
         if not ok:
@@ -614,7 +620,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         wait_time = _check_and_consume_limit(user_id)
         if wait_time > 0:
             return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
-        return await _handle_tiktok_details(context=context, msg=msg, url=target_url, user_id=user_id)
+        return await _handle_details(context=context, msg=msg, url=target_url, user_id=user_id)
     if len(batch_urls) > 1:
         settings=get_user_settings(update.effective_user.id)
         if chat.type in ("group","supergroup"):
@@ -799,55 +805,253 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
         parse_mode="HTML",
     )
     
-async def _handle_tiktok_details(context: ContextTypes.DEFAULT_TYPE, msg, url: str, user_id: int):
+def _supports_details(url: str) -> bool:
+    host = _host(url)
+    if _host_match(host, "douyin.com") or _host_match(host, "v.douyin.com"):
+        return False
+    return (
+        is_tiktok(url)
+        or is_instagram_url(url)
+        or is_x_url(url)
+        or is_reddit_url(url)
+        or is_pinterest_url(url)
+        or is_threads_url(url)
+    )
+
+async def _normalize_details_media_items(res: dict, has_spoiler: bool) -> list[dict]:
+    raw_items = []
+    if isinstance(res, dict) and res.get("items"):
+        raw_items = [it for it in (res.get("items") or []) if isinstance(it, dict)]
+    elif isinstance(res, dict) and res.get("path"):
+        raw_items = [{
+            "path": res.get("path"),
+            "type": res.get("type") or detect_media_type(res.get("path") or ""),
+            "thumb": res.get("thumb"),
+            "meta": dict(res.get("meta") or {}),
+            "has_spoiler": bool(res.get("has_spoiler")),
+        }]
+    prepared = []
+    for it in raw_items:
+        p = it.get("path")
+        if not p or not os.path.exists(p):
+            continue
+        raw_kind = str(it.get("type") or "").strip().lower()
+        kind = "video" if raw_kind in ("video", "animation") else detect_media_type(p)
+        if kind not in ("photo", "video"):
+            continue
+        if kind == "photo":
+            await _ensure_photo_size(p)
+        meta = dict(it.get("meta") or {})
+        if kind == "video" and not (meta.get("width") and meta.get("height")):
+            probed = await asyncio.to_thread(video_meta, p)
+            if isinstance(probed, dict):
+                for k in ("duration", "width", "height"):
+                    if probed.get(k) and not meta.get(k):
+                        meta[k] = probed[k]
+        prepared.append({
+            "path": p,
+            "type": kind,
+            "thumb": it.get("thumb"),
+            "meta": meta,
+            "has_spoiler": bool(has_spoiler or it.get("has_spoiler")),
+        })
+    return prepared
+
+async def _handle_details(context: ContextTypes.DEFAULT_TYPE, msg, url: str, user_id: int):
     chat = msg.chat
-    status_msg = await msg.reply_text("🔍 <b>Inspecting TikTok metadata...</b>", parse_mode="HTML")
+    bot = context.bot
+    thread_id = getattr(msg, "message_thread_id", None)
+    platform = _platform_label(url)
+    silent_mode = bool(get_user_settings(user_id).get("silent_download"))
+    if silent_mode:
+        try:
+            await msg.set_reaction("😍")
+        except Exception:
+            pass
+        status_msg = None
+    else:
+        status_msg = await msg.reply_text(f"🔍 <b>Inspecting {html.escape(platform)} metadata...</b>", parse_mode="HTML")
+    status_msg_id = status_msg.message_id if status_msg else None
+    has_media = True
+    raw_data = None
     try:
-        item, rich_html, plain_html = await fetch_tiktok_details(url)
+        if is_tiktok(url):
+            raw_data, rich_html, plain_html = await fetch_tiktok_details(url)
+        elif is_x_url(url):
+            raw_data, rich_html, plain_html, has_media = await fetch_twitter_details(
+                url, user_id=user_id, chat_id=chat.id, chat_type=chat.type, strict_adult=True
+            )
+        elif is_reddit_url(url):
+            raw_data, rich_html, plain_html, has_media = await fetch_reddit_details(
+                url, user_id=user_id, chat_id=chat.id, chat_type=chat.type, strict_adult=True
+            )
+        elif is_pinterest_url(url):
+            raw_data, rich_html, plain_html, has_media = await fetch_pinterest_details(url)
+        elif is_instagram_url(url):
+            raw_data, rich_html, plain_html, has_media = await fetch_instagram_details(url)
+        elif is_threads_url(url):
+            raw_data, rich_html, plain_html, has_media = await fetch_threads_details(url)
+        else:
+            raise RuntimeError("Unsupported platform for --details")
+    except AdultContentNotAllowed as e:
+        await _safe_edit_error(bot, chat.id, status_msg_id, _adult_block_text(e.reason))
+        return
     except Exception as e:
         err_msg = html.escape(str(e))
-        if "unavailable" in err_msg.lower() or "not found" in err_msg.lower():
-            err_text = "❌ <b>TikTok post not found or has been deleted.</b>"
-        elif "age restricted" in err_msg.lower() or "audience" in err_msg.lower():
-            err_text = "🔞 <b>TikTok post is age-restricted or gated.</b>"
+        low = err_msg.lower()
+        if "unavailable" in low or "not found" in low or "http 404" in low:
+            err_text = f"❌ <b>{html.escape(platform)} post not found or has been deleted.</b>"
+        elif "age restricted" in low or "age-restricted" in low or "audience" in low or "gated" in low:
+            err_text = f"🔞 <b>{html.escape(platform)} post is age-restricted or gated.</b>"
         else:
-            err_text = f"❌ <b>Failed to fetch TikTok details:</b> <code>{err_msg}</code>"
-        if status_msg:
-            try:
-                await status_msg.edit_text(err_text, parse_mode="HTML")
-            except Exception:
-                pass
+            err_text = f"❌ <b>Failed to fetch {html.escape(platform)} details:</b> <code>{err_msg}</code>"
+        await _safe_edit_error(bot, chat.id, status_msg_id, err_text)
         return
 
-    dl_id = uuid.uuid4().hex[:8]
-    DL_CACHE[dl_id] = {
-        "url": url,
-        "user": user_id,
-        "chat_id": chat.id,
-        "chat_type": chat.type,
-        "reply_to": msg.message_id,
-        "message_thread_id": getattr(msg, "message_thread_id", None),
-        "ts": time.time(),
-        "msg_date": msg.date.timestamp() if (msg and getattr(msg, "date", None)) else time.time(),
-    }
-    kb = tiktok_details_keyboard(dl_id)
+    if not has_media:
+        await _safe_delete_message(bot, chat.id, status_msg_id, "details status")
+        await send_rich(
+            bot=bot,
+            chat_id=chat.id,
+            reply_to_message_id=msg.message_id,
+            message_thread_id=thread_id,
+            rich_html=rich_html,
+            plain_html=plain_html,
+        )
+        return
 
     if status_msg:
         try:
-            await _safe_delete_message(context.bot, chat.id, status_msg.message_id, "details status")
+            await status_msg.edit_text(f"📥 <b>Downloading {html.escape(platform)} media...</b>", parse_mode="HTML")
         except Exception:
             pass
 
-    sent = await send_rich(
-        bot=context.bot,
-        chat_id=chat.id,
-        reply_to_message_id=msg.message_id,
-        message_thread_id=getattr(msg, "message_thread_id", None),
-        rich_html=rich_html,
-        plain_html=plain_html,
-        markup=kb,
-    )
-    register_message_owner(chat.id, message_id_from_send(sent), user_id)
+    fmt_key = "video"
+    res = None
+    try:
+        async with _DL_GLOBAL_SEM:
+            sem = _get_user_sem(int(user_id))
+            async with sem:
+                if is_tiktok(url):
+                    image_post = (raw_data or {}).get("imagePost") or (raw_data or {}).get("image_post") or {}
+                    is_slide = isinstance(image_post, dict) and bool(image_post.get("images"))
+                    if is_slide:
+                        slide_pref = str(get_user_settings(user_id).get("tiktok_slideshow") or "ask").lower()
+                        fmt_key = "slideshow_video" if slide_pref == "video" else "slideshow_images"
+                    else:
+                        fmt_key = "mp4"
+                    async with TIKTOK_LOCK:
+                        res = await tiktok_download(url, bot, chat.id, status_msg_id, fmt_key=fmt_key, metadata_ready=True)
+                elif is_instagram_url(url):
+                    res = await instagram_api_download(url, "video", bot, chat.id, status_msg_id, metadata_ready=True)
+                elif is_x_url(url):
+                    res = await twitter_scrape_download(
+                        url, "video", bot, chat.id, status_msg_id,
+                        metadata_ready=True, user_id=user_id, chat_type=chat.type, strict_adult=True, prefetched=raw_data,
+                    )
+                elif is_reddit_url(url):
+                    res = await reddit_scrape_download(
+                        url, "video", bot, chat.id, status_msg_id,
+                        metadata_ready=True, user_id=user_id, chat_type=chat.type, strict_adult=True, prefetched=raw_data,
+                    )
+                elif is_pinterest_url(url):
+                    res = await pinterest_scrape_download(
+                        url, "video", bot, chat.id, status_msg_id, metadata_ready=True, prefetched=raw_data,
+                    )
+                elif is_threads_url(url):
+                    res = await threads_scrape_download(
+                        url, "video", bot, chat.id, status_msg_id, metadata_ready=True, prefetched=raw_data,
+                    )
+    except AdultContentNotAllowed as e:
+        await _cleanup_download_result(res)
+        await _safe_edit_error(bot, chat.id, status_msg_id, _adult_block_text(e.reason))
+        return
+    except Exception as dl_err:
+        log.warning("Details media download failed, sending metadata only | url=%s err=%r", url, dl_err)
+        await _cleanup_download_result(res)
+        res = None
+        note = html.escape(str(dl_err))
+        rich_html = f"<aside>Media download failed: {note}</aside>" + rich_html
+        plain_html = f"<i>Media download failed: {note}</i>\n\n" + plain_html
+
+    if not res:
+        await _safe_delete_message(bot, chat.id, status_msg_id, "details status")
+        await send_rich(
+            bot=bot,
+            chat_id=chat.id,
+            reply_to_message_id=msg.message_id,
+            message_thread_id=thread_id,
+            rich_html=rich_html,
+            plain_html=plain_html,
+        )
+        return
+
+    try:
+        res = await prepare_download_result_for_send(res, fmt_key=fmt_key)
+        has_spoiler = bool(
+            (is_premium_required(url, PREMIUM_ONLY_DOMAINS) or (isinstance(res, dict) and bool(res.get("sensitive"))))
+            and is_spoiler_enabled(chat.id, chat.type)
+        )
+        media_items = await _normalize_details_media_items(res, has_spoiler=has_spoiler)
+        if not media_items:
+            await _safe_delete_message(bot, chat.id, status_msg_id, "details status")
+            await send_rich(
+                bot=bot,
+                chat_id=chat.id,
+                reply_to_message_id=msg.message_id,
+                message_thread_id=thread_id,
+                rich_html=rich_html,
+                plain_html=plain_html,
+            )
+            return
+
+        primary_items = media_items[:10]
+        overflow_items = media_items[10:]
+        try:
+            await send_rich_with_media(
+                bot=bot,
+                chat_id=chat.id,
+                items=primary_items,
+                rich_html=rich_html,
+                reply_to_message_id=msg.message_id,
+                message_thread_id=thread_id,
+                has_spoiler=has_spoiler,
+            )
+            await _safe_delete_message(bot, chat.id, status_msg_id, "details status")
+            if overflow_items:
+                await send_downloaded_media(
+                    bot=bot,
+                    chat_id=chat.id,
+                    reply_to=msg.message_id,
+                    status_msg_id=None,
+                    path={"items": overflow_items, "title": ""},
+                    fmt_key=fmt_key,
+                    message_thread_id=thread_id,
+                    has_spoiler=has_spoiler,
+                )
+        except Exception as rich_err:
+            log.warning("send_rich_with_media failed, falling back to separate media + details | url=%s err=%r", url, rich_err)
+            await _safe_delete_message(bot, chat.id, status_msg_id, "details status")
+            await send_downloaded_media(
+                bot=bot,
+                chat_id=chat.id,
+                reply_to=msg.message_id,
+                status_msg_id=None,
+                path=res,
+                fmt_key=fmt_key,
+                message_thread_id=thread_id,
+                has_spoiler=has_spoiler,
+            )
+            await send_rich(
+                bot=bot,
+                chat_id=chat.id,
+                reply_to_message_id=msg.message_id,
+                message_thread_id=thread_id,
+                rich_html=rich_html,
+                plain_html=plain_html,
+            )
+    finally:
+        await _cleanup_download_result(res)
 
 async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0,chat_type:str="",msg_date:float=0.0):
     if user_id is not None:
@@ -1144,23 +1348,23 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
     is_details, cleaned_args = _split_details_tokens(context.args)
     if not cleaned_args:
-        return await msg.reply_text("Send a TikTok link with --details to inspect video metadata.")
+        return await msg.reply_text("Send a supported link with --details to inspect post metadata.")
 
     all_batch_urls = [u for u in extract_all_urls(" ".join(cleaned_args), limit=5) if is_supported_platform(u)]
     user_id = update.effective_user.id
     if is_details:
         if len(all_batch_urls) > 1:
-            return await msg.reply_text("Please provide a single TikTok link when using --details.")
+            return await msg.reply_text("Please provide a single link when using --details.")
         target_url = all_batch_urls[0] if all_batch_urls else cleaned_args[0]
-        if not is_tiktok(target_url):
-            return await msg.reply_text("The --details flag is currently supported for TikTok links only.")
+        if not _supports_details(target_url):
+            return await msg.reply_text("The --details flag is supported for TikTok, Instagram, X, Reddit, Pinterest, and Threads links.")
         ok, reason = _premium_link_allowed(target_url, user_id, msg.chat.id, msg.chat.type)
         if not ok:
             return await msg.reply_text(_premium_link_block_text("single", reason), parse_mode="HTML")
         wait_time = _check_and_consume_limit(user_id)
         if wait_time > 0:
             return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
-        return await _handle_tiktok_details(context=context, msg=msg, url=target_url, user_id=user_id)
+        return await _handle_details(context=context, msg=msg, url=target_url, user_id=user_id)
 
     if len(all_batch_urls) > 1:
         chat = msg.chat
@@ -1174,7 +1378,15 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
         settings = get_user_settings(user_id)
         auto_choice = str(settings.get("autodl_format") or "video").lower()
         fmt_key = "mp3" if auto_choice == "mp3" else "video"
-        status_msg = await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(all_batch_urls)}</code> done", parse_mode="HTML")
+        silent_mode = bool(settings.get("silent_download")) and fmt_key == "video"
+        status_msg = None
+        if not silent_mode:
+            status_msg = await msg.reply_text(f"📦 <b>Batch download</b>\n<code>0/{len(all_batch_urls)}</code> done", parse_mode="HTML")
+        else:
+            try:
+                await msg.set_reaction("😍")
+            except Exception:
+                pass
         async def _spawn_batch():
             async with _DL_GLOBAL_SEM:
                 await _batch_dl_worker(

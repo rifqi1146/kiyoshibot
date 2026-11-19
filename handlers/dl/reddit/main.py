@@ -512,12 +512,10 @@ async def _download_reddit_items(parsed:dict,bot,chat_id,status_msg_id)->dict:
         return {"path":downloaded_items[0]["path"],"title":title}
     return {"items":downloaded_items,"title":title}
 
-async def reddit_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
-    del fmt_key,format_id,has_audio
-    if not metadata_ready:
-        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Reddit media...</b>")
+async def fetch_reddit_post(raw_url:str)->dict:
     text=(raw_url or "").strip()
-    if SHORT_RE.match(text):
+    host=(urlparse(text).hostname or "").lower()
+    if SHORT_RE.match(text) or host=="redd.it":
         resolved=await _resolve_short_url(text)
         if resolved==text or not _extract_post_id(resolved):
             raise RuntimeError("failed to resolve reddit short url")
@@ -531,7 +529,14 @@ async def reddit_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_
         comments_url.replace("www.reddit.com","new.reddit.com"),
     ]
     payload=await _fetch_json_from_candidates(urls)
-    post=_pick_post_data(payload)
+    return _pick_post_data(payload)
+
+async def reddit_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False,prefetched:dict|None=None):
+    del fmt_key,format_id,has_audio
+    if not metadata_ready:
+        await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping Reddit media...</b>")
+    text=(raw_url or "").strip()
+    post=prefetched if isinstance(prefetched,dict) and prefetched else await fetch_reddit_post(text)
     parsed=_parse_reddit_post(post)
     if parsed.get("sensitive"):
         if strict_adult:

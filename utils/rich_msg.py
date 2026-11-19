@@ -1,9 +1,10 @@
 import html
 import logging
+import os
 import warnings
 from telegram import InlineKeyboardMarkup
 
-from .rich_common import is_message_not_modified
+from .rich_common import is_message_not_modified, post_rich_multipart
 
 log = logging.getLogger(__name__)
 
@@ -140,3 +141,74 @@ async def edit_rich(bot, chat_id: int, message_id: int, rich_html: str, plain_ht
     except Exception as e:
         log.debug("edit_message_text fallback failed | err=%r", e)
         return None
+
+async def send_rich_with_media(
+    bot,
+    chat_id: int,
+    items: list[dict],
+    rich_html: str,
+    markup: InlineKeyboardMarkup | None = None,
+    *,
+    reply_to_message_id: int | None = None,
+    message_thread_id: int | None = None,
+    has_spoiler: bool = False,
+):
+    attach: list[tuple[str, str]] = []
+    media_entries: list[dict] = []
+    tags: list[str] = []
+
+    for idx, item in enumerate(items):
+        path = item.get("path")
+        if not path or not os.path.isfile(path):
+            continue
+        raw_kind = str(item.get("type") or "").strip().lower()
+        kind = "video" if raw_kind in ("video", "animation") else "photo"
+        mid = f"m{idx}"
+        spoiler = bool(has_spoiler or item.get("has_spoiler"))
+        media_obj: dict = {"type": kind, "media": f"attach://{mid}"}
+        attach.append((mid, path))
+
+        if kind == "video":
+            media_obj["supports_streaming"] = True
+            meta = item.get("meta") or {}
+            for key in ("width", "height", "duration"):
+                try:
+                    val = int(meta.get(key) or 0)
+                except (TypeError, ValueError):
+                    val = 0
+                if val > 0:
+                    media_obj[key] = val
+            thumb = item.get("thumb")
+            if thumb and os.path.isfile(thumb):
+                tid = f"t{idx}"
+                attach.append((tid, thumb))
+                media_obj["thumbnail"] = f"attach://{tid}"
+            tags.append(f'<video src="tg://video?id={mid}"' + (" tg-spoiler" if spoiler else "") + "></video>")
+        else:
+            tags.append(f'<img src="tg://photo?id={mid}"' + (" tg-spoiler" if spoiler else "") + "/>")
+
+        if spoiler:
+            media_obj["has_spoiler"] = True
+        media_entries.append({"id": mid, "media": media_obj})
+
+    if not tags:
+        raise RuntimeError("No valid media files for sendRichMessage")
+
+    media_html = tags[0] if len(tags) == 1 else f"<tg-slideshow>{''.join(tags)}</tg-slideshow>"
+    rich_message: dict = {"html": media_html + rich_html, "media": media_entries}
+    payload: dict = {"chat_id": chat_id, "rich_message": rich_message}
+    if reply_to_message_id:
+        payload["reply_parameters"] = {"message_id": reply_to_message_id}
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
+    md = _markup_dict(markup)
+    if md:
+        payload["reply_markup"] = md
+
+    try:
+        return await post_rich_multipart(bot, payload, attach)
+    except Exception as e:
+        if payload.get("reply_parameters") and "replied" in str(e).lower() and "not found" in str(e).lower():
+            payload.pop("reply_parameters", None)
+            return await post_rich_multipart(bot, payload, attach)
+        raise

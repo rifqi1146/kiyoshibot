@@ -184,7 +184,7 @@ def _build_api_query(tweet_id:str)->str:
     field_toggles={"withArticleRichContentState":False}
     return urlencode({"variables":json.dumps(variables,separators=(",",":")),"features":json.dumps(features,separators=(",",":")),"fieldToggles":json.dumps(field_toggles,separators=(",",":"))})
 
-async def _get_tweet_api(tweet_id:str)->dict:
+async def _get_tweet_result(tweet_id:str)->dict:
     headers=_build_api_headers()
     if not headers: raise RuntimeError("invalid X auth cookies")
     req_url=API_ENDPOINT+"?"+_build_api_query(tweet_id)
@@ -200,9 +200,13 @@ async def _get_tweet_api(tweet_id:str)->dict:
     if not result: raise RuntimeError("tweet unavailable")
     if result.get("__typename")=="TweetUnavailable": raise RuntimeError("tweet unavailable")
     if result.get("tweet") and isinstance(result["tweet"],dict):
-        legacy=((result["tweet"].get("legacy")) or {})
-    else:
-        legacy=(result.get("legacy") or {})
+        result=result["tweet"]
+    if not (result.get("legacy") or {}): raise RuntimeError("tweet data not found")
+    return result
+
+async def _get_tweet_api(tweet_id:str)->dict:
+    result=await _get_tweet_result(tweet_id)
+    legacy=result.get("legacy") or {}
     if not legacy: raise RuntimeError("tweet data not found")
     return legacy
 
@@ -378,18 +382,22 @@ async def _download_x_items(parsed:dict,bot,chat_id,status_msg_id)->dict:
         return {"path":downloaded_items[0]["path"],"title":title}
     return {"items":downloaded_items,"title":title}
 
-async def twitter_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False):
+async def twitter_scrape_download(raw_url:str,fmt_key:str,bot,chat_id,status_msg_id,format_id:str|None=None,has_audio:bool=False,metadata_ready:bool=False,user_id:int|None=None,chat_type:str="",strict_adult:bool=False,prefetched:dict|None=None):
     del fmt_key,format_id,has_audio
     if not metadata_ready:
         await _safe_edit_status(bot,chat_id,status_msg_id,"<b>Scraping X media...</b>")
-    text=(raw_url or "").strip()
-    if SHORT_RE.match(text):
-        text=await _resolve_short_url(text)
-    tweet_id=_extract_status_id(text)
-    _dbg("scrape start | url=%s tweet_id=%s",text,tweet_id)
-    if not tweet_id:
-        raise RuntimeError("failed to extract x status id")
-    tweet=await _get_tweet_api(tweet_id)
+    if isinstance(prefetched,dict) and prefetched.get("legacy"):
+        tweet=prefetched["legacy"]
+        tweet_id=str(prefetched.get("rest_id") or tweet.get("id_str") or "")
+    else:
+        text=(raw_url or "").strip()
+        if SHORT_RE.match(text):
+            text=await _resolve_short_url(text)
+        tweet_id=_extract_status_id(text)
+        _dbg("scrape start | url=%s tweet_id=%s",text,tweet_id)
+        if not tweet_id:
+            raise RuntimeError("failed to extract x status id")
+        tweet=await _get_tweet_api(tweet_id)
     parsed=_parse_tweet_media(tweet)
     if parsed.get("sensitive"):
         if strict_adult:
