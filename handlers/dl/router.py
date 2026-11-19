@@ -18,17 +18,18 @@ from database.spoiler_db import is_spoiler_enabled
 from database.nsfw_db import is_nsfw_allowed,nsfw_db_init
 from .utils import normalize_url,is_invalid_video,extract_all_urls,AdultContentNotAllowed
 from .adult_gate import ADULT_BLOCK_NOT_PREMIUM,ADULT_BLOCK_NOT_NSFW
-from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard
+from .keyboards import dl_keyboard,res_keyboard,autodl_detect_keyboard,tiktok_slideshow_keyboard,tiktok_details_keyboard
 from .probe import get_resolutions_detailed,supports_resolution_picker,supports_ytdlp_resolution,supports_nekopoi_resolution,supports_cosxplay_resolution,supports_darknessporn_resolution,supports_drakorid_resolution,supports_anichin_resolution,supports_moviebox_resolution,supports_spankbang_resolution,supports_thisvid_resolution
 from .nekopoi.main import is_nekopoi_url
 from .thisvid.main import is_thisvid_url
 from .cosxplay.main import is_cosxplay_url
-from .tiktok.main import is_tiktok,tiktok_download
+from .tiktok.main import is_tiktok,tiktok_download,fetch_tiktok_details
 from .service import download_non_tiktok,send_downloaded_media,send_batch_downloaded_media
 from database.user_settings_db import get_user_settings
 from .remux import prepare_download_result_for_send
 from .youtube.main import is_youtube_url, is_youtube_shorts_url, is_youtube_post_url
-from utils.menu_lock import guard_callback_owner, register_message_owner
+from utils.menu_lock import guard_callback_owner, register_message_owner, message_id_from_send
+from utils.rich_msg import send_rich
 
 log=logging.getLogger(__name__)
 os.makedirs(TMP_DIR,exist_ok=True)
@@ -155,6 +156,28 @@ def is_supported_platform(url:str)->bool:
     if not host:
         return False
     return any(_host_match(host,d) for d in AUTO_DOWNLOAD_DOMAINS)
+
+_DETAILS_FLAG_RE = re.compile(r"^(?:[-\u2012\u2013\u2014\u2015\u2212]{2,}|[\u2013\u2014\u2015])details$", re.I)
+_DETAILS_SUFFIX_RE = re.compile(r"(?:[-\u2012\u2013\u2014\u2015\u2212]{2,}|[\u2013\u2014\u2015])details$", re.I)
+
+def _split_details_tokens(tokens: list[str]) -> tuple[bool, list[str]]:
+    is_details = False
+    cleaned = []
+    for tok in tokens:
+        t = (tok or "").strip()
+        if not t:
+            continue
+        if _DETAILS_FLAG_RE.match(t):
+            is_details = True
+            continue
+        stripped = _DETAILS_SUFFIX_RE.sub("", t)
+        if stripped != t:
+            is_details = True
+            if stripped:
+                cleaned.append(stripped)
+            continue
+        cleaned.append(t)
+    return is_details, cleaned
 
 def _format_id_for_engine(engine:str|None,height:int,picked:dict)->str:
     return str(picked.get("format_id") or "")
@@ -563,8 +586,36 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if msg.text.strip().startswith("/"):
         return
 
-    batch_urls=[u for u in extract_all_urls(msg.text,limit=5) if is_supported_platform(u)]
-    if len(batch_urls)>1:
+    is_details, cleaned_tokens = _split_details_tokens((msg.text or "").strip().split())
+    cleaned_text = " ".join(cleaned_tokens)
+
+    batch_urls = [u for u in extract_all_urls(cleaned_text, limit=5) if is_supported_platform(u)]
+    if is_details:
+        any_urls = extract_all_urls(cleaned_text, limit=5)
+        if not any_urls:
+            return
+        settings = get_user_settings(update.effective_user.id)
+        if chat.type in ("group", "supergroup"):
+            groups = load_auto_dl()
+            if chat.id not in groups and not bool(settings.get("force_autodl")):
+                return
+        _silent = chat.type in ("group", "supergroup")
+        if not await require_join_or_block(update, context, silent=_silent):
+            return
+        if len(batch_urls) > 1:
+            return await msg.reply_text("Please provide a single TikTok link when using --details.")
+        target_url = batch_urls[0] if batch_urls else any_urls[0]
+        if not is_tiktok(target_url):
+            return await msg.reply_text("The --details flag is currently supported for TikTok links only.")
+        user_id = update.effective_user.id
+        ok, reason = _premium_link_allowed(target_url, user_id, chat.id, chat.type)
+        if not ok:
+            return await msg.reply_text(_premium_link_block_text("single", reason), parse_mode="HTML")
+        wait_time = _check_and_consume_limit(user_id)
+        if wait_time > 0:
+            return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+        return await _handle_tiktok_details(context=context, msg=msg, url=target_url, user_id=user_id)
+    if len(batch_urls) > 1:
         settings=get_user_settings(update.effective_user.id)
         if chat.type in ("group","supergroup"):
             groups=load_auto_dl()
@@ -606,7 +657,7 @@ async def auto_dl_detect(update:Update,context:ContextTypes.DEFAULT_TYPE):
         context.application.create_task(_spawn_batch())
         return
 
-    text=normalize_url(msg.text)
+    text = normalize_url(cleaned_text)
     if not is_supported_platform(text):
         return
 
@@ -748,6 +799,56 @@ async def _show_tiktok_slideshow_picker(bot,chat_id,status_msg_id,data:dict,medi
         parse_mode="HTML",
     )
     
+async def _handle_tiktok_details(context: ContextTypes.DEFAULT_TYPE, msg, url: str, user_id: int):
+    chat = msg.chat
+    status_msg = await msg.reply_text("🔍 <b>Inspecting TikTok metadata...</b>", parse_mode="HTML")
+    try:
+        item, rich_html, plain_html = await fetch_tiktok_details(url)
+    except Exception as e:
+        err_msg = html.escape(str(e))
+        if "unavailable" in err_msg.lower() or "not found" in err_msg.lower():
+            err_text = "❌ <b>TikTok post not found or has been deleted.</b>"
+        elif "age restricted" in err_msg.lower() or "audience" in err_msg.lower():
+            err_text = "🔞 <b>TikTok post is age-restricted or gated.</b>"
+        else:
+            err_text = f"❌ <b>Failed to fetch TikTok details:</b> <code>{err_msg}</code>"
+        if status_msg:
+            try:
+                await status_msg.edit_text(err_text, parse_mode="HTML")
+            except Exception:
+                pass
+        return
+
+    dl_id = uuid.uuid4().hex[:8]
+    DL_CACHE[dl_id] = {
+        "url": url,
+        "user": user_id,
+        "chat_id": chat.id,
+        "chat_type": chat.type,
+        "reply_to": msg.message_id,
+        "message_thread_id": getattr(msg, "message_thread_id", None),
+        "ts": time.time(),
+        "msg_date": msg.date.timestamp() if (msg and getattr(msg, "date", None)) else time.time(),
+    }
+    kb = tiktok_details_keyboard(dl_id)
+
+    if status_msg:
+        try:
+            await _safe_delete_message(context.bot, chat.id, status_msg.message_id, "details status")
+        except Exception:
+            pass
+
+    sent = await send_rich(
+        bot=context.bot,
+        chat_id=chat.id,
+        reply_to_message_id=msg.message_id,
+        message_thread_id=getattr(msg, "message_thread_id", None),
+        rich_html=rich_html,
+        plain_html=plain_html,
+        markup=kb,
+    )
+    register_message_owner(chat.id, message_id_from_send(sent), user_id)
+
 async def _dl_worker(app,chat_id,reply_to,raw_url,fmt_key,status_msg_id,format_id:str|None=None,has_audio:bool=False,engine:str|None=None,message_thread_id:int|None=None,metadata_ready:bool=False,user_id:int|None=None,_flood_retry:int=0,known_size:int=0,chat_type:str="",msg_date:float=0.0):
     if user_id is not None:
         if not chat_type:
@@ -1041,8 +1142,26 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
             "By using this downloader, you are responsible for the content you download and how you use it."
         )
 
-    all_batch_urls = [u for u in extract_all_urls(" ".join(context.args), limit=5) if is_supported_platform(u)]
+    is_details, cleaned_args = _split_details_tokens(context.args)
+    if not cleaned_args:
+        return await msg.reply_text("Send a TikTok link with --details to inspect video metadata.")
+
+    all_batch_urls = [u for u in extract_all_urls(" ".join(cleaned_args), limit=5) if is_supported_platform(u)]
     user_id = update.effective_user.id
+    if is_details:
+        if len(all_batch_urls) > 1:
+            return await msg.reply_text("Please provide a single TikTok link when using --details.")
+        target_url = all_batch_urls[0] if all_batch_urls else cleaned_args[0]
+        if not is_tiktok(target_url):
+            return await msg.reply_text("The --details flag is currently supported for TikTok links only.")
+        ok, reason = _premium_link_allowed(target_url, user_id, msg.chat.id, msg.chat.type)
+        if not ok:
+            return await msg.reply_text(_premium_link_block_text("single", reason), parse_mode="HTML")
+        wait_time = _check_and_consume_limit(user_id)
+        if wait_time > 0:
+            return await msg.reply_text(f"You are not a premium user. Please wait for a {wait_time}s cooldown.")
+        return await _handle_tiktok_details(context=context, msg=msg, url=target_url, user_id=user_id)
+
     if len(all_batch_urls) > 1:
         chat = msg.chat
         for u in all_batch_urls:
@@ -1072,7 +1191,7 @@ async def dl_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE):
         context.application.create_task(_spawn_batch())
         return
 
-    url=context.args[0]
+    url = cleaned_args[0]
     
     ok,reason=_premium_link_allowed(url, user_id, msg.chat.id, msg.chat.type)
     if not ok:

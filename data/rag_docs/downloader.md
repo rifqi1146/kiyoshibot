@@ -4,7 +4,8 @@ KiyoshiBot menyediakan fitur unduh video, audio, gambar, dan galeri otomatis dar
 
 ## Perintah Utama Downloader
 - `/dl <url>`: Download media dari link yang dikirim (bisa pilih resolusi & format video/MP3).
-- Auto-Download: Jika fitur `/autodl enable` aktif di grup, cukup kirim link langsung tanpa mengetik `/dl`.
+- `/dl <tiktok_url> --details`: Tampilkan metadata lengkap postingan TikTok (statistik, kreator, spesifikasi video/stream, audio, subtitle, dan pengaturan post) dalam format Rich Message tanpa mengunduh file, lengkap dengan tombol unduh.
+- Auto-Download: Jika fitur `/autodl enable` aktif di grup, cukup kirim link langsung tanpa mengetik `/dl` (tambahkan `--details` pada link TikTok untuk melihat metadata saja).
 - Batch Download: Kirim 2-5 link sekaligus dalam satu pesan untuk download otomatis sebagai satu album.
 - `/asupan`: Kirim video acak FYP TikTok (khusus chat/grup yang mengaktifkan `/asupann enable`).
 

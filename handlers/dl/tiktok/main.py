@@ -8,6 +8,7 @@ from . import extractor as _ext
 from . import downloader as _dl
 from . import native as _native
 from .fallback import _tikwm_result
+from .details import fetch_tiktok_details, build_tiktok_details_report
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ __all__ = [
     "douyin_download",
     "close_tiktok_native",
     "tiktok_cache_stats",
+    "fetch_tiktok_details",
+    "build_tiktok_details_report",
     "_download_with_best_engine",
     "_download_album_images",
 ]

@@ -128,6 +128,7 @@ HELP_TEXT = {
         "### 📥 Media & Downloader\n"
         "\n"
         "- `/dl <url>`: Download media from supported platforms\n"
+        "- `/dl <tiktok_url> --details`: Inspect full TikTok post metadata without downloading\n"
         "- `/asupan`: Get a random short video\n"
         "- `/music <query>`: Search and download songs\n"
         "- `/nobg`: Remove image background via photo reply\n"
@@ -252,7 +253,8 @@ HELP_TEXT = {
         "\n"
         "- `/autodl enable`: Enable automatic link detection\n"
         "- `/autodl disable`: Disable automatic link detection\n"
-        "- `/autodl status`: Check auto-detect status"
+        "- `/autodl status`: Check auto-detect status\n"
+        "- Send a TikTok link with `--details` to inspect metadata instead of downloading"
     ),
 
     "cacaa": (
