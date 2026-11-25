@@ -5,12 +5,12 @@ from contextlib import asynccontextmanager
 import json
 import time
 import os
+import aiohttp
 from curl_cffi import requests as curl_requests
 from utils.http import get_http_session
 from utils import scrapling_browser as _sb
 from . import tiktoksource
-from .constants import DEFAULT_ASUPAN_KEYWORDS
-
+from .constants import DEFAULT_ASUPAN_KEYWORDS, ASUPAN_MAX_VIDEO_BYTES
 log = logging.getLogger(__name__)
 logging.getLogger("scrapling").setLevel(logging.ERROR)
 
@@ -28,6 +28,10 @@ class _RateLimited(Exception):
     pass
 
 _VIDEO_POOLS: dict[str, list[dict]] = {}
+_DEFAULT_SCRAPER_POOL: list[dict] = []
+_DEAD_KEYWORDS: dict[str, float] = {}
+_RECENT_KEYWORDS: list[str] = []
+_DEFAULT_REFILL_TASK: asyncio.Task | None = None
 _DEFAULT_KEYWORD: str | None = None
 _DEFAULT_KEYWORD_SCRAPER: str | None = None
 _POOL_LOCKS: dict[str, asyncio.Lock] = {}
@@ -48,9 +52,10 @@ async def _api_gate():
         wait = API_MIN_INTERVAL - (time.monotonic() - _LAST_API_TS)
         if wait > 0:
             await asyncio.sleep(wait)
-        _LAST_API_TS = time.monotonic()
-        yield
-
+        try:
+            yield
+        finally:
+            _LAST_API_TS = time.monotonic()
 
 def _load_cf_session() -> dict | None:
     global _CF_SESSION
@@ -268,28 +273,38 @@ async def _prime_and_get_url(video_item: dict) -> str | None:
     }
 
     session = await get_http_session()
-    for _ in range(3):
+    for attempt in range(2):
+        rate_limited = False
         try:
             async with _api_gate():
-                async with session.post(TIKWM_RESOLVE_API, headers=headers, data={"url": target_url, "hd": "1"}, timeout=20) as resp:
+                async with session.post(
+                    TIKWM_RESOLVE_API,
+                    headers=headers,
+                    data={"url": target_url, "hd": "1"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
                     if resp.status != 200:
                         log.debug("Resolve HTTP %s | id=%s", resp.status, video_item.get("id"))
                         continue
                     data = await resp.json()
             if data.get("code") == 0 and data.get("data"):
                 vid_data = data["data"]
+                if vid_data.get("images"):
+                    return None
                 url = vid_data.get("play") or vid_data.get("hdplay") or vid_data.get("wmplay")
                 if url and not url.startswith("/"):
                     return url
                 log.debug("Resolve returned a relative/odd URL | id=%s url=%s", video_item.get("id"), str(url)[:60])
             else:
-                log.debug("Resolve failed | id=%s code=%s msg=%s",
-                          video_item.get("id"), data.get("code"), data.get("msg"))
+                code = data.get("code")
+                log.debug("Resolve failed | id=%s code=%s msg=%s", video_item.get("id"), code, data.get("msg"))
+                if code == -1:
+                    rate_limited = True
         except Exception as e:
             log.debug("Resolve error | id=%s err=%r", video_item.get("id"), e)
+        if rate_limited and attempt == 0:
+            await asyncio.sleep(1.5)
     return None
-
-
 def _lock_busy(lock: asyncio.Lock) -> bool:
     if lock.locked():
         return True
@@ -376,9 +391,77 @@ async def _acquire_item(keyword: str | None) -> dict | None:
         return None
 
 
-async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str | None]:
-    global _DEFAULT_KEYWORD_SCRAPER
+def _pick_default_keyword() -> str:
+    now = time.monotonic()
+    for k in [k for k, ts in _DEAD_KEYWORDS.items() if now - ts > 600]:
+        _DEAD_KEYWORDS.pop(k, None)
+    recent = set(_RECENT_KEYWORDS)
+    candidates = [k for k in DEFAULT_ASUPAN_KEYWORDS if k not in _DEAD_KEYWORDS and k not in recent]
+    if not candidates:
+        _RECENT_KEYWORDS.clear()
+        candidates = [k for k in DEFAULT_ASUPAN_KEYWORDS if k not in _DEAD_KEYWORDS]
+    if not candidates:
+        _DEAD_KEYWORDS.clear()
+        candidates = DEFAULT_ASUPAN_KEYWORDS
+    return random.choice(candidates)
 
+
+async def _fill_default_scraper_pool_locked() -> None:
+    global _DEFAULT_KEYWORD_SCRAPER
+    for _ in range(5):
+        kw = _pick_default_keyword()
+        log.info("Filling asupan pool (scraper) | query=%s", kw)
+        new_videos = await tiktoksource.search_videos(kw)
+        if not new_videos:
+            _DEAD_KEYWORDS[kw] = time.monotonic()
+            continue
+        random.shuffle(new_videos)
+        for item in new_videos:
+            item["_kw"] = kw
+        _DEFAULT_KEYWORD_SCRAPER = kw
+        _RECENT_KEYWORDS.append(kw)
+        if len(_RECENT_KEYWORDS) > 30:
+            _RECENT_KEYWORDS.pop(0)
+        _DEFAULT_SCRAPER_POOL.extend(new_videos)
+        log.info("Asupan pool (scraper) keyword=%r filled: %s videos (pool=%s)", kw, len(new_videos), len(_DEFAULT_SCRAPER_POOL))
+        break
+
+
+async def _refill_default_scraper_bg() -> None:
+    try:
+        async with _DEFAULT_META_LOCK:
+            if len(_DEFAULT_SCRAPER_POOL) <= 4:
+                await _fill_default_scraper_pool_locked()
+    except Exception as e:
+        log.debug("Background default pool refill failed | err=%r", e)
+
+
+def _schedule_default_scraper_refill() -> None:
+    global _DEFAULT_REFILL_TASK
+    if _DEFAULT_REFILL_TASK is not None and not _DEFAULT_REFILL_TASK.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        _DEFAULT_REFILL_TASK = loop.create_task(_refill_default_scraper_bg())
+    except RuntimeError:
+        pass
+
+
+def _pop_default_scraper_pool() -> tuple[dict | None, str | None]:
+    if not _DEFAULT_SCRAPER_POOL:
+        return None, None
+    item = _DEFAULT_SCRAPER_POOL.pop(0)
+    if len(_DEFAULT_SCRAPER_POOL) <= 4:
+        _schedule_default_scraper_refill()
+    return item, item.get("_kw") or _DEFAULT_KEYWORD_SCRAPER
+
+async def warm_default_pool() -> None:
+    if not tiktoksource.configured():
+        return
+    async with _DEFAULT_META_LOCK:
+        if not _DEFAULT_SCRAPER_POOL:
+            await _fill_default_scraper_pool_locked()
+async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str | None]:
     if keyword and keyword.strip():
         q = keyword.strip()
         norm = "scraper:" + q.lower()
@@ -400,29 +483,121 @@ async def _acquire_item_scraper(keyword: str | None) -> tuple[dict | None, str |
             if norm not in _VIDEO_POOLS and _POOL_LOCKS.get(norm) is lock and not _lock_busy(lock):
                 _POOL_LOCKS.pop(norm, None)
 
+    item, kw_used = _pop_default_scraper_pool()
+    if item:
+        return item, kw_used
+
     async with _DEFAULT_META_LOCK:
-        if _DEFAULT_KEYWORD_SCRAPER:
-            item = _pop_pool("scraper:" + _DEFAULT_KEYWORD_SCRAPER.lower())
-            if item:
-                return item, _DEFAULT_KEYWORD_SCRAPER
+        item, kw_used = _pop_default_scraper_pool()
+        if item:
+            return item, kw_used
+        await _fill_default_scraper_pool_locked()
+        return _pop_default_scraper_pool()
 
-        for _ in range(3):
-            kw = random.choice(DEFAULT_ASUPAN_KEYWORDS)
-            log.info("Filling asupan pool (scraper) | query=%s", kw)
-            new_videos = await tiktoksource.search_videos(kw)
-            if new_videos:
-                _DEFAULT_KEYWORD_SCRAPER = kw
-                _VIDEO_POOLS["scraper:" + kw.lower()] = new_videos
-                log.info("Asupan pool (scraper) keyword=%r filled: %s videos", kw, len(new_videos))
-                return _pop_pool("scraper:" + kw.lower()), kw
 
-        return None, None
+async def _download_url_bytes(url: str, max_bytes: int = ASUPAN_MAX_VIDEO_BYTES) -> bytes | None:
+    if not url:
+        return None
+    try:
+        session = await get_http_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+            if resp.status != 200:
+                return None
+            ct = (resp.headers.get("Content-Type") or "").lower()
+            if any(bad in ct for bad in ("text/html", "application/json", "text/plain")):
+                return None
+            cl = int(resp.headers.get("Content-Length") or 0)
+            if cl > max_bytes:
+                return None
+            buf = bytearray()
+            async for chunk in resp.content.iter_chunked(65536):
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
+                    return None
+            data = bytes(buf)
+            if len(data) < 10_000:
+                return None
+            if b"ftyp" not in data[:32] and not ct.startswith("video/") and "octet-stream" not in ct:
+                return None
+            return data
+    except Exception as e:
+        log.debug("Asupan URL download failed | err=%r", e)
+        return None
+
+
+async def fetch_asupan_media(keyword: str | None = None) -> dict:
+    if tiktoksource.configured():
+        last_vid = None
+        last_kw = None
+        try:
+            for _ in range(4):
+                vid, kw_used = await _acquire_item_scraper(keyword)
+                if not vid:
+                    break
+                last_vid = vid
+                last_kw = kw_used
+                data = await tiktoksource.download_video(vid, max_bytes=ASUPAN_MAX_VIDEO_BYTES)
+                if data:
+                    log.debug("[ASUPAN] fetched source=scraper | keyword=%r id=%s bytes=%d", kw_used, vid.get("id"), len(data))
+                    return {
+                        "bytes": data,
+                        "width": vid.get("width") or 0,
+                        "height": vid.get("height") or 0,
+                        "duration": vid.get("duration") or 0,
+                        "source": "scraper",
+                        "keyword": kw_used,
+                        "id": vid.get("id"),
+                    }
+            if last_vid:
+                url = await _prime_and_get_url(last_vid)
+                if url:
+                    data = await _download_url_bytes(url, ASUPAN_MAX_VIDEO_BYTES)
+                    if data:
+                        log.debug("[ASUPAN] fetched source=scraper | keyword=%r id=%s bytes=%d", last_kw, last_vid.get("id"), len(data))
+                        return {
+                            "bytes": data,
+                            "width": last_vid.get("width") or 0,
+                            "height": last_vid.get("height") or 0,
+                            "duration": last_vid.get("duration") or 0,
+                            "source": "scraper",
+                            "keyword": last_kw,
+                            "id": last_vid.get("id"),
+                        }
+                    log.debug("[ASUPAN] fetched source=scraper | keyword=%r id=%s", last_kw, last_vid.get("id"))
+                    return {"url": url, "source": "scraper", "keyword": last_kw, "id": last_vid.get("id")}
+            log.info("[ASUPAN] source=scraper empty -> falling back to tikwm")
+        except Exception as e:
+            log.warning("[ASUPAN] source=scraper error (%r) -> falling back", e)
+
+    for _ in range(3):
+        video_item = await _acquire_item(keyword)
+        if not video_item:
+            break
+        final_url = await _prime_and_get_url(video_item)
+        if final_url:
+            data = await _download_url_bytes(final_url, ASUPAN_MAX_VIDEO_BYTES)
+            if data:
+                log.debug("[ASUPAN] fetched source=tikwm | id=%s bytes=%d", video_item.get("id"), len(data))
+                return {
+                    "bytes": data,
+                    "width": 0,
+                    "height": 0,
+                    "duration": 0,
+                    "source": "tikwm",
+                    "keyword": keyword,
+                    "id": video_item.get("id"),
+                }
+            log.debug("[ASUPAN] fetched source=tikwm | id=%s", video_item.get("id"))
+            return {"url": final_url, "source": "tikwm", "keyword": keyword, "id": video_item.get("id")}
+        log.warning("Failed to resolve video id=%s, trying another video", video_item.get("id"))
+
+    raise RuntimeError("Failed to get stream URL from asupan video")
 
 
 async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
     if tiktoksource.configured():
         try:
-            for _ in range(5):
+            for _ in range(4):
                 vid, kw_used = await _acquire_item_scraper(keyword)
                 if not vid:
                     break
@@ -434,7 +609,7 @@ async def fetch_asupan_tikwm(keyword: str | None = None) -> str:
         except Exception as e:
             log.warning("[ASUPAN] source=scraper error (%r) -> falling back", e)
 
-    for _ in range(5):
+    for _ in range(3):
         video_item = await _acquire_item(keyword)
         if not video_item:
             break

@@ -117,7 +117,7 @@ def _trip_breaker() -> None:
         _state.disabled_until = time.monotonic() + BREAKER_COOLDOWN
         _state.failures = 0
         log.warning(
-            "[ASUPAN] dtk search breaker open | cooldown=%.0fs", BREAKER_COOLDOWN
+            "[ASUPAN] scraper breaker open | cooldown=%.0fs", BREAKER_COOLDOWN
         )
 
 
@@ -282,13 +282,62 @@ async def _fetch(keyword: str, count: int) -> dict:
     return payload
 
 
+def _safe_int(val) -> int:
+    try:
+        return int(val or 0)
+    except Exception:
+        return 0
+
+
+def _extract_play_urls(video: dict) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def _add(u) -> None:
+        if isinstance(u, str):
+            s = u.strip()
+            if s.startswith(("http://", "https://")) and s not in seen:
+                seen.add(s)
+                urls.append(s)
+
+    _add(video.get("playAddr"))
+    bi = video.get("bitrateInfo") or []
+    if isinstance(bi, list):
+        for entry in bi:
+            if not isinstance(entry, dict):
+                continue
+            codec = str(entry.get("CodecType") or "").lower()
+            if "h265" in codec or "hevc" in codec:
+                continue
+            pa = entry.get("PlayAddr") or {}
+            if isinstance(pa, dict):
+                for u in pa.get("UrlList") or []:
+                    _add(u)
+        for entry in bi:
+            if not isinstance(entry, dict):
+                continue
+            pa = entry.get("PlayAddr") or {}
+            if isinstance(pa, dict):
+                for u in pa.get("UrlList") or []:
+                    _add(u)
+    return urls
+
+
 def _map_items(payload: dict) -> list[dict]:
     out = []
     for item in payload.get("item_list") or []:
         if not isinstance(item, dict):
             continue
+        if item.get("imagePost"):
+            continue
         vid = item.get("id")
         if not vid:
+            continue
+        video = item.get("video") or {}
+        if not isinstance(video, dict):
+            continue
+        play_urls = _extract_play_urls(video)
+        if not play_urls:
             continue
         author = item.get("author") or {}
         out.append(
@@ -297,6 +346,11 @@ def _map_items(payload: dict) -> list[dict]:
                 "link": item.get("shareUrl")
                 or f"{WWW}/@{author.get('uniqueId') or '_'}/video/{vid}",
                 "unique_id": author.get("uniqueId") or "_",
+                "play_urls": play_urls,
+                "width": _safe_int(video.get("width")),
+                "height": _safe_int(video.get("height")),
+                "duration": _safe_int(video.get("duration")),
+                "size": _safe_int(video.get("size")),
             }
         )
     return out
@@ -352,6 +406,62 @@ async def warmup() -> bool:
         async with _state.lock:
             await _boot()
     except Exception as exc:
-        log.warning("[ASUPAN] dtk warmup failed | err=%r", exc)
+        log.warning("[ASUPAN] scraper warmup failed | err=%r", exc)
         return False
     return True
+
+
+async def download_video(item: dict, max_bytes: int = 25 * 1024 * 1024) -> bytes | None:
+    if not available():
+        return None
+    urls = item.get("play_urls") or []
+    if not urls:
+        return None
+    declared_size = _safe_int(item.get("size"))
+    if declared_size > max_bytes:
+        return None
+
+    if not _state.booted or _state.session is None:
+        try:
+            await asyncio.wait_for(_state.lock.acquire(), timeout=TIMEOUT * 2)
+        except asyncio.TimeoutError:
+            return None
+        try:
+            if not _state.booted or _state.session is None:
+                await _boot()
+        except Exception as exc:
+            log.debug("[ASUPAN] scraper download boot failed | err=%r", exc)
+            return None
+        finally:
+            _state.lock.release()
+
+    session = _state.session
+    if session is None:
+        return None
+    cookies = dict(_state.cookies)
+    headers = {"User-Agent": USER_AGENT, "Referer": WWW + "/"}
+
+    for u in urls[:4]:
+        try:
+            resp = await session.get(
+                u,
+                headers=headers,
+                cookies=cookies,
+                timeout=15,
+                allow_redirects=True,
+            )
+        except Exception as exc:
+            log.debug("[ASUPAN] scraper video get failed | id=%s err=%r", item.get("id"), exc)
+            continue
+        if resp.status_code != 200:
+            continue
+        ct = (resp.headers.get("Content-Type") or "").lower()
+        if any(bad in ct for bad in ("text/html", "application/json", "text/plain")):
+            continue
+        data = resp.content or b""
+        if len(data) < 10_000 or len(data) > max_bytes:
+            continue
+        if b"ftyp" not in data[:32] and not ct.startswith("video/") and "octet-stream" not in ct:
+            continue
+        return data
+    return None

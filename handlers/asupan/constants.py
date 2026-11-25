@@ -4,7 +4,13 @@ log = logging.getLogger(__name__)
 
 ASUPAN_DB_PATH = "data/asupan.sqlite3"
 
-ASUPAN_PREFETCH_SIZE = 7
+ASUPAN_PREFETCH_SIZE = 3
+ASUPAN_REFILL_THRESHOLD = 1
+ASUPAN_WARM_CONCURRENCY = 2
+ASUPAN_MAX_VIDEO_BYTES = 25 * 1024 * 1024
+ASUPAN_CACHE_MAX_BYTES = 128 * 1024 * 1024
+ASUPAN_KEYWORD_CACHE_MAX_KEYS = 8
+ASUPAN_MESSAGE_KEYWORD_MAX = 2048
 ASUPAN_AUTO_DELETE_SEC = 1800
 ASUPAN_COOLDOWN_SEC = 5
 
@@ -70,7 +76,6 @@ DEFAULT_ASUPAN_KEYWORDS = [
     "saylviee",
     "aurynlrz",
     "thatsenjaaaa",
-    "thatsenjaaaa",
     "bhn.ctr",
     "userrimutt_1708",
     "ulannny",
@@ -106,7 +111,6 @@ DEFAULT_ASUPAN_KEYWORDS = [
     "inipavanaml24",
     "tante holic",
     "alaa.sabillaa",
-    "meyturuu_",
     "urvelsyn",
     "user94772038",
     "araasshr",

@@ -8,9 +8,15 @@ from . import state
 from .auth import is_admin_or_owner
 from database.asupan_db import save_asupan_groups, save_autodel_groups, is_asupan_enabled, is_autodel_enabled
 from .keyboards import asupan_keyboard
-from .cache import get_asupan_fast, warm_asupan_cache, warm_keyword_asupan_cache
+from .cache import (
+    build_video_payload,
+    get_asupan_fast,
+    warm_asupan_cache,
+    warm_keyword_asupan_cache,
+    warm_startup_asupan,
+)
 from .jobs import reset_asupan_delete_job, clear_asupan_delete_job, should_use_autodel
-from .constants import ASUPAN_COOLDOWN_SEC, log
+from .constants import ASUPAN_COOLDOWN_SEC, ASUPAN_MESSAGE_KEYWORD_MAX, ASUPAN_REFILL_THRESHOLD, log
 
 async def asupann_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -137,19 +143,41 @@ async def asupan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyword = " ".join(context.args).strip() if context.args else None
     msg = await update.message.reply_text("😋 Searching asupan...")
     try:
-        data = await get_asupan_fast(context.bot, keyword)
-        sent = await chat.send_video(
-            video=data["file_id"],
-            reply_to_message_id=update.message.message_id,
-            reply_markup=asupan_keyboard(user.id),
+        sent = None
+        last_err = None
+        for _ in range(3):
+            try:
+                data = await get_asupan_fast(context.bot, keyword)
+                media_arg, media_kw = build_video_payload(data)
+                sent = await chat.send_video(
+                    video=media_arg,
+                    reply_to_message_id=update.message.message_id,
+                    reply_markup=asupan_keyboard(user.id),
+                    **media_kw,
+                )
+                break
+            except Exception as e:
+                last_err = e
+        if sent is None:
+            raise last_err or RuntimeError("Failed to send asupan")
+        log.info(
+            "[ASUPAN] source=%s | keyword=%r id=%s",
+            data.get("source", "scraper"),
+            data.get("keyword") or keyword,
+            data.get("id"),
         )
         state.ASUPAN_MESSAGE_KEYWORD[(chat.id, sent.message_id)] = keyword
+        while len(state.ASUPAN_MESSAGE_KEYWORD) > ASUPAN_MESSAGE_KEYWORD_MAX:
+            oldest = next(iter(state.ASUPAN_MESSAGE_KEYWORD))
+            state.ASUPAN_MESSAGE_KEYWORD.pop(oldest, None)
         if should_use_autodel(chat):
             reset_asupan_delete_job(context, chat.id, sent.message_id, update.message.message_id)
         await msg.delete()
         if keyword:
-            context.application.create_task(warm_keyword_asupan_cache(context.bot, keyword))
-        else:
+            kw_cache = state.ASUPAN_KEYWORD_CACHE.get(keyword.lower().strip()) or []
+            if len(kw_cache) <= ASUPAN_REFILL_THRESHOLD:
+                context.application.create_task(warm_keyword_asupan_cache(context.bot, keyword))
+        elif len(state.ASUPAN_CACHE) <= ASUPAN_REFILL_THRESHOLD:
             context.application.create_task(warm_asupan_cache(context.bot))
     except Exception as e:
         await msg.edit_text(f"❌ Failed: {e}")
@@ -166,6 +194,16 @@ async def asupan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id != owner_id:
         await q.answer("❌ This is not your asupan, idiot!", show_alert=True)
         return
+    msg_id = q.message.message_id
+    msg_key = (q.message.chat_id, msg_id)
+    if not hasattr(state, "ASUPAN_INFLIGHT"):
+        state.ASUPAN_INFLIGHT = set()
+    if msg_key in state.ASUPAN_INFLIGHT:
+        try:
+            await q.answer("⏳ Loading next asupan...", show_alert=False)
+        except Exception:
+            pass
+        return
     if user_id not in OWNER_ID:
         now = time.time()
         last = state.ASUPAN_COOLDOWN.get(user_id, 0)
@@ -175,44 +213,68 @@ async def asupan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True,
             )
             return
+        if len(state.ASUPAN_COOLDOWN) > 512:
+            cutoff = now - ASUPAN_COOLDOWN_SEC * 12
+            for uid in [k for k, ts in state.ASUPAN_COOLDOWN.items() if ts < cutoff]:
+                state.ASUPAN_COOLDOWN.pop(uid, None)
         state.ASUPAN_COOLDOWN[user_id] = now
-    await q.answer()
+    state.ASUPAN_INFLIGHT.add(msg_key)
+    reply_to = q.message.reply_to_message.message_id if q.message.reply_to_message else None
     try:
-        msg_id = q.message.message_id
-        keyword = state.ASUPAN_MESSAGE_KEYWORD.get((q.message.chat_id, msg_id))
+        keyword = state.ASUPAN_MESSAGE_KEYWORD.get(msg_key)
         clear_asupan_delete_job(q.message.chat_id, msg_id)
-        data = await get_asupan_fast(context.bot, keyword)
-        await q.message.edit_media(
-            media=InputMediaVideo(media=data["file_id"]),
-            reply_markup=asupan_keyboard(owner_id),
+        last_err = None
+        edited = False
+        data = None
+        for _ in range(3):
+            try:
+                data = await get_asupan_fast(context.bot, keyword)
+                media_arg, media_kw = build_video_payload(data)
+                await q.message.edit_media(
+                    media=InputMediaVideo(media=media_arg, **media_kw),
+                    reply_markup=asupan_keyboard(owner_id),
+                )
+                edited = True
+                break
+            except Exception as e:
+                last_err = e
+        if not edited or data is None:
+            raise last_err or RuntimeError("Failed to edit asupan media")
+        log.info(
+            "[ASUPAN] source=%s | keyword=%r id=%s",
+            data.get("source", "scraper"),
+            data.get("keyword") or keyword,
+            data.get("id"),
         )
-        reply_to = q.message.reply_to_message.message_id if q.message.reply_to_message else None
+        try:
+            await q.answer()
+        except Exception:
+            pass
         if should_use_autodel(q.message.chat):
             reset_asupan_delete_job(context, q.message.chat_id, msg_id, reply_to)
-        state.ASUPAN_MESSAGE_KEYWORD[(q.message.chat_id, msg_id)] = keyword
+        state.ASUPAN_MESSAGE_KEYWORD[msg_key] = keyword
         if keyword:
-            context.application.create_task(warm_keyword_asupan_cache(context.bot, keyword))
-        else:
+            kw_cache = state.ASUPAN_KEYWORD_CACHE.get(keyword.lower().strip()) or []
+            if len(kw_cache) <= ASUPAN_REFILL_THRESHOLD:
+                context.application.create_task(warm_keyword_asupan_cache(context.bot, keyword))
+        elif len(state.ASUPAN_CACHE) <= ASUPAN_REFILL_THRESHOLD:
             context.application.create_task(warm_asupan_cache(context.bot))
     except Exception:
-        await q.answer("❌ Failed to fetch asupan", show_alert=True)
+        if should_use_autodel(q.message.chat):
+            reset_asupan_delete_job(context, q.message.chat_id, msg_id, reply_to)
+        try:
+            await q.answer("❌ Failed to fetch asupan", show_alert=True)
+        except Exception:
+            pass
+    finally:
+        state.ASUPAN_INFLIGHT.discard(msg_key)
 
 async def send_asupan_once(bot):
     if not LOG_CHAT_ID:
         log.warning("[ASUPAN STARTUP] Chat_id is empty")
         return
     try:
-        await warm_asupan_cache(bot)
-        if state.ASUPAN_CACHE:
-            data = state.ASUPAN_CACHE.pop(0)
-        else:
-            data = await get_asupan_fast(bot)
-        msg = await bot.send_video(
-            chat_id=LOG_CHAT_ID,
-            video=data["file_id"],
-            disable_notification=True,
-        )
-        await msg.delete()
+        await warm_startup_asupan(bot)
         log.info("[ASUPAN STARTUP] Warmup success | cache=%s", len(state.ASUPAN_CACHE))
     except Exception as e:
         log.warning(f"[ASUPAN STARTUP] Failed: {e}")

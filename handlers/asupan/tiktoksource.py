@@ -52,8 +52,10 @@ async def _gated(factory) -> list[dict]:
         wait = _INTERVAL - (time.monotonic() - _LAST_CALL)
         if wait > 0:
             await asyncio.sleep(wait)
-        _LAST_CALL = time.monotonic()
-        return await factory()
+        try:
+            return await factory()
+        finally:
+            _LAST_CALL = time.monotonic()
 
 
 async def search_videos(keyword: str) -> list[dict]:
@@ -65,9 +67,9 @@ async def search_videos(keyword: str) -> list[dict]:
             items = await _gated(lambda: dtksearch.search_videos(keyword))
             if items:
                 return items
-            log.info("[ASUPAN] dtk search empty | keyword=%r", keyword)
+            log.info("[ASUPAN] scraper search empty | keyword=%r", keyword)
         except Exception as e:
-            log.warning("[ASUPAN] dtk search failed | keyword=%r err=%r", keyword, e)
+            log.warning("[ASUPAN] scraper search failed | keyword=%r err=%r", keyword, e)
 
     if not VENDOR_ENABLED:
         return []
@@ -96,3 +98,9 @@ async def warmup() -> bool:
 
 async def close() -> None:
     await dtksearch.close()
+
+
+async def download_video(item: dict, max_bytes: int = 25 * 1024 * 1024) -> bytes | None:
+    if not configured() or not dtksearch.configured():
+        return None
+    return await dtksearch.download_video(item, max_bytes=max_bytes)
