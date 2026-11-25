@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
 CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
-CACA_MODEL = os.getenv("CACA_MODEL", "deepseek-v4-flash").strip()
+CACA_MODEL = os.getenv("CACA_MODEL", "forge/deepseek-v4.1-flash").strip()
 if ":premium" in CACA_MODEL.lower() or "forge/" in CACA_MODEL.lower():
-    CACA_MODEL = "deepseek-v4-flash"
+    CACA_MODEL = "forge/deepseek-v4.1-flash"
 CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
 CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
 CACA_REASONING_EFFORT = os.getenv("CACA_REASONING_EFFORT", "none").strip().lower()
