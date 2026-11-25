@@ -27,16 +27,12 @@ logger = logging.getLogger(__name__)
 CACA_API_BASE = os.getenv("CACA_API_BASE", "https://shiteru.id/v1").strip().rstrip("/")
 CACA_ENDPOINT = f"{CACA_API_BASE}/chat/completions"
 CACA_MODEL = os.getenv("CACA_MODEL", "forge/deepseek-v4.1-flash").strip()
-if ":premium" in CACA_MODEL.lower() or "forge/" in CACA_MODEL.lower():
-    CACA_MODEL = "forge/deepseek-v4.1-flash"
 CACA_MAX_TOKENS = min(int(os.getenv("CACA_MAX_TOKENS", "4096")), 4096)
 CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
 CACA_REASONING_EFFORT = os.getenv("CACA_REASONING_EFFORT", "none").strip().lower()
 CACA_REFUSAL_RETRIES = max(0, int(os.getenv("CACA_REFUSAL_RETRIES", "2")))
 
-CACA_MODEL_EXPLICIT = os.getenv("CACA_MODEL_EXPLICIT", CACA_MODEL).strip() or CACA_MODEL
-if ":premium" in CACA_MODEL_EXPLICIT.lower() or "forge/" in CACA_MODEL_EXPLICIT.lower():
-    CACA_MODEL_EXPLICIT = CACA_MODEL
+CACA_MODEL_EXPLICIT = os.getenv("CACA_MODEL_EXPLICIT")
 CACA_EXPLICIT_MODES = frozenset({"cabul", "bokep", "masokis", "slave"})
 _REFUSAL_PHRASES = (
     "as an ai",
