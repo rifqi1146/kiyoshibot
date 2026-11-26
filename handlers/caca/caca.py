@@ -1,12 +1,12 @@
 import re
 import os
+import io
 import base64
 import asyncio
 import random
 import html
 import logging
 import inspect
-
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -32,8 +32,16 @@ CACA_TIMEOUT = int(os.getenv("CACA_TIMEOUT", "60"))
 CACA_REASONING_EFFORT = os.getenv("CACA_REASONING_EFFORT", "none").strip().lower()
 CACA_REFUSAL_RETRIES = max(0, int(os.getenv("CACA_REFUSAL_RETRIES", "2")))
 
-CACA_MODEL_EXPLICIT = os.getenv("CACA_MODEL_EXPLICIT")
+CACA_MODEL_EXPLICIT = (os.getenv("CACA_MODEL_EXPLICIT") or "").strip() or CACA_MODEL
+CACA_VISION_MODEL = os.getenv("CACA_VISION_MODEL", "").strip()
+_VISION_FALLBACK_MODEL = "deepseek-v4.1-flash"
+_FORGE_VISION_MAP = {
+    "forge/deepseek-v4.1-flash": "deepseek-v4.1-flash",
+    "forge/kimi-k3": "kimi-k3",
+    "forge/kimi-k3.1-pro": "kimi-k3.1-pro",
+}
 CACA_EXPLICIT_MODES = frozenset({"cabul", "bokep", "masokis", "slave"})
+_CACA_CMD_RE = re.compile(r"^/(?:caca|chai|sayang)(?:@\w+)?(?:\s+(.*))?$", re.I | re.S)
 _REFUSAL_PHRASES = (
     "as an ai",
     "as a language model",
@@ -97,9 +105,43 @@ def _refusal_fallback_reply(mode: str | None) -> str:
 
 def _model_for_mode(mode: str | None) -> str:
     if mode in CACA_EXPLICIT_MODES:
-        return CACA_MODEL_EXPLICIT
+        return CACA_MODEL_EXPLICIT or CACA_MODEL
     return CACA_MODEL
 
+
+def _vision_model_for(model: str | None) -> str:
+    if CACA_VISION_MODEL:
+        return CACA_VISION_MODEL
+    m = (model or CACA_MODEL).strip()
+    low = m.lower()
+    if low in _FORGE_VISION_MAP:
+        return _FORGE_VISION_MAP[low]
+    if low.startswith("forge/"):
+        return _VISION_FALLBACK_MODEL
+    return m
+
+
+def _messages_have_images(messages: list[dict]) -> bool:
+    for item in messages or []:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    return True
+    return False
+
+
+def _is_vision_rejected_error(err: Exception) -> bool:
+    msg = str(err or "").lower()
+    return "http 400" in msg and (
+        "could not process this request" in msg
+        or "request_rejected" in msg
+        or "image" in msg
+        or "vision" in msg
+        or "multimodal" in msg
+    )
 
 _EMOS = ["🌸", "💖", "🧸", "🎀", "🌟", "💫"]
 
@@ -180,9 +222,22 @@ async def _extract_media_as_data_url(bot, msg, source: str, label_key: str):
     if len(raw) > CACA_MAX_IMAGE_BYTES:
         return None, "", "terlalu_besar"
 
-    data_url = f"data:{mime};base64,{base64.b64encode(bytes(raw)).decode()}"
-    return data_url, _MEDIA_LABEL.get(label_key, "[Kirim gambar]"), None
+    raw_bytes = bytes(raw)
+    if mime == "image/webp":
+        def _webp_to_png(data: bytes) -> bytes:
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as im:
+                out = io.BytesIO()
+                im.convert("RGBA").save(out, format="PNG")
+                return out.getvalue()
+        try:
+            raw_bytes = await asyncio.to_thread(_webp_to_png, raw_bytes)
+            mime = "image/png"
+        except Exception as e:
+            logger.warning("Caca webp->png convert failed | err=%r", e)
 
+    data_url = f"data:{mime};base64,{base64.b64encode(raw_bytes).decode()}"
+    return data_url, _MEDIA_LABEL.get(label_key, "[Kirim gambar]"), None
 
 def _pick_media_source(msg):
     if msg is None:
@@ -456,8 +511,11 @@ def _estimate_tokens(messages: list[dict]) -> int:
         content = item.get("content")
         if isinstance(content, str):
             chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    chars += len(part["text"])
     return max(1, chars // 4)
-
 
 async def _extra_payload() -> dict:
     extra = {"top_p": 0.95}
@@ -482,6 +540,8 @@ async def _chat_completion(messages: list[dict], model: str | None = None, sourc
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     attempts = 1 + CACA_REFUSAL_RETRIES
     last_content = ""
+    active_model = model or CACA_MODEL
+    has_images = _messages_have_images(messages)
 
     for attempt in range(attempts):
         temp = 0.9 if attempt == 0 else min(1.05, 0.9 + (attempt * 0.08))
@@ -490,7 +550,7 @@ async def _chat_completion(messages: list[dict], model: str | None = None, sourc
                 messages,
                 endpoint=CACA_ENDPOINT,
                 headers=headers,
-                model=model or CACA_MODEL,
+                model=active_model,
                 temperature=temp,
                 max_tokens=CACA_MAX_TOKENS,
                 timeout=CACA_TIMEOUT,
@@ -499,6 +559,13 @@ async def _chat_completion(messages: list[dict], model: str | None = None, sourc
                 sources_out=sources_out,
             )
         except Exception as e:
+            if has_images and _is_vision_rejected_error(e) and active_model != _VISION_FALLBACK_MODEL:
+                logger.warning(
+                    "Caca vision rejected on model=%s, falling back to %s | err=%s",
+                    active_model, _VISION_FALLBACK_MODEL, e,
+                )
+                active_model = _VISION_FALLBACK_MODEL
+                continue
             if attempt >= attempts - 1:
                 logger.warning("Caca request failed | err=%s", e)
                 raise
@@ -516,20 +583,19 @@ async def _chat_completion(messages: list[dict], model: str | None = None, sourc
         if _is_model_refusal(content) and attempt < attempts - 1:
             logger.warning(
                 "Caca refusal detected, retrying | attempt=%s model=%s text=%r",
-                attempt + 1, model or CACA_MODEL, content[:80],
+                attempt + 1, active_model, content[:80],
             )
             await asyncio.sleep(0.3)
             continue
 
         logger.info(
             "Caca chat success | model=%s tokens_max=%s prompt=%s completion=%s effort=%s attempt=%s",
-            model or CACA_MODEL, CACA_MAX_TOKENS, usage["prompt_tokens"],
+            active_model, CACA_MAX_TOKENS, usage["prompt_tokens"],
             usage["completion_tokens"], CACA_REASONING_EFFORT, attempt + 1,
         )
         return content, usage
 
     return last_content, usage
-
 
 async def _caca_chat(messages: list[dict]) -> str:
     content, _ = await _chat_completion(messages)
@@ -539,30 +605,55 @@ async def _caca_chat(messages: list[dict]) -> str:
 async def _caca_chat_stream(messages: list[dict], usage_out: dict | None = None, model: str | None = None, sources_out: list | None = None):
     headers = await _headers()
     extra = await _extra_payload()
+    active_model = model or CACA_MODEL
+    has_images = _messages_have_images(messages)
     got_any = False
 
-    async for piece in web_tools.stream_completion(
-        messages,
-        endpoint=CACA_ENDPOINT,
-        headers=headers,
-        model=model or CACA_MODEL,
-        temperature=0.9,
-        max_tokens=CACA_MAX_TOKENS,
-        timeout=CACA_TIMEOUT,
-        usage_out=usage_out,
-        extra=extra,
-        sources_out=sources_out,
-    ):
-        got_any = True
-        yield piece
+    try:
+        async for piece in web_tools.stream_completion(
+            messages,
+            endpoint=CACA_ENDPOINT,
+            headers=headers,
+            model=active_model,
+            temperature=0.9,
+            max_tokens=CACA_MAX_TOKENS,
+            timeout=CACA_TIMEOUT,
+            usage_out=usage_out,
+            extra=extra,
+            sources_out=sources_out,
+        ):
+            got_any = True
+            yield piece
+    except Exception as e:
+        if not got_any and has_images and _is_vision_rejected_error(e) and active_model != _VISION_FALLBACK_MODEL:
+            logger.warning(
+                "Caca stream vision rejected on model=%s, falling back to %s | err=%s",
+                active_model, _VISION_FALLBACK_MODEL, e,
+            )
+            active_model = _VISION_FALLBACK_MODEL
+            async for piece in web_tools.stream_completion(
+                messages,
+                endpoint=CACA_ENDPOINT,
+                headers=headers,
+                model=active_model,
+                temperature=0.9,
+                max_tokens=CACA_MAX_TOKENS,
+                timeout=CACA_TIMEOUT,
+                usage_out=usage_out,
+                extra=extra,
+                sources_out=sources_out,
+            ):
+                got_any = True
+                yield piece
+        else:
+            raise
 
     if not got_any:
         raise RuntimeError("Response stream kosong dari provider Caca.")
     logger.info(
         "Caca stream success | model=%s tokens_max=%s usage=%s",
-        model or CACA_MODEL, CACA_MAX_TOKENS, usage_out or {},
+        active_model, CACA_MAX_TOKENS, usage_out or {},
     )
-
 
 async def _caca_stream_dm(update, context, msg, user_id, history, prompt, messages, billing: dict | None = None, model: str | None = None, mode: str | None = None):
     from utils.rich_stream import stream_to_draft
@@ -823,10 +914,12 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     caption = (msg.caption or "").replace("\xa0", " ").strip()
     text = (msg.text or "").replace("\xa0", " ").strip()
-    _is_caca_call = (
-        text.startswith("/caca")
-        or caption.startswith("/caca")
-        or bool(getattr(msg, "reply_to_message", None))
+    text_cmd = _CACA_CMD_RE.match(text)
+    caption_cmd = _CACA_CMD_RE.match(caption)
+    _is_caca_call = bool(
+        text_cmd
+        or caption_cmd
+        or getattr(msg, "reply_to_message", None)
     )
 
     if _is_caca_call:
@@ -850,10 +943,10 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_urls: list[str] = []
 
     try:
-        if text.startswith("/caca") or caption.startswith("/caca"):
+        if text_cmd or caption_cmd:
             fresh_session = True
-            if caption.startswith("/caca"):
-                prompt = caption[len("/caca"):].strip()
+            if caption_cmd:
+                prompt = (caption_cmd.group(1) or "").strip()
             else:
                 prompt = " ".join(context.args).strip()
 
@@ -916,6 +1009,8 @@ async def caca_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = [] if fresh_session else await caca_memory.get_history(user_id)
         mode = caca_db.get_mode(user_id)
         model = _model_for_mode(mode)
+        if image_urls:
+            model = _vision_model_for(model)
         system_prompt = PERSONAS.get(mode, PERSONAS["default"])
         user_prompt = prompt
 
