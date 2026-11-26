@@ -1,4 +1,5 @@
 import os
+import sys
 import uuid
 import time
 import asyncio
@@ -26,14 +27,33 @@ _SIZE_100MB = 100 * 1024 * 1024
 YTDLP_TIMEOUT = int(os.getenv("YTDLP_TIMEOUT", "1800"))
 YTDLP_PROBE_TIMEOUT = int(os.getenv("YTDLP_PROBE_TIMEOUT", "90"))
 GALLERYDL_TIMEOUT = int(os.getenv("GALLERYDL_TIMEOUT", "900"))
-YTDLP_DENO_PATH = os.getenv("YTDLP_DENO_PATH", "deno:/root/.deno/bin/deno")
+YTDLP_DENO_PATH = os.getenv("YTDLP_DENO_PATH", "").strip()
 log = logging.getLogger(__name__)
 
 YT_SAFE_EXTRACTOR_ARGS = [
-    "--extractor-args", 
-    "youtube:player_client=default,web_embedded;player_skip=tv,tv_downgraded"
+    "--extractor-args",
+    "youtube:player_client=default,-tv_downgraded",
 ]
 
+
+def resolve_bin(name: str) -> str | None:
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    cand = os.path.join(exe_dir, name)
+    if os.path.isfile(cand) and os.access(cand, os.X_OK):
+        return cand
+    return shutil.which(name)
+
+
+def resolve_js_runtime() -> str | None:
+    if YTDLP_DENO_PATH:
+        return YTDLP_DENO_PATH
+    deno = shutil.which("deno") or "/root/.deno/bin/deno"
+    if deno and os.path.isfile(deno) and os.access(deno, os.X_OK):
+        return f"deno:{deno}"
+    node = shutil.which("node")
+    if node and os.path.isfile(node) and os.access(node, os.X_OK):
+        return f"node:{node}"
+    return None
 
 def _spawn_sync(cmd: list[str], **kwargs):
     return subprocess.Popen(cmd, **kwargs)
@@ -241,7 +261,7 @@ def _safe_rmtree(path: str, label: str):
         log.warning("Failed to remove %s directory | dir=%s err=%s", label, path, e)
 
 async def gallerydl_fallback(url: str, job_id: str, bot, chat_id, status_msg_id, status_text: str = "<b>yt-dlp failed, fallback to gallery-dl...</b>"):
-    GALLERY_DL = shutil.which("gallery-dl")
+    GALLERY_DL = resolve_bin("gallery-dl")
     if not GALLERY_DL:
         log.warning("gallery-dl not found in PATH")
         return None
@@ -307,16 +327,19 @@ async def gallerydl_fallback(url: str, job_id: str, bot, chat_id, status_msg_id,
         _safe_rmtree(job_dir, "gallery-dl temp")
 
 def _probe_total_size_sync(url: str, fmt: str) -> int:
-    YT_DLP = shutil.which("yt-dlp")
+    YT_DLP = resolve_bin("yt-dlp")
     if not YT_DLP:
         return 0
     cmd = [YT_DLP]
     _append_cookies_args(cmd)
-    
+
     if is_youtube_url(url):
         cmd += YT_SAFE_EXTRACTOR_ARGS
-        
-    cmd += ["--js-runtimes", YTDLP_DENO_PATH, "--no-playlist", "-J", "-f", fmt, url]
+
+    js_rt = resolve_js_runtime()
+    if js_rt:
+        cmd += ["--js-runtimes", js_rt]
+    cmd += ["--no-playlist", "-J", "-f", fmt, url]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_PROBE_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -458,7 +481,7 @@ def _extract_audio_meta(url: str, raw_title: str) -> tuple[str, str]:
 
 
 async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: str | None = None, has_audio: bool = False, known_size: int = 0):
-    YT_DLP = shutil.which("yt-dlp")
+    YT_DLP = resolve_bin("yt-dlp")
     if not YT_DLP:
         raise RuntimeError("yt-dlp not found in PATH")
     os.makedirs(TMP_DIR, exist_ok=True)
@@ -552,8 +575,10 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         if is_yt:
             cmd += YT_SAFE_EXTRACTOR_ARGS
 
+        js_rt = resolve_js_runtime()
+        if js_rt:
+            cmd += ["--js-runtimes", js_rt]
         cmd += [
-            "--js-runtimes", YTDLP_DENO_PATH,
             "--concurrent-fragments", "8",
             "--no-playlist",
             "--max-filesize", f"{MAX_TG_SIZE // (1024 * 1024)}M",
@@ -602,8 +627,10 @@ async def ytdlp_download(url, fmt_key, bot, chat_id, status_msg_id, format_id: s
         if is_yt:
             cmd += YT_SAFE_EXTRACTOR_ARGS
 
+        js_rt = resolve_js_runtime()
+        if js_rt:
+            cmd += ["--js-runtimes", js_rt]
         cmd += [
-            "--js-runtimes", YTDLP_DENO_PATH,
             "--concurrent-fragments", "8",
             "--no-playlist",
             "--max-filesize", f"{MAX_TG_SIZE // (1024 * 1024)}M",

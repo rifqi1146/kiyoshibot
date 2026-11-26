@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from .constants import COOKIES_PATH
-
+from .ytdlp import YT_SAFE_EXTRACTOR_ARGS, resolve_bin, resolve_js_runtime
 log = logging.getLogger(__name__)
 
 YTDLP_RESOLUTION_DOMAINS = (
@@ -131,13 +131,13 @@ def _pick_bestaudio_size(formats: list[dict]) -> int:
     return _safe_int(size)
 
 def _probe_resolutions_sync(url: str) -> list[dict]:
-    yt_dlp_bin = shutil.which("yt-dlp")
+    yt_dlp_bin = resolve_bin("yt-dlp")
     if not yt_dlp_bin:
         log.warning("yt-dlp probe failed | yt-dlp not found in PATH")
         return []
 
     cmd = [yt_dlp_bin]
-    
+
     try:
         if COOKIES_PATH:
             cmd += ["--cookies", COOKIES_PATH]
@@ -148,13 +148,13 @@ def _probe_resolutions_sync(url: str) -> list[dict]:
     is_yt = "youtube.com" in host or "youtu.be" in host
 
     if is_yt:
-        cmd += [
-            "--extractor-args", 
-            "youtube:player_client=default,web_embedded;player_skip=tv,tv_downgraded"
-        ]
+        cmd += YT_SAFE_EXTRACTOR_ARGS
+
+    js_rt = resolve_js_runtime()
+    if js_rt:
+        cmd += ["--js-runtimes", js_rt]
 
     cmd += ["--no-playlist", "-J", url]
-
     log.info("yt-dlp probe start | url=%s cookies=%s", url, "yes" if "--cookies" in cmd else "no")
     log.info("yt-dlp probe command | %s", " ".join(cmd))
 

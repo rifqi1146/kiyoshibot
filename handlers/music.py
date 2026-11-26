@@ -29,8 +29,7 @@ def _base_ydl_opts():
         "noplaylist": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["default", "web_embedded"],
-                "player_skip": ["tv", "tv_downgraded"],
+                "player_client": ["default", "-tv_downgraded"],
             }
         },
     }
